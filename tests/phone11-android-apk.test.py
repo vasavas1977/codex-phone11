@@ -7,14 +7,22 @@ import json
 import os
 from pathlib import Path
 import struct
+import stat
+import subprocess
+import sys
 import tempfile
 import unittest
+from unittest import mock
+import warnings
 import zlib
-from zipfile import ZipFile
+from zipfile import BadZipFile, ZipFile, ZipInfo, ZIP_DEFLATED
 
 spec = importlib.util.spec_from_file_location("apk_check", Path(__file__).resolve().parents[1] / "scripts/verify-phone11-android-apk.py")
 check = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(check)
+STAGED_AAR = os.environ.get("PHONE11_SIPRIX_ANDROID_AAR")
+SDK_ABIS = ("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
+SDK_LIBRARIES = ("libsiprix.so", "libsiprixMedia.so")
 
 # Independent exact source/pinned AAR names; do not generate fixtures from the
 # verifier constants, which previously hid a nonexistent SDK package name.
@@ -49,8 +57,33 @@ def synthetic_dex(descriptors, *, define=True):
 
 
 class PackagingChecks(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.directory = Path(directory.name)
+        self.aar = self.directory / "synthetic.aar"
+        self.lock = self.directory / "sdk-lock.json"
+        self.sdk_bytes = {f"jni/{abi}/{library}": f"synthetic {abi} {library}".encode()
+                          for abi in SDK_ABIS for library in SDK_LIBRARIES}
+        self.write_aar()
+        for patch in (mock.patch.object(check, "SDK_LOCK_PATH", self.lock),
+                      mock.patch.dict(os.environ, {"PHONE11_SIPRIX_ANDROID_AAR": str(self.aar)})):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def write_aar(self, entries=None):
+        with ZipFile(self.aar, "w", compression=ZIP_DEFLATED) as archive:
+            for name, data in (self.sdk_bytes if entries is None else entries).items():
+                archive.writestr(name, data)
+        self.pin_fixture()
+
+    def pin_fixture(self):
+        # Synthetic unit pins never change the repository SDK lock or CLI gate.
+        self.lock.write_text(json.dumps({"sha256": hashlib.sha256(self.aar.read_bytes()).hexdigest(),
+                                         "abis": list(SDK_ABIS)}))
+
     def test_explicitly_staged_pinned_sdk_contains_the_expected_core_class(self):
-        aar = os.environ.get("PHONE11_SIPRIX_ANDROID_AAR")
+        aar = STAGED_AAR
         if not aar:
             self.skipTest("No explicitly staged SDK; synthetic checks perform no download")
         sdk_lock = json.loads((Path(__file__).resolve().parents[1] / "modules/phone11-siprix/android/sdk-lock.json").read_text())
@@ -62,6 +95,37 @@ class PackagingChecks(unittest.TestCase):
         self.assertIn("com/siprix/SiprixCore.class", names)
         self.assertNotIn("com/siprix/voip/SiprixCore.class", names)
         self.assertIn(b"Lcom/siprix/SiprixCore;", check.CLASSES)
+
+        # Actual pinned SDK bytes in a synthetic APK establish byte comparison,
+        # not the identity of any historical CI APK or ELF/runtime acceptance.
+        apk, xml = self.fixture()
+        with ZipFile(io.BytesIO(data)) as source:
+            self.rewrite_apk(apk, {f"lib/{abi}/{library}": source.read(f"jni/{abi}/{library}")
+                                  for abi in ("arm64-v8a", "armeabi-v7a") for library in SDK_LIBRARIES})
+        real_lock = Path(__file__).resolve().parents[1] / "modules/phone11-siprix/android/sdk-lock.json"
+        with mock.patch.object(check, "SDK_LOCK_PATH", real_lock):
+            receipt = check.inspect_apk(apk, xml, trial=True, sdk_aar=Path(aar))
+        self.assertEqual(receipt["pinned_sdk_aar_sha256"], sdk_lock["sha256"])
+        self.assertEqual(len(receipt["packaged_sdk_library_sha256"]), 4)
+        analyzer = self.directory / "apkanalyzer"
+        analyzer.write_text("#!/usr/bin/env python3\nprint(" + repr(xml) + ")\n")
+        analyzer.chmod(0o700)
+        script = str(Path(__file__).resolve().parents[1] / "scripts/verify-phone11-android-apk.py")
+        common = [sys.executable, script, "--trial", "--apk", str(apk), "--apkanalyzer", str(analyzer)]
+        for arguments, env in ((common, {**os.environ, "PHONE11_SIPRIX_ANDROID_AAR": aar}),
+                               (common + ["--sdk-aar", aar], {**os.environ, "PHONE11_SIPRIX_ANDROID_AAR": "wrong-env.aar"})):
+            with self.subTest(explicit=arguments != common):
+                result = subprocess.run(arguments, env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(result.stdout)["packaged_sdk_library_sha256"], receipt["packaged_sdk_library_sha256"])
+
+    def rewrite_apk(self, apk, replacements):
+        with ZipFile(apk) as source:
+            entries = {name: source.read(name) for name in source.namelist()}
+        entries.update(replacements)
+        with ZipFile(apk, "w") as archive:
+            for name, data in entries.items():
+                archive.writestr(name, data)
 
     def fixture(self, trial=True, exclude=None, missing_descriptor=False, package=None, gate=None, descriptors=None, define=True):
         directory = tempfile.TemporaryDirectory()
@@ -76,7 +140,7 @@ class PackagingChecks(unittest.TestCase):
                     for library in check.LIBRARIES:
                         name = f"lib/{abi}/{library}"
                         if name != exclude:
-                            archive.writestr(name, b"synthetic-parser-fixture")
+                            archive.writestr(name, self.sdk_bytes[f"jni/{abi}/{library}"])
         pkg = package or (check.TRIAL_PACKAGE if trial else check.PACKAGE)
         value = gate or ("true" if trial else "false")
         permissions = ''.join(f'<uses-permission android:name="android.permission.{name}"/>' for name in ("RECORD_AUDIO", "INTERNET", "MODIFY_AUDIO_SETTINGS"))
@@ -90,6 +154,11 @@ class PackagingChecks(unittest.TestCase):
                 apk, xml = self.fixture(trial)
                 receipt = check.inspect_apk(apk, xml, trial=trial)
                 self.assertEqual(len(receipt["packaged_sdk_libraries"]), 4 if trial else 0)
+                if trial:
+                    self.assertEqual(receipt["pinned_sdk_aar_sha256"], json.loads(self.lock.read_text())["sha256"])
+                    self.assertEqual(receipt["packaged_sdk_library_sha256"], {
+                        f"lib/{abi}/{library}": hashlib.sha256(self.sdk_bytes[f"jni/{abi}/{library}"]).hexdigest()
+                        for abi in ("arm64-v8a", "armeabi-v7a") for library in SDK_LIBRARIES})
 
     def class_failure(self, apk, xml):
         with self.assertRaisesRegex(ValueError, "^trial_bridge_or_sdk_classes_missing: ") as caught:
@@ -199,6 +268,156 @@ class PackagingChecks(unittest.TestCase):
         for raw in (b"not dex", dex[:-1], dex[:8] + b"x" + dex[9:]):
             with self.assertRaises(ValueError):
                 check.defined_classes(raw)
+
+    def test_each_nonempty_native_byte_mutation_is_refused(self):
+        for abi in ("arm64-v8a", "armeabi-v7a"):
+            for library in SDK_LIBRARIES:
+                with self.subTest(abi=abi, library=library):
+                    apk, xml = self.fixture()
+                    name = f"lib/{abi}/{library}"
+                    self.rewrite_apk(apk, {name: self.sdk_bytes[f"jni/{abi}/{library}"] + b"changed"})
+                    with self.assertRaisesRegex(ValueError, "^trial_native_sdk_checksum_mismatch: ") as caught:
+                        check.inspect_apk(apk, xml, trial=True)
+                    self.assertEqual(json.loads(str(caught.exception).split(": ", 1)[1]), {"mismatched": [name]})
+
+    def test_swapped_abi_and_library_bytes_are_refused(self):
+        for replacement in ("jni/armeabi-v7a/libsiprix.so", "jni/arm64-v8a/libsiprixMedia.so"):
+            with self.subTest(replacement=replacement):
+                apk, xml = self.fixture()
+                self.rewrite_apk(apk, {"lib/arm64-v8a/libsiprix.so": self.sdk_bytes[replacement]})
+                with self.assertRaisesRegex(ValueError, "trial_native_sdk_checksum_mismatch"):
+                    check.inspect_apk(apk, xml, trial=True)
+
+    def test_corrupt_native_zip_crc_refuses_without_success_receipt(self):
+        apk, xml = self.fixture()
+        with ZipFile(apk) as archive:
+            entry = archive.getinfo("lib/arm64-v8a/libsiprix.so")
+        raw = bytearray(apk.read_bytes())
+        name_size, extra_size = struct.unpack_from("<HH", raw, entry.header_offset + 26)
+        position = entry.header_offset + 30 + name_size + extra_size
+        raw[position] ^= 1
+        apk.write_bytes(raw)
+        with self.assertRaisesRegex(BadZipFile, "Bad CRC"):
+            check.inspect_apk(apk, xml, trial=True)
+
+    def test_trial_requires_absolute_available_checksum_pinned_source_aar(self):
+        apk, xml = self.fixture()
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with self.assertRaisesRegex(ValueError, "trial_pinned_sdk_aar_required"):
+                check.inspect_apk(apk, xml, trial=True)
+        with self.assertRaisesRegex(ValueError, "trial_pinned_sdk_aar_required"):
+            check.inspect_apk(apk, xml, trial=True, sdk_aar=Path("relative.aar"))
+        with self.assertRaises(FileNotFoundError):
+            check.inspect_apk(apk, xml, trial=True, sdk_aar=self.directory / "missing.aar")
+        self.aar.write_bytes(self.aar.read_bytes() + b"changed source")
+        with self.assertRaisesRegex(ValueError, "trial_pinned_sdk_aar_checksum_mismatch"):
+            check.inspect_apk(apk, xml, trial=True)
+
+    def test_ordinary_never_needs_or_consumes_sdk_path(self):
+        apk, xml = self.fixture(trial=False)
+        receipt = check.inspect_apk(apk, xml, trial=False, sdk_aar=self.directory / "absent")
+        self.assertNotIn("pinned_sdk_aar_sha256", receipt)
+
+    def test_duplicate_apk_or_source_aar_entries_refuse(self):
+        for target, name in (("apk", "lib/arm64-v8a/libsiprix.so"), ("aar", "jni/arm64-v8a/libsiprix.so")):
+            with self.subTest(target=target):
+                apk, xml = self.fixture()
+                self.write_aar()
+                path = apk if target == "apk" else self.aar
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", UserWarning)
+                    with ZipFile(path, "a") as archive:
+                        archive.writestr(name, b"duplicate")
+                if target == "aar":
+                    self.pin_fixture()
+                with self.assertRaisesRegex(ValueError, f"duplicate_{'apk' if target == 'apk' else 'sdk_aar'}_entries"):
+                    check.inspect_apk(apk, xml, trial=True)
+
+    def test_pinned_source_missing_or_extra_abi_inventory_refuses(self):
+        for missing in (True, False):
+            with self.subTest(missing=missing):
+                entries = dict(self.sdk_bytes)
+                if missing:
+                    del entries["jni/arm64-v8a/libsiprix.so"]
+                else:
+                    entries["jni/mips/libsiprix.so"] = b"extra"
+                self.write_aar(entries)
+                with self.assertRaisesRegex(ValueError, "pinned_sdk_native_inventory_mismatch"):
+                    check.verified_sdk_libraries(self.aar)
+
+    def test_archive_traversal_backslash_and_symlink_entries_refuse(self):
+        for name in ("../outside", "lib/../arm64-v8a/libsiprix.so", "lib\\arm64-v8a\\libsiprix.so", "/absolute"):
+            with self.subTest(name=name):
+                apk, xml = self.fixture()
+                with ZipFile(apk, "a") as archive:
+                    archive.writestr(name, b"unsafe")
+                with self.assertRaisesRegex(ValueError, "unsafe_apk_entry"):
+                    check.inspect_apk(apk, xml, trial=True)
+        apk, xml = self.fixture(exclude="lib/arm64-v8a/libsiprix.so")
+        entry = ZipInfo("lib/arm64-v8a/libsiprix.so")
+        entry.create_system = 3
+        entry.external_attr = (stat.S_IFLNK | 0o777) << 16
+        with ZipFile(apk, "a") as archive:
+            archive.writestr(entry, self.sdk_bytes["jni/arm64-v8a/libsiprix.so"])
+        with self.assertRaisesRegex(ValueError, "sdk_native_entry_not_regular"):
+            check.inspect_apk(apk, xml, trial=True)
+
+    def test_file_archive_dex_and_inflated_native_size_limits_refuse(self):
+        apk, xml = self.fixture()
+        for limit, value, expected in (("MAX_APK_BYTES", 1, "apk_size_limit"),
+                                       ("MAX_AAR_BYTES", 1, "sdk_aar_size_limit"),
+                                       ("MAX_ARCHIVE_ENTRIES", 1, "entry_limit"),
+                                       ("MAX_DEX_BYTES", 1, "apk_dex_size_limit"),
+                                       ("MAX_DEX_TOTAL_BYTES", 1, "apk_dex_size_limit"),
+                                       ("MAX_NATIVE_BYTES", 1, "sdk_native_entry_size_limit")):
+            with self.subTest(limit=limit), mock.patch.object(check, limit, value):
+                with self.assertRaisesRegex(ValueError, expected):
+                    check.inspect_apk(apk, xml, trial=True)
+        # Small compressed bytes cannot evade the declared inflated-native bound.
+        self.write_aar({**self.sdk_bytes, "jni/arm64-v8a/libsiprix.so": b"x" * 4096})
+        with mock.patch.object(check, "MAX_NATIVE_BYTES", 1024):
+            with self.assertRaisesRegex(ValueError, "sdk_native_entry_size_limit"):
+                check.verified_sdk_libraries(self.aar)
+
+    def test_existing_trial_cli_env_refuses_missing_and_unpinned_source(self):
+        apk, xml = self.fixture()
+        analyzer = self.directory / "apkanalyzer"
+        analyzer.write_text("#!/usr/bin/env python3\nprint(" + repr(xml) + ")\n")
+        analyzer.chmod(0o700)
+        script = str(Path(__file__).resolve().parents[1] / "scripts/verify-phone11-android-apk.py")
+        # Synthetic AAR cannot satisfy the production repository pin in a fresh
+        # process even when every APK descriptor/library name is present.
+        result = subprocess.run([sys.executable, script, "--trial", "--apk", str(apk),
+                                 "--apkanalyzer", str(analyzer)], capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("trial_pinned_sdk_aar_checksum_mismatch", result.stderr)
+        self.assertEqual(result.stdout, "")
+        env = {**os.environ, "PHONE11_SIPRIX_ANDROID_AAR": ""}
+        result = subprocess.run([sys.executable, script, "--trial", "--apk", str(apk),
+                                 "--apkanalyzer", str(analyzer)], env=env, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("trial_pinned_sdk_aar_required", result.stderr)
+        self.assertEqual(result.stdout, "")
+
+    def test_empty_and_nonregular_source_or_packaged_native_entries_refuse(self):
+        self.write_aar({**self.sdk_bytes, "jni/arm64-v8a/libsiprix.so": b""})
+        with self.assertRaisesRegex(ValueError, "sdk_native_entry_size_limit"):
+            check.verified_sdk_libraries(self.aar)
+        self.write_aar()
+        with self.assertRaisesRegex(ValueError, "sdk_aar_not_regular"):
+            check.verified_sdk_libraries(self.directory)
+        # Source checksum alone does not turn a symlink ZIP entry into a file.
+        entries = dict(self.sdk_bytes)
+        del entries["jni/arm64-v8a/libsiprix.so"]
+        self.write_aar(entries)
+        entry = ZipInfo("jni/arm64-v8a/libsiprix.so")
+        entry.create_system = 3
+        entry.external_attr = (stat.S_IFLNK | 0o777) << 16
+        with ZipFile(self.aar, "a") as archive:
+            archive.writestr(entry, self.sdk_bytes[entry.filename])
+        self.pin_fixture()
+        with self.assertRaisesRegex(ValueError, "sdk_native_entry_not_regular"):
+            check.verified_sdk_libraries(self.aar)
 
 
 if __name__ == "__main__":

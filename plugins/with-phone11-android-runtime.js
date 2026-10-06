@@ -68,6 +68,13 @@ android {
       abiFilters.addAll(['arm64-v8a', 'armeabi-v7a'])
     }
   }
+  // Preserve the exact pinned SDK bytes for the packaged-library checksum gate.
+  // Other native dependencies retain their existing debug-symbol stripping.
+  packagingOptions {
+    jniLibs {
+      keepDebugSymbols += ['**/libsiprix.so', '**/libsiprixMedia.so']
+    }
+  }
 }
 dependencies {
   implementation project(':${projectName}')

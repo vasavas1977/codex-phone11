@@ -67,6 +67,33 @@ dependencies { implementation project(':livekit_react-native') }
   assert.doesNotMatch(integration.configureAppGradle("", false), /abiFilters|Siprix/);
 });
 
+test("trial keeps only pinned Siprix library bytes and ordinary reversal preserves unrelated packaging", () => {
+  const source = `apply plugin: 'com.android.application'
+android {
+  packagingOptions {
+    jniLibs {
+      keepDebugSymbols += ['**/libexisting.so']
+      excludes += ['**/libunrelated.so']
+    }
+  }
+}
+dependencies { implementation project(':livekit_react-native') }
+`;
+  let current = source;
+  for (let repeat = 0; repeat < 3; repeat++) {
+    current = integration.configureAppGradle(current, true);
+    assert.ok(current.startsWith(source));
+    assert.match(current, /keepDebugSymbols \+= \['\*\*\/libsiprix\.so', '\*\*\/libsiprixMedia\.so'\]/);
+    assert.equal(current.split("keepDebugSymbols += ['**/libsiprix.so', '**/libsiprixMedia.so']").length, 2);
+    assert.doesNotMatch(current, /keepDebugSymbols[^\n]*\*\.so/);
+    assert.equal(integration.configureAppGradle(current, true), current);
+    current = integration.configureAppGradle(current, false);
+    assert.equal(current, source);
+  }
+  assert.equal(integration.configureAppGradle(source, false), source);
+  assert.doesNotMatch(integration.configureAppGradle("", false), /keepDebugSymbols|Siprix/);
+});
+
 const kotlin = `package ai.phone11.mobile
 import android.app.Application
 import com.facebook.react.PackageList
