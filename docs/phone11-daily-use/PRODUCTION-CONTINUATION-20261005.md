@@ -4,6 +4,31 @@ Full Zoom-style production is not complete. This follow-up records a reviewed
 source batch and current release boundaries; it does not mark the feature
 coverage checklist accepted.
 
+## 6 October source follow-up
+
+Presence polling now retires at the observed sign-in boundary and rechecks its
+owner before every 100-user request chunk. This prevents late capability errors,
+responses and subsequent chunks from entering a replacement session. The final
+source candidate `eeb9f307c12d0647306aed00edaf2029d306c818` passed independent
+review, including probes that exposed and corrected an initial batching gap.
+Seventeen checked-in lifetime cases pass without skips.
+
+Administrator meeting-host changes now require the original current sign-in,
+workspace, administrator read and exact conversation/member row. Synchronous
+single-flight custody prevents opposing same-render writes and persists across
+screen remounts until an already-dispatched request settles. Late results are
+discarded; this does not cancel a server write. The 29 actual-component cases
+pass without skips; independent review is recorded separately in PR 7. See
+[administrator host actions](ADMIN-MEETING-HOST-ACTIONS-20261006.md).
+
+The required setup report adds both suites to the existing executed/nonempty/
+zero-skip gates. The lead ran all four setup suites: 237 cases, zero skips,
+plus full repository TypeScript, scoped lint and backend bundling successfully.
+The full required completion set passed 1,032 cases across 27 suites with no
+skips; this is a local source run, separate from fresh hosted validation.
+Hosted results at `178f5a2` below remain historical and do not prove these new
+changes. Full production, deployment and device acceptance remain unfinished.
+
 ## Latest reviewed source additions
 
 The combined branch now contains these independently reviewed source candidates.
