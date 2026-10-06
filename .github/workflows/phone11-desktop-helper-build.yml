@@ -70,7 +70,10 @@ jobs:
           persist-credentials: false
       - name: Check pinned Windows SDK and build contract
         shell: pwsh
-        run: python desktop/native/test_windows_build_contract.py "$env:GITHUB_WORKSPACE\_vendor\siprixua"
+        run: |
+          python desktop/native/test_canonical_checkout.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python desktop/native/test_windows_build_contract.py "$env:GITHUB_WORKSPACE\_vendor\siprixua"
       - name: Compile native helper
         shell: pwsh
         run: |

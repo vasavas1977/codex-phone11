@@ -591,6 +591,31 @@ recorded temporary path absent. Historical build, inventory and review receipts
 remain, but they are not a currently available distribution package. Rebuild
 before any distribution; preserve the existing signed rollback packages.
 
+## Live target and Windows package follow-up — 6 October 2026
+
+An owner-session browser check confirmed extension 3001 is signed in, workspace
+profile status is enabled, and advanced PBX controls are unavailable. A bounded
+read-only AWS/host inventory found 31 running Phone11 containers and both public
+tRPC locations targeting the admission candidate on loopback 3023, build
+`phone11-admission-c5140f4`. The older 3016 release plan is historical; its pinned
+operator must not be used against this topology without a fresh reviewed plan.
+A separate `BEGIN READ ONLY` catalog transaction found all nine advanced PBX
+tables absent, nullable `extensions.tenant_id` with a default, and one effective
+login writer with superuser access. These observations do not inventory every
+external writer or authorize DDL, grants, routing or service activation.
+
+Manual desktop run `37444541328` at `3b39c01` passed its three jobs and retained
+the two-file Windows helper artifact `11402048686`. Its archive digest and
+source/run/helper binding were verified. Packaging correctly refused the
+receipt: Windows checkout had converted the native inputs to CRLF, while the
+receipt consumer compares their bytes with canonical Git blobs. The native
+directory now pins LF for exactly CMake, C++ and bootstrap inputs. Two local
+Git-checkout regressions reproduce the previous mismatch and verify the fixed
+bytes with Windows autocrlf enabled, including unchanged unrelated-file behavior.
+The installed pinned Windows SDK contract check also passed. A fresh Windows
+compile, staging receipt, package and independent source review remain required;
+the receipt verifier has not been weakened or an old receipt relabeled.
+
 ## Work that remains
 
 1. Finish authoritative meeting controls with Connect11. The reviewed opaque
