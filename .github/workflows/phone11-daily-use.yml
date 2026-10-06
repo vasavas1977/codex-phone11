@@ -256,6 +256,12 @@ jobs:
             tests/phone11-wake-service.test.ts \
             tests/phone11-wake-routes.test.ts
           node --test tests/phone11-wake-plugin.test.mjs tests/phone11-wake-kamailio.test.mjs
+      - name: Test descriptor-pinned recording and voicemail playback
+        run: |
+          pnpm exec vitest run \
+            tests/phone11-media-security.test.ts \
+            tests/phone11-voicemail-storage.test.ts \
+            --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/phone11-playback-results.json"
       - name: Test transfer and voicemail consumer lifecycle
         run: |
           pnpm exec vitest run \
@@ -362,6 +368,7 @@ jobs:
           import json, os
           from pathlib import Path
           required = {
+              "phone11-playback-results.json": ["tests/phone11-media-security.test.ts", "tests/phone11-voicemail-storage.test.ts"],
               "phone11-setup-confirmation-results.json": ["tests/phone11-meet-action.test.tsx", "tests/phone11-admin-voicemail-confirmation.test.tsx", "tests/phone11-admin-meeting-host-actions.test.tsx", "tests/phone11-presence-poll-lifetime.test.ts"],
               "phone11-transfer-results.json": ["tests/phone11-siprix-engine.test.ts", "tests/phone11-active-call-navigation.test.tsx", "tests/phone11-current-call-banner.test.tsx", "tests/phone11-transfer-lifecycle.test.tsx", "tests/phone11-transfer-screen.test.tsx", "tests/phone11-voicemail-callback.test.tsx"],
               "phone11-voicemail-results.json": ["tests/phone11-voicemail-producer-durability.test.ts", "tests/phone11-voicemail-producer.test.ts", "tests/phone11-voicemail-relay.test.ts", "tests/phone11-voicemail-lifecycle-rehearsal.test.ts", "tests/phone11-voicemail-helper-preflight.test.ts", "tests/phone11-voicemail-bundle.test.ts"],
