@@ -1,3 +1,4 @@
+import * as fs from "node:fs";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import express from "express";
 import type { Server } from "node:http";
@@ -322,6 +323,33 @@ describe("voicemail storage", () => {
     expect(mocks.query).toHaveBeenCalledWith(expect.stringContaining("vm.owner_user_id = $1"), [17, 9]);
     expect(mocks.query.mock.calls[0][0]).toContain("JOIN tenant_memberships tm");
     expect(mocks.query.mock.calls[0][0]).toContain("tm.status = 'active'");
+  });
+
+  it("refuses a tenant path replaced by a foreign symlink after containment inspection", async () => {
+    const file = path.join(directory, "12", "race.wav");
+    const foreign = path.join(directory, "29", "foreign.wav");
+    await fs.promises.mkdir(path.dirname(file), { recursive: true });
+    await fs.promises.mkdir(path.dirname(foreign), { recursive: true });
+    await fs.promises.writeFile(file, "owned media");
+    await fs.promises.writeFile(foreign, "foreign media");
+    mocks.query.mockResolvedValueOnce({ rows: [{ tenant_id: 12, storage_path: file }] });
+    const realpath = fs.promises.realpath.bind(fs.promises);
+    let replaced = false;
+    const spy = vi.spyOn(fs.promises, "realpath").mockImplementation(async (...args) => {
+      const result = await realpath(...args);
+      if (args[0] === file && !replaced) {
+        replaced = true;
+        await fs.promises.unlink(file);
+        await fs.promises.symlink(foreign, file);
+      }
+      return result;
+    });
+    try {
+      const response = await fetch(`${base}/recordings/voicemail/9`);
+      expect(response.status).toBe(404);
+      expect(await response.text()).not.toContain("foreign media");
+      expect(replaced).toBe(true);
+    } finally { spy.mockRestore(); }
   });
 
   it("rejects unauthenticated voicemail playback before querying media ownership", async () => {

@@ -1,3 +1,5 @@
+import type { Stats } from "node:fs";
+import { pipeline } from "node:stream/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { ingestStoredRecording } from "../cloud-recordings/ingestion";
 /** Authenticated recording storage. Unsupported voicemail storage fails closed. */
@@ -458,6 +460,84 @@ storageRouter.post("/voicemail", verifyFsAuth, raw({ type: ["audio/wav", "audio/
   }
 });
 
+class UnsafePlaybackFileError extends Error {}
+
+function samePlaybackFile(expected: Stats, actual: Stats): boolean {
+  return actual.isFile() && expected.dev === actual.dev && expected.ino === actual.ino &&
+    expected.size === actual.size && expected.mtimeMs === actual.mtimeMs && expected.ctimeMs === actual.ctimeMs &&
+    expected.mode === actual.mode && expected.uid === actual.uid && expected.gid === actual.gid &&
+    expected.nlink === actual.nlink;
+}
+
+/** Owner authorization is completed by the route before this function touches storage. */
+async function sendOwnedMedia(req: Request, res: Response, directory: string, tenantId: number,
+  storagePath: string, maxBytes: number): Promise<void> {
+  const base = await fs.promises.realpath(directory);
+  const baseIdentity = await fs.promises.lstat(base);
+  const tenantDirectory = path.join(base, String(tenantId)) + path.sep;
+  const filePath = await fs.promises.realpath(storagePath);
+  if (!filePath.startsWith(tenantDirectory)) throw new UnsafePlaybackFileError();
+  const inspected = await fs.promises.lstat(filePath);
+  if (!inspected.isFile() || !Number.isSafeInteger(inspected.size) || inspected.size < 0 || inspected.size > maxBytes)
+    throw new UnsafePlaybackFileError();
+
+  // NOFOLLOW protects the leaf; identity and resolved-path checks also catch changed ancestors.
+  // NONBLOCK prevents a FIFO replacement from waiting for a writer before the regular-file check.
+  const handle = await fs.promises.open(filePath,
+    fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+  let stream: ReturnType<typeof handle.createReadStream> | undefined;
+  try {
+    const opened = await handle.stat();
+    if (!samePlaybackFile(inspected, opened)) throw new UnsafePlaybackFileError();
+    const currentBase = await fs.promises.lstat(base);
+    if (await fs.promises.realpath(directory) !== base || !currentBase.isDirectory() ||
+        currentBase.dev !== baseIdentity.dev || currentBase.ino !== baseIdentity.ino ||
+        await fs.promises.realpath(storagePath) !== filePath || !samePlaybackFile(opened, await fs.promises.lstat(filePath)) ||
+        !samePlaybackFile(opened, await handle.stat())) throw new UnsafePlaybackFileError();
+    if (req.aborted || res.destroyed) return;
+
+    // Match Express sendFile's stat-based validators and single-range behavior using this descriptor's metadata.
+    const etag = `W/"${opened.size.toString(16)}-${opened.mtime.getTime().toString(16)}"`;
+    const modified = opened.mtime.toUTCString(), modifiedTime = Date.parse(modified);
+    res.set({ "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff", "Content-Type": "audio/wav",
+      "Accept-Ranges": "bytes", "Last-Modified": modified, "ETag": etag });
+    const match = req.get("If-Match"), unmodified = Date.parse(req.get("If-Unmodified-Since") ?? "");
+    if (match ? match !== "*" && !match.split(",").some(tag => tag.trim().replace(/^W\//, "") === etag.replace(/^W\//, ""))
+      : Number.isFinite(unmodified) && modifiedTime > unmodified) {
+      res.status(412).end(); return;
+    }
+    if (req.fresh) { res.removeHeader("Content-Type"); res.status(304).end(); return; }
+    let start = 0, end = opened.size - 1;
+    const ifRange = req.get("If-Range");
+    const rangeFresh = !ifRange || (ifRange.includes('"') ? ifRange.includes(etag) : Date.parse(ifRange) >= modifiedTime);
+    if (/^ *bytes=/.test(req.get("Range") ?? "") && rangeFresh) {
+      const ranges = req.range(opened.size, { combine: true });
+      if (ranges === -1) { res.set("Content-Range", `bytes */${opened.size}`); res.status(416).end(); return; }
+      if (ranges && ranges !== -2 && ranges.type === "bytes" && ranges.length === 1) {
+        ({ start, end } = ranges[0]);
+        res.status(206).set("Content-Range", `bytes ${start}-${end}/${opened.size}`);
+      }
+    }
+    res.set("Content-Length", String(Math.max(0, end - start + 1)));
+    if (req.method === "HEAD" || opened.size === 0) { res.end(); return; }
+    // The path is never reopened. The bounded stream owns no descriptor; this finally closes it once.
+    // Trusted writes to the same inode after the last check still require commissioned storage custody.
+    stream = handle.createReadStream({ start, end, autoClose: false, highWaterMark: 64 * 1024 });
+    await pipeline(stream, res);
+  } finally {
+    stream?.destroy();
+    await handle.close();
+  }
+}
+
+function unavailablePlayback(req: Request, res: Response, error: unknown, kind: "Recording" | "Voicemail") {
+  if (req.aborted || res.destroyed) return;
+  if (res.headersSent) { res.destroy(); return; }
+  const code = (error as NodeJS.ErrnoException).code;
+  const missing = error instanceof UnsafePlaybackFileError || ["ENOENT", "ENOTDIR", "ELOOP", "ENXIO"].includes(code ?? "");
+  res.status(missing ? 404 : 503).json({ error: missing ? `${kind} not found` : `${kind} is unavailable` });
+}
+
 storageRouter.get("/play/:callUuid", async (req, res) => {
   const userId = await authenticate(req, res);
   if (!userId) return;
@@ -468,16 +548,9 @@ storageRouter.get("/play/:callUuid", async (req, res) => {
     if (!record?.recording_url || !validTenant(Number(record.tenant_id))) {
       res.status(404).json({ error: "Recording not found" }); return;
     }
-    // Authorization precedes every filesystem access. Resolve symlinks before containment checks.
-    const base = await fs.promises.realpath(RECORDINGS_BASE);
-    const filePath = await fs.promises.realpath(record.recording_url);
-    if (!filePath.startsWith(path.join(base, String(record.tenant_id)) + path.sep)) {
-      res.status(404).json({ error: "Recording not found" }); return;
-    }
-    res.set({ "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff", "Content-Type": "audio/wav" });
-    res.sendFile(filePath, error => { if (error && !res.headersSent) res.status(404).json({ error: "Recording not found" }); });
-  } catch {
-    if (!res.headersSent) res.status(503).json({ error: "Recording is unavailable" });
+    await sendOwnedMedia(req, res, RECORDINGS_BASE, Number(record.tenant_id), record.recording_url, MAX_RECORDING_SIZE);
+  } catch (error) {
+    unavailablePlayback(req, res, error, "Recording");
   }
 });
 
@@ -495,17 +568,8 @@ storageRouter.get("/voicemail/:id", async (req, res) => {
       res.status(404).json({ error: "Voicemail not found" });
       return;
     }
-    const base = await fs.promises.realpath(VOICEMAIL_BASE);
-    const filePath = await fs.promises.realpath(voicemail.storage_path);
-    if (!filePath.startsWith(path.join(base, String(voicemail.tenant_id)) + path.sep)) {
-      res.status(404).json({ error: "Voicemail not found" });
-      return;
-    }
-    res.set({ "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff", "Content-Type": "audio/wav" });
-    res.sendFile(filePath, error => {
-      if (error && !res.headersSent) res.status(404).json({ error: "Voicemail not found" });
-    });
-  } catch {
-    if (!res.headersSent) res.status(503).json({ error: "Voicemail is unavailable" });
+    await sendOwnedMedia(req, res, VOICEMAIL_BASE, Number(voicemail.tenant_id), voicemail.storage_path, MAX_VOICEMAIL_SIZE);
+  } catch (error) {
+    unavailablePlayback(req, res, error, "Voicemail");
   }
 });
