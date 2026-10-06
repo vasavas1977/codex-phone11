@@ -372,6 +372,7 @@ DECLARE
   advanced_partition boolean;
   base_prerequisite record;
   guarded_index record;
+  guarded_fk record;
   index_ok boolean;
 BEGIN
   FOR advanced_table IN SELECT pg_catalog.unnest(ARRAY[
@@ -431,6 +432,60 @@ BEGIN
     IF index_ok IS DISTINCT FROM true THEN
       RAISE EXCEPTION 'Phone11 advanced PBX migration refuses incompatible routing index %', guarded_index.index_name
         USING ERRCODE = '55000';
+    END IF;
+  END LOOP;
+  -- Existing relations may retain validated constraints with ineffective RI triggers.
+  -- Refuse under the existing DDL locks; never silently repair their enforcement.
+  FOR guarded_fk IN
+    WITH required(table_name,column_name,foreign_table_name,foreign_column_name) AS (VALUES
+          ('ivr_menus','tenant_id','tenants','id'),
+          ('ivr_actions','menu_id','ivr_menus','id'),
+          ('ring_groups','tenant_id','tenants','id'),
+          ('ring_group_members','ring_group_id','ring_groups','id'),
+          ('ring_group_members','extension_id','extensions','id'),
+          ('call_queues','tenant_id','tenants','id'),
+          ('queue_agents','queue_id','call_queues','id'),
+          ('queue_agents','extension_id','extensions','id'),
+          ('queue_stats','queue_id','call_queues','id'),
+          ('time_conditions','tenant_id','tenants','id'),
+          ('time_condition_rules','time_condition_id','time_conditions','id')
+        ), bindings AS (
+          SELECT required.*,child.oid AS child_oid,parent.oid AS parent_oid,
+                 ca.attnum AS child_attnum,pa.attnum AS parent_attnum
+          FROM required
+          JOIN pg_catalog.pg_namespace n ON n.nspname=expected_schema
+          LEFT JOIN pg_catalog.pg_class child ON child.relnamespace=n.oid AND child.relname=required.table_name
+          LEFT JOIN pg_catalog.pg_class parent ON parent.relnamespace=n.oid AND parent.relname=required.foreign_table_name
+          LEFT JOIN pg_catalog.pg_attribute ca ON ca.attrelid=child.oid AND ca.attname=required.column_name AND NOT ca.attisdropped
+          LEFT JOIN pg_catalog.pg_attribute pa ON pa.attrelid=parent.oid AND pa.attname=required.foreign_column_name AND NOT pa.attisdropped
+        )
+        SELECT b.table_name,b.column_name,b.foreign_table_name,b.foreign_column_name,
+          (SELECT count(*)=1 FROM pg_catalog.pg_constraint f
+           WHERE f.conrelid=b.child_oid AND f.contype='f' AND b.child_attnum=ANY(f.conkey))
+          AND EXISTS (
+            SELECT 1 FROM pg_catalog.pg_constraint f
+            WHERE f.conrelid=b.child_oid AND f.confrelid=b.parent_oid AND f.contype='f'
+              AND f.conkey=ARRAY[b.child_attnum]::smallint[] AND f.confkey=ARRAY[b.parent_attnum]::smallint[]
+              AND f.convalidated AND NOT f.condeferrable AND NOT f.condeferred AND f.confmatchtype='s'
+              AND f.confupdtype='a' AND f.confdeltype='c'
+              AND (SELECT count(*)=4 AND count(DISTINCT (tr.tgrelid,tr.tgtype,fn.proname))=4
+                AND pg_catalog.bool_and(tr.tgisinternal AND tr.tgenabled IN ('O','A')
+                  AND NOT tr.tgdeferrable AND NOT tr.tginitdeferred AND tr.tgqual IS NULL
+                  AND pn.nspname='pg_catalog'
+                  AND ((tr.tgrelid=b.child_oid AND tr.tgconstrrelid=b.parent_oid AND tr.tgtype=5 AND fn.proname='RI_FKey_check_ins')
+                    OR (tr.tgrelid=b.child_oid AND tr.tgconstrrelid=b.parent_oid AND tr.tgtype=17 AND fn.proname='RI_FKey_check_upd')
+                    OR (tr.tgrelid=b.parent_oid AND tr.tgconstrrelid=b.child_oid AND tr.tgtype=9 AND fn.proname='RI_FKey_cascade_del')
+                    OR (tr.tgrelid=b.parent_oid AND tr.tgconstrrelid=b.child_oid AND tr.tgtype=17 AND fn.proname='RI_FKey_noaction_upd')))
+                FROM pg_catalog.pg_trigger tr
+                JOIN pg_catalog.pg_proc fn ON fn.oid=tr.tgfoid
+                JOIN pg_catalog.pg_namespace pn ON pn.oid=fn.pronamespace
+                WHERE tr.tgconstraint=f.oid)
+          ) AS valid_shape
+        FROM bindings b
+  LOOP
+    IF guarded_fk.valid_shape IS DISTINCT FROM true THEN
+      RAISE EXCEPTION 'Phone11 advanced PBX migration refuses ineffective foreign key %.%',
+        guarded_fk.table_name, guarded_fk.column_name USING ERRCODE = '55000';
     END IF;
   END LOOP;
 END;

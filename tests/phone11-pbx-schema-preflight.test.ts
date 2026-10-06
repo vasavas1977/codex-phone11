@@ -286,6 +286,108 @@ describe.skipIf(!connectionString)(
       }
     });
 
+    it("accepts all advanced foreign keys with ALWAYS-enabled enforcement", async () => {
+      const client = await database.connect();
+      const triggers = await client.query<{ table_name: string; trigger_name: string }>(`
+        SELECT c.relname AS table_name,t.tgname AS trigger_name
+        FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_class c ON c.oid=t.tgrelid
+        JOIN pg_catalog.pg_constraint f ON f.oid=t.tgconstraint
+        JOIN pg_catalog.pg_class child ON child.oid=f.conrelid
+        JOIN pg_catalog.pg_namespace n ON n.oid=child.relnamespace
+        WHERE n.nspname=$1 AND f.contype='f' AND child.relname<>'extensions'`, [schema]);
+      expect(triggers.rows).toHaveLength(44);
+      try {
+        for (const row of triggers.rows)
+          await client.query(`ALTER TABLE ${row.table_name} ENABLE ALWAYS TRIGGER "${row.trigger_name}"`);
+        expect((await inspectPbxSchema(client)).overall).toBe("compatible");
+      } finally {
+        for (const row of triggers.rows)
+          await client.query(`ALTER TABLE ${row.table_name} ENABLE TRIGGER "${row.trigger_name}"`);
+        client.release();
+      }
+    });
+
+    for (const [label, definition] of [
+      ["missing", ""],
+      ["wrong match type", "FOREIGN KEY(menu_id) REFERENCES ivr_menus(id) MATCH FULL ON DELETE CASCADE"],
+      ["wrong delete action", "FOREIGN KEY(menu_id) REFERENCES ivr_menus(id)"],
+      ["wrong update action", "FOREIGN KEY(menu_id) REFERENCES ivr_menus(id) ON DELETE CASCADE ON UPDATE CASCADE"],
+      ["deferrable immediate", "FOREIGN KEY(menu_id) REFERENCES ivr_menus(id) ON DELETE CASCADE DEFERRABLE INITIALLY IMMEDIATE"],
+      ["deferrable deferred", "FOREIGN KEY(menu_id) REFERENCES ivr_menus(id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED"],
+      ["unvalidated", "FOREIGN KEY(menu_id) REFERENCES ivr_menus(id) ON DELETE CASCADE NOT VALID"],
+      ["wrong target", "FOREIGN KEY(menu_id) REFERENCES ring_groups(id) ON DELETE CASCADE"],
+      ["composite shape", "FOREIGN KEY(menu_id,id) REFERENCES ivr_menus(id,tenant_id) ON DELETE CASCADE"],
+      ["duplicate", "FOREIGN KEY(menu_id) REFERENCES ivr_menus(id) ON DELETE CASCADE"],
+    ] as const) {
+      it(`refuses advanced FK ${label} without repairing it`, async () => {
+        const client = await database.connect();
+        const constraint = label === "duplicate" ? "extra_menu_fk" : "ivr_actions_menu_id_fkey";
+        try {
+          if (label !== "duplicate") await client.query("ALTER TABLE ivr_actions DROP CONSTRAINT ivr_actions_menu_id_fkey");
+          if (definition) await client.query(`ALTER TABLE ivr_actions ADD CONSTRAINT ${constraint} ${definition}`);
+          const catalog = async () => (await client.query(`SELECT f.oid,f.convalidated,
+            pg_catalog.pg_get_constraintdef(f.oid) AS definition FROM pg_catalog.pg_constraint f
+            WHERE f.conrelid='ivr_actions'::regclass ORDER BY f.oid`)).rows;
+          const before = await catalog();
+          const result = await inspectPbxSchema(client);
+          expect(result.overall).toBe("incompatible");
+          expect(result.advanced.issues).toContain("ivr_actions.menu_id:foreign_key");
+          expect(await catalog()).toEqual(before);
+        } finally {
+          await client.query("ROLLBACK");
+          await client.query(`ALTER TABLE ivr_actions DROP CONSTRAINT IF EXISTS ${constraint}`);
+          if (label !== "duplicate") await client.query("ALTER TABLE ivr_actions ADD CONSTRAINT ivr_actions_menu_id_fkey FOREIGN KEY(menu_id) REFERENCES ivr_menus(id) ON DELETE CASCADE");
+          client.release();
+        }
+      });
+    }
+
+    for (const [table, column] of [
+      ["ivr_menus", "tenant_id"],
+      ["ivr_actions", "menu_id"],
+      ["ring_groups", "tenant_id"],
+      ["ring_group_members", "ring_group_id"],
+      ["ring_group_members", "extension_id"],
+      ["call_queues", "tenant_id"],
+      ["queue_agents", "queue_id"],
+      ["queue_agents", "extension_id"],
+      ["queue_stats", "queue_id"],
+      ["time_conditions", "tenant_id"],
+      ["time_condition_rules", "time_condition_id"]
+    ] as const) {
+      for (const side of ["child", "parent"] as const) {
+        for (const triggerType of side === "child" ? [5, 17] : [9, 17]) {
+          for (const enabled of ["DISABLE", "ENABLE REPLICA"] as const) {
+            it(`refuses ${enabled} advanced FK enforcement on ${table}.${column} ${side} event ${triggerType}`, async () => {
+              const client = await database.connect();
+              const triggers = await client.query<{ table_name: string; trigger_name: string }>(`
+                SELECT c.relname AS table_name,t.tgname AS trigger_name
+                FROM pg_catalog.pg_trigger t
+                JOIN pg_catalog.pg_class c ON c.oid=t.tgrelid
+                JOIN pg_catalog.pg_constraint f ON f.oid=t.tgconstraint
+                WHERE f.conrelid=$2::regclass AND f.conname=$3
+                  AND t.tgrelid=CASE WHEN $1='child' THEN f.conrelid ELSE f.confrelid END
+                  AND t.tgtype=$4
+                ORDER BY t.tgname`, [side, table, `${table}_${column}_fkey`, triggerType]);
+              expect(triggers.rows).toHaveLength(1);
+              try {
+                for (const row of triggers.rows)
+                  await client.query(`ALTER TABLE ${row.table_name} ${enabled} TRIGGER "${row.trigger_name}"`);
+                const result = await inspectPbxSchema(client);
+                expect(result.overall).toBe("incompatible");
+                expect(result.advanced.issues).toContain(`${table}.${column}:foreign_key`);
+              } finally {
+                await client.query("ROLLBACK");
+                for (const row of triggers.rows)
+                  await client.query(`ALTER TABLE ${row.table_name} ENABLE TRIGGER "${row.trigger_name}"`);
+                client.release();
+              }
+            });
+          }
+        }
+      }
+    }
+
     it("marks disabled extension and parent tenant guards incompatible", async () => {
       const client = await database.connect();
       try {

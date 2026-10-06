@@ -1,5 +1,8 @@
 # Phone11 advanced PBX release gates — 1 October 2026
 
+For the later enforcement fix and changed source/rehearsal pins, see
+[advanced foreign-key enforcement](PBX-EFFECTIVE-FOREIGN-KEYS-20261007.md).
+
 This is a source and evidence inventory at `54ceaa265bb6ca37791c14ac29f98bf2a0fe0093`, not authorization to change the PBX. The 30 September actual-target read reported a nullable `public.extensions.tenant_id DEFAULT 1`, four non-NULL assignments, no extension tenant FK, and all nine advanced-routing tables absent. The PBX preflight therefore reported `incompatible`; zero NULL rows do not make the column safe. See [the target read](EC2-CANDIDATE-RELEASE-PLAN-20260929.md) and [the catalog/DDL boundary](PBX-EXTENSION-TENANT-REPAIR-20260930.md).
 
 ## Smallest safe local gate now
