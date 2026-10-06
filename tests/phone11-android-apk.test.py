@@ -289,6 +289,34 @@ class PackagingChecks(unittest.TestCase):
             self.assertEqual(result.stdout, "")
             self.assertIn("independent expected signer", result.stderr)
 
+    def test_standalone_resolves_relative_and_bare_phone11_service_and_receiver_names(self):
+        for tag, short_name in (("service", "Phone11WakeService"), ("receiver", "Phone11PushReceiver")):
+            full_name = "ai.phone11.mobile.foregroundtrial." + short_name
+            for name in (full_name, "." + short_name, short_name):
+                with self.subTest(tag=tag, name=name):
+                    apk, xml = self.standalone_fixture()
+                    descriptor = ("L" + full_name.replace(".", "/") + ";").encode("ascii")
+                    self.rewrite_apk(apk, {"classes2.dex": synthetic_dex((descriptor,))})
+                    element = f'<{tag} android:name="{name}"/>'
+                    changed = xml.replace('</application>', element + '</application>')
+                    with self.assertRaisesRegex(ValueError, "standalone_uncommissioned_service"):
+                        check.inspect_apk(apk, changed, trial=True, standalone=True)
+                    # Preserve the existing debug inspection contract even when
+                    # the same component is present in the debug manifest.
+                    debug_receipt = check.inspect_apk(apk, changed.replace('debuggable="false"', 'debuggable="true"'), trial=True)
+                    self.assertEqual(debug_receipt["schema"], "phone11.android.debug-packaging.v1")
+
+    def test_standalone_keeps_fully_qualified_generic_expo_components(self):
+        apk, xml = self.standalone_fixture()
+        elements = ('<service android:name="expo.modules.notifications.service.ExpoFirebaseMessagingService"/>'
+                    '<receiver android:name="expo.modules.notifications.service.NotificationsService"/>')
+        self.rewrite_apk(apk, {"classes2.dex": synthetic_dex((
+            b"Lexpo/modules/notifications/service/ExpoFirebaseMessagingService;",
+            b"Lexpo/modules/notifications/service/NotificationsService;"))})
+        receipt = check.inspect_apk(apk, xml.replace('</application>', elements + '</application>'), trial=True, standalone=True)
+        self.assertEqual(receipt["schema"], "phone11.android.standalone-inspection.v1")
+        self.assertFalse(receipt["signature_verified"])
+
     def test_signature_failures_never_emit_or_accept_a_success_receipt(self):
         apk, _ = self.standalone_fixture()
         with self.assertRaisesRegex(ValueError, "standalone_independent_signer_required"):

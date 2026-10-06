@@ -162,6 +162,16 @@ def defined_classes(dex: bytes) -> set[bytes]:
     return definitions
 
 
+def manifest_component_name(package: str, name: str) -> str:
+    # Android resolves leading-dot and bare component names against the manifest
+    # package. Namespace policy must inspect that effective class name.
+    if name.startswith("."):
+        return package + name
+    if name and "." not in name:
+        return package + "." + name
+    return name
+
+
 def inspect_apk(apk: Path, manifest_xml: str, *, trial: bool, sdk_aar: Path | None = None,
                 standalone: bool = False) -> dict:
     return inspect_apk_snapshot(snapshot(apk, MAX_APK_BYTES, "apk"), manifest_xml,
@@ -185,9 +195,10 @@ def inspect_apk_snapshot(apk_data: bytes, manifest_xml: str, *, trial: bool, sdk
         # Screen capture and Phone11-owned wake/push services are separate,
         # default-off capabilities. Generic Expo notification services do not
         # establish Phone11 wake/chat commissioning and are not rejected here.
-        if any(item.get(ANDROID + "name", "").startswith("ai.phone11.")
-               or "Phone11ScreenProjectionService" in item.get(ANDROID + "name", "")
-               for tag in ("service", "receiver") for item in app.findall(tag)):
+        component_names = [manifest_component_name(root.get("package"), item.get(ANDROID + "name", ""))
+                           for tag in ("service", "receiver") for item in app.findall(tag)]
+        if any(name.startswith("ai.phone11.") or "Phone11ScreenProjectionService" in name
+               for name in component_names):
             raise ValueError("standalone_uncommissioned_service")
         if any(item.get(ANDROID + "name") == "android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION"
                for item in root.findall("uses-permission")):
