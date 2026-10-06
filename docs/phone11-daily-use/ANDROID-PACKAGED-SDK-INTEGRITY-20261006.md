@@ -17,6 +17,14 @@ entries and library mutations refuse. Limits are 64 MiB AAR, 512 MiB APK,
 Archive checks and the APK hash receipt use bounded immutable byte snapshots; library
 hashing also checks the ZIP CRC and declared uncompressed size.
 
+The CLI takes its bounded APK snapshot before running `apkanalyzer`, writes
+that snapshot to a private temporary read-only file, and checks that tool input
+is unchanged afterward. Manifest analysis, ZIP/DEX inspection and the receipt
+therefore use the same snapshot. Replacement of the caller's original path
+does not change the inspected bytes; alteration of the analyzer input fails
+closed. Temporary input is removed on success and failure. Both paths have
+actual CLI subprocess regressions, including a reproduced pre-fix mismatch.
+
 The trial's existing reversible Gradle block adds `keepDebugSymbols` for only
 `**/libsiprix.so` and `**/libsiprixMedia.so`. This preserves the original SDK
 bytes while other libraries retain their existing stripping configuration.

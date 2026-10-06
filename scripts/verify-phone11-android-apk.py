@@ -10,6 +10,7 @@ import re
 import stat
 import struct
 import subprocess
+import tempfile
 import xml.etree.ElementTree as ET
 import zlib
 from zipfile import ZipFile
@@ -159,6 +160,11 @@ def defined_classes(dex: bytes) -> set[bytes]:
 
 
 def inspect_apk(apk: Path, manifest_xml: str, *, trial: bool, sdk_aar: Path | None = None) -> dict:
+    return inspect_apk_snapshot(snapshot(apk, MAX_APK_BYTES, "apk"), manifest_xml,
+                                trial=trial, sdk_aar=sdk_aar)
+
+
+def inspect_apk_snapshot(apk_data: bytes, manifest_xml: str, *, trial: bool, sdk_aar: Path | None = None) -> dict:
     root = ET.fromstring(manifest_xml)
     if root.tag != "manifest" or root.get("package") != (TRIAL_PACKAGE if trial else PACKAGE):
         raise ValueError("unexpected_apk_identity")
@@ -181,7 +187,6 @@ def inspect_apk(apk: Path, manifest_xml: str, *, trial: bool, sdk_aar: Path | No
         if sdk_aar is None and os.environ.get("PHONE11_SIPRIX_ANDROID_AAR"):
             sdk_aar = Path(os.environ["PHONE11_SIPRIX_ANDROID_AAR"])
         sdk_sha, expected_hashes = verified_sdk_libraries(sdk_aar)
-    apk_data = snapshot(apk, MAX_APK_BYTES, "apk")
     native_hashes = {}
     with ZipFile(io.BytesIO(apk_data)) as archive:
         names = archive_names(archive, "apk")
@@ -229,9 +234,19 @@ def main() -> None:
     parser.add_argument("--trial", action="store_true")
     parser.add_argument("--sdk-aar", type=Path, help="Pinned full SDK AAR; trial defaults to PHONE11_SIPRIX_ANDROID_AAR")
     args = parser.parse_args()
-    result = subprocess.run([args.apkanalyzer, "manifest", "print", str(args.apk)],
-                            check=True, capture_output=True, text=True, timeout=60)
-    print(json.dumps(inspect_apk(args.apk, result.stdout, trial=args.trial, sdk_aar=args.sdk_aar), sort_keys=True))
+    # The analyzer and ZIP/DEX/hash gate must describe the same bounded bytes,
+    # even if the caller's original path is replaced while the tool runs.
+    apk_data = snapshot(args.apk, MAX_APK_BYTES, "apk")
+    with tempfile.TemporaryDirectory(prefix="phone11-apk-verification-") as directory:
+        tool_input = Path(directory) / "snapshot.apk"
+        tool_input.write_bytes(apk_data)
+        tool_input.chmod(0o400)
+        result = subprocess.run([args.apkanalyzer, "manifest", "print", str(tool_input)],
+                                check=True, capture_output=True, text=True, timeout=60)
+        if snapshot(tool_input, MAX_APK_BYTES, "apk") != apk_data:
+            raise ValueError("apk_analyzer_snapshot_changed")
+        receipt = inspect_apk_snapshot(apk_data, result.stdout, trial=args.trial, sdk_aar=args.sdk_aar)
+    print(json.dumps(receipt, sort_keys=True))
 
 
 if __name__ == "__main__":

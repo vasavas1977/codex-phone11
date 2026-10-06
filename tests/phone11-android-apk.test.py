@@ -399,6 +399,53 @@ class PackagingChecks(unittest.TestCase):
         self.assertIn("trial_pinned_sdk_aar_required", result.stderr)
         self.assertEqual(result.stdout, "")
 
+    def test_cli_manifest_and_receipt_use_one_snapshot_despite_path_replacement(self):
+        apk, xml = self.fixture(trial=False)
+        initial = apk.read_bytes()
+        replacement, _ = self.fixture(trial=False, package="unexpected.replacement")
+        replacement_bytes = replacement.read_bytes() + b"replacement marker"
+        observed = self.directory / "analyzer-observed.json"
+        analyzer = self.directory / "replacing-apkanalyzer"
+        analyzer.write_text("#!/usr/bin/env python3\n"
+                            "import hashlib, json, sys\nfrom pathlib import Path\n"
+                            "tool_input = Path(sys.argv[-1])\n"
+                            "observed = {'path': str(tool_input), 'sha256': hashlib.sha256(tool_input.read_bytes()).hexdigest()}\n"
+                            "Path(" + repr(str(observed)) + ").write_text(json.dumps(observed))\n"
+                            "Path(" + repr(str(apk)) + ").write_bytes(" + repr(replacement_bytes) + ")\n"
+                            "print(" + repr(xml) + ")\n")
+        analyzer.chmod(0o700)
+        script = str(Path(__file__).resolve().parents[1] / "scripts/verify-phone11-android-apk.py")
+        result = subprocess.run([sys.executable, script, "--apk", str(apk), "--apkanalyzer", str(analyzer)],
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        receipt = json.loads(result.stdout)
+        observation = json.loads(observed.read_text())
+        self.assertEqual(apk.read_bytes(), replacement_bytes)
+        self.assertEqual(receipt["apk_sha256"], hashlib.sha256(initial).hexdigest())
+        self.assertEqual(receipt["apk_sha256"], observation["sha256"])
+        self.assertNotEqual(observation["path"], str(apk))
+        self.assertFalse(Path(observation["path"]).exists())
+
+    def test_cli_refuses_changed_analyzer_snapshot_and_cleans_up_on_failure(self):
+        apk, xml = self.fixture(trial=False)
+        observed = self.directory / "tool-path"
+        analyzer = self.directory / "corrupting-apkanalyzer"
+        analyzer.write_text("#!/usr/bin/env python3\n"
+                            "import sys\nfrom pathlib import Path\n"
+                            "tool_input = Path(sys.argv[-1])\n"
+                            "Path(" + repr(str(observed)) + ").write_text(str(tool_input))\n"
+                            "tool_input.chmod(0o600)\n"
+                            "tool_input.write_bytes(b'corrupt tool input')\n"
+                            "print(" + repr(xml) + ")\n")
+        analyzer.chmod(0o700)
+        script = str(Path(__file__).resolve().parents[1] / "scripts/verify-phone11-android-apk.py")
+        result = subprocess.run([sys.executable, script, "--apk", str(apk), "--apkanalyzer", str(analyzer)],
+                                capture_output=True, text=True, timeout=10)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("apk_analyzer_snapshot_changed", result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertFalse(Path(observed.read_text()).exists())
+
     def test_empty_and_nonregular_source_or_packaged_native_entries_refuse(self):
         self.write_aar({**self.sdk_bytes, "jni/arm64-v8a/libsiprix.so": b""})
         with self.assertRaisesRegex(ValueError, "sdk_native_entry_size_limit"):
