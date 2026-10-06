@@ -21,6 +21,16 @@ discarded; this does not cancel a server write. The 29 actual-component cases
 pass without skips; independent review is recorded separately in PR 7. See
 [administrator host actions](ADMIN-MEETING-HOST-ACTIONS-20261006.md).
 
+The Android trial APK gate now verifies the full pinned source AAR and all
+four packaged ARM library hashes. The reversible trial Gradle block preserves
+only those SDK libraries from debug-symbol stripping. CLI manifest analysis,
+ZIP/DEX inspection and hash receipts share one bounded APK snapshot; the
+independent review found and corrected a path-replacement mismatch. Corrected
+source candidate `8e630ba5824b9e7b9fda870a56a24fb4f3799cda` passed independent
+review, 29 Python cases with the cached pinned AAR and nine runtime-plugin cases,
+all without skips. Fresh hosted assembly must establish actual packaged byte
+identity. See [packaged SDK integrity](ANDROID-PACKAGED-SDK-INTEGRITY-20261006.md).
+
 The required setup report adds both suites to the existing executed/nonempty/
 zero-skip gates. The lead ran all four setup suites: 237 cases, zero skips,
 plus full repository TypeScript, scoped lint and backend bundling successfully.
