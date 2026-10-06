@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Inspect debug APK packaging only; never install, sign or activate calling."""
+"""Inspect debug or standalone trial APK bytes; never install, sign or activate calling."""
 import argparse
 import hashlib
+import hmac
 import io
 import json
 import os
@@ -28,6 +29,8 @@ MAX_NATIVE_BYTES = 32 * 1024 * 1024
 MAX_DEX_BYTES = 64 * 1024 * 1024
 MAX_DEX_TOTAL_BYTES = 256 * 1024 * 1024
 MAX_ARCHIVE_ENTRIES = 100_000
+MAX_BUNDLE_BYTES = 64 * 1024 * 1024
+BUNDLE_ENTRY = "assets/index.android.bundle"
 CLASSES = (b"Lai/phone11/siprix/Phone11SiprixModule;", b"Lai/phone11/siprix/Phone11SiprixPackage;",
            b"Lai/phone11/siprix/Phone11ForegroundTrial;", b"Lai/phone11/siprix/Phone11CallRuntime;",
            b"Lai/phone11/siprix/Phone11ConsultationRuntime;",
@@ -159,12 +162,16 @@ def defined_classes(dex: bytes) -> set[bytes]:
     return definitions
 
 
-def inspect_apk(apk: Path, manifest_xml: str, *, trial: bool, sdk_aar: Path | None = None) -> dict:
+def inspect_apk(apk: Path, manifest_xml: str, *, trial: bool, sdk_aar: Path | None = None,
+                standalone: bool = False) -> dict:
     return inspect_apk_snapshot(snapshot(apk, MAX_APK_BYTES, "apk"), manifest_xml,
-                                trial=trial, sdk_aar=sdk_aar)
+                                trial=trial, sdk_aar=sdk_aar, standalone=standalone)
 
 
-def inspect_apk_snapshot(apk_data: bytes, manifest_xml: str, *, trial: bool, sdk_aar: Path | None = None) -> dict:
+def inspect_apk_snapshot(apk_data: bytes, manifest_xml: str, *, trial: bool, sdk_aar: Path | None = None,
+                         standalone: bool = False) -> dict:
+    if standalone and not trial:
+        raise ValueError("standalone_foreground_trial_required")
     root = ET.fromstring(manifest_xml)
     if root.tag != "manifest" or root.get("package") != (TRIAL_PACKAGE if trial else PACKAGE):
         raise ValueError("unexpected_apk_identity")
@@ -172,7 +179,28 @@ def inspect_apk_snapshot(apk_data: bytes, manifest_xml: str, *, trial: bool, sdk
     if len(applications) != 1:
         raise ValueError("unexpected_apk_application")
     app = applications[0]
-    if app.get(ANDROID + "debuggable") != "true":
+    if standalone:
+        if any(app.get(ANDROID + key) not in (None, "false") for key in ("debuggable", "testOnly")):
+            raise ValueError("standalone_release_manifest_required")
+        # Screen capture and Phone11-owned wake/push services are separate,
+        # default-off capabilities. Generic Expo notification services do not
+        # establish Phone11 wake/chat commissioning and are not rejected here.
+        if any(item.get(ANDROID + "name", "").startswith("ai.phone11.")
+               or "Phone11ScreenProjectionService" in item.get(ANDROID + "name", "")
+               for tag in ("service", "receiver") for item in app.findall(tag)):
+            raise ValueError("standalone_uncommissioned_service")
+        if any(item.get(ANDROID + "name") == "android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION"
+               for item in root.findall("uses-permission")):
+            raise ValueError("standalone_screen_capture_permission")
+        screen = [item.get(ANDROID + "value") for item in app.findall("meta-data")
+                  if item.get(ANDROID + "name") == "ai.phone11.meeting.SCREEN_TRANSACTION"]
+        if screen not in ([], ["false"]):
+            raise ValueError("standalone_screen_capture_gate")
+        updates = [item.get(ANDROID + "value") for item in app.findall("meta-data")
+                   if item.get(ANDROID + "name") == "expo.modules.updates.ENABLED"]
+        if updates not in ([], ["false"]):
+            raise ValueError("standalone_ota_updates_enabled")
+    elif app.get(ANDROID + "debuggable") != "true":
         raise ValueError("debug_trial_apk_required")
     gates = [item.get(ANDROID + "value") for item in app.findall("meta-data")
              if item.get(ANDROID + "name") == GATE]
@@ -190,6 +218,23 @@ def inspect_apk_snapshot(apk_data: bytes, manifest_xml: str, *, trial: bool, sdk
     native_hashes = {}
     with ZipFile(io.BytesIO(apk_data)) as archive:
         names = archive_names(archive, "apk")
+        if standalone:
+            if any(name.startswith("lib/") and len(name.split("/")) > 1
+                   and name.split("/")[1] not in ABIS for name in names):
+                raise ValueError("standalone_non_arm_native_inventory")
+            if BUNDLE_ENTRY not in names:
+                raise ValueError("standalone_embedded_bundle_required")
+            entry = archive.getinfo(BUNDLE_ENTRY)
+            kind = stat.S_IFMT(entry.external_attr >> 16)
+            if (entry.is_dir() or kind not in (0, stat.S_IFREG) or entry.flag_bits & 1
+                    or not 0 < entry.file_size <= MAX_BUNDLE_BYTES):
+                raise ValueError("standalone_embedded_bundle_size_or_kind")
+            bundle = archive.read(entry)
+            # RN 0.81/Expo 54 default to Hermes. This is a bounded embedded asset
+            # identity check, not execution or bytecode semantic validation.
+            if len(bundle) < 32 or bundle[:8] != bytes.fromhex("c61fbc03c103191f"):
+                raise ValueError("standalone_hermes_bundle_required")
+            bundle_sha = hashlib.sha256(bundle).hexdigest()
         siprix = {name for name in names if re.fullmatch(r"lib/[^/]+/libsiprix(?:Media)?\.so", name)}
         expected = {f"lib/{abi}/{library}" for abi in ABIS for library in LIBRARIES}
         dex_names = [name for name in names if re.fullmatch(r"classes(?:[2-9]|[1-9][0-9]+)?\.dex", name)]
@@ -200,6 +245,8 @@ def inspect_apk_snapshot(apk_data: bytes, manifest_xml: str, *, trial: bool, sdk
             raise ValueError("apk_dex_size_limit")
         # Actual DEX definitions establish packaging, not runtime execution.
         definitions = set().union(*(defined_classes(archive.read(name)) for name in dex_names))
+        if standalone and any(name.startswith(b"Lexpo/modules/updates/") for name in definitions):
+            raise ValueError("standalone_ota_updates_runtime_present")
         if trial:
             empty = {name for name in siprix if archive.getinfo(name).file_size == 0}
             if siprix != expected or empty:
@@ -224,16 +271,51 @@ def inspect_apk_snapshot(apk_data: bytes, manifest_xml: str, *, trial: bool, sdk
             "limits": "Packaging only; no installation, calling, background wake or production acceptance"}
     if trial:
         receipt.update({"pinned_sdk_aar_sha256": sdk_sha, "packaged_sdk_library_sha256": native_hashes})
+    if standalone:
+        receipt.update({"schema": "phone11.android.standalone-inspection.v1",
+                        "signature_verified": False, "embedded_bundle_sha256": bundle_sha,
+                        "embedded_bundle_bytes": len(bundle), "embedded_bundle_format": "hermes",
+                        "limits": "Unsigned byte inspection only; CLI signature verification and independent expected signer required. No installation, calling, wake or device acceptance."})
     return receipt
+
+
+def verify_signature(apksigner: str, apk: Path, expected_signer: str) -> str:
+    # The expected fingerprint comes from an independent signing custody receipt,
+    # never from the APK/tool output being accepted. No keystore is opened here.
+    if not re.fullmatch(r"[0-9a-fA-F]{64}", expected_signer or ""):
+        raise ValueError("standalone_independent_signer_required")
+    if not Path(apksigner).is_absolute() or not Path(apksigner).is_file():
+        raise ValueError("standalone_apksigner_required")
+    try:
+        result = subprocess.run([apksigner, "verify", "--verbose", "--print-certs", str(apk)],
+                                check=True, capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        # Tool diagnostics may include local paths; emit no successful receipt or
+        # raw external output when cryptographic verification fails.
+        raise ValueError("standalone_signature_verification_failed") from None
+    fingerprints = re.findall(r"^Signer #\d+ certificate SHA-256 digest: ([0-9a-fA-F]{64})\s*$",
+                              result.stdout, re.MULTILINE)
+    if (len(fingerprints) != 1 or not re.search(r"^Number of signers: 1\s*$", result.stdout, re.MULTILINE)
+            or not re.search(r"^Verified using v[23](?:\.1)? scheme [^\n]+: true\s*$", result.stdout, re.MULTILINE)):
+        raise ValueError("standalone_signature_inventory_invalid")
+    if not hmac.compare_digest(fingerprints[0].lower(), expected_signer.lower()):
+        raise ValueError("standalone_signer_mismatch")
+    return fingerprints[0].lower()
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--apk", type=Path, required=True)
     parser.add_argument("--apkanalyzer", required=True)
-    parser.add_argument("--trial", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--trial", action="store_true", help="Existing debug foreground trial inspection")
+    mode.add_argument("--standalone-trial", action="store_true", help="Release foreground trial plus signature verification")
+    parser.add_argument("--apksigner", help="Installed Android SDK apksigner; required for standalone trial")
+    parser.add_argument("--expected-signer-sha256", help="Independent trusted signing receipt fingerprint, not read from this APK")
     parser.add_argument("--sdk-aar", type=Path, help="Pinned full SDK AAR; trial defaults to PHONE11_SIPRIX_ANDROID_AAR")
     args = parser.parse_args()
+    if args.standalone_trial and (not args.apksigner or not re.fullmatch(r"[0-9a-fA-F]{64}", args.expected_signer_sha256 or "")):
+        parser.error("standalone trial requires installed apksigner and independent expected signer SHA-256")
     # The analyzer and ZIP/DEX/hash gate must describe the same bounded bytes,
     # even if the caller's original path is replaced while the tool runs.
     apk_data = snapshot(args.apk, MAX_APK_BYTES, "apk")
@@ -245,7 +327,15 @@ def main() -> None:
                                 check=True, capture_output=True, text=True, timeout=60)
         if snapshot(tool_input, MAX_APK_BYTES, "apk") != apk_data:
             raise ValueError("apk_analyzer_snapshot_changed")
-        receipt = inspect_apk_snapshot(apk_data, result.stdout, trial=args.trial, sdk_aar=args.sdk_aar)
+        receipt = inspect_apk_snapshot(apk_data, result.stdout, trial=args.trial or args.standalone_trial,
+                                       sdk_aar=args.sdk_aar, standalone=args.standalone_trial)
+        if args.standalone_trial:
+            signer = verify_signature(args.apksigner, tool_input, args.expected_signer_sha256)
+            if snapshot(tool_input, MAX_APK_BYTES, "apk") != apk_data:
+                raise ValueError("apk_signature_snapshot_changed")
+            receipt.update({"schema": "phone11.android.standalone-packaging.v1", "signature_verified": True,
+                            "signer_certificate_sha256": signer,
+                            "limits": "Signature and standalone trial packaging only; authenticate exact source/profile/build receipt separately. No installation, calling, wake or device acceptance."})
     print(json.dumps(receipt, sort_keys=True))
 
 

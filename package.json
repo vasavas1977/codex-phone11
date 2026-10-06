@@ -32,6 +32,7 @@
     "test:node": "node --test tests/*.test.mjs modules/phone11-siprix/tests/*.test.mjs",
     "db:push": "drizzle-kit generate && drizzle-kit migrate",
     "postinstall": "node scripts/install-sip-engine.mjs",
+    "eas-build-pre-install": "node scripts/stage-siprix-android-trial-sdk.mjs",
     "setup:dev-client": "sh scripts/setup-eas-dev-client.sh",
     "dev:client": "cross-env EXPO_USE_METRO_WORKSPACE_ROOT=1 npx expo start --dev-client --lan",
     "prebuild": "expo prebuild",

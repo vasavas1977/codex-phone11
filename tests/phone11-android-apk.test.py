@@ -21,6 +21,7 @@ spec = importlib.util.spec_from_file_location("apk_check", Path(__file__).resolv
 check = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(check)
 STAGED_AAR = os.environ.get("PHONE11_SIPRIX_ANDROID_AAR")
+INSTALLED_APKSIGNER = os.environ.get("PHONE11_TEST_APKSIGNER")
 SDK_ABIS = ("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
 SDK_LIBRARIES = ("libsiprix.so", "libsiprixMedia.so")
 
@@ -205,6 +206,117 @@ class PackagingChecks(unittest.TestCase):
         apk, xml = self.fixture()
         with self.assertRaisesRegex(ValueError, "debug_trial"):
             check.inspect_apk(apk, xml.replace('debuggable="true"', 'debuggable="false"'), trial=True)
+
+    def standalone_fixture(self):
+        apk, xml = self.fixture()
+        self.rewrite_apk(apk, {"assets/index.android.bundle": bytes.fromhex("c61fbc03c103191f") + b"synthetic-parser-bytecode" * 4})
+        return apk, xml.replace('debuggable="true"', 'debuggable="false"')
+
+    def test_standalone_byte_inspection_never_claims_a_verified_signature(self):
+        apk, xml = self.standalone_fixture()
+        receipt = check.inspect_apk(apk, xml, trial=True, standalone=True)
+        self.assertEqual(receipt["schema"], "phone11.android.standalone-inspection.v1")
+        self.assertFalse(receipt["signature_verified"])
+        self.assertEqual(receipt["embedded_bundle_format"], "hermes")
+        with ZipFile(apk) as archive:
+            self.assertEqual(receipt["embedded_bundle_sha256"], hashlib.sha256(
+                archive.read("assets/index.android.bundle")).hexdigest())
+        self.assertNotIn("signer_certificate_sha256", receipt)
+        with self.assertRaisesRegex(ValueError, "standalone_foreground_trial_required"):
+            check.inspect_apk(apk, xml, trial=False, standalone=True)
+
+    def test_standalone_rejects_debuggable_testonly_and_nonliteral_release_values(self):
+        apk, xml = self.standalone_fixture()
+        for changed in (xml.replace('debuggable="false"', 'debuggable="true"'),
+                        xml.replace('debuggable="false"', 'debuggable="@bool/unknown"'),
+                        xml.replace('debuggable="false"', 'debuggable="false" android:testOnly="true"')):
+            with self.subTest(manifest=changed):
+                with self.assertRaisesRegex(ValueError, "standalone_release_manifest_required"):
+                    check.inspect_apk(apk, changed, trial=True, standalone=True)
+        receipt = check.inspect_apk(apk, xml.replace('android:debuggable="false"', ''), trial=True, standalone=True)
+        self.assertFalse(receipt["signature_verified"])
+
+    def test_standalone_requires_bounded_embedded_hermes_asset(self):
+        apk, xml = self.fixture()
+        xml = xml.replace('debuggable="true"', 'debuggable="false"')
+        with self.assertRaisesRegex(ValueError, "standalone_embedded_bundle_required"):
+            check.inspect_apk(apk, xml, trial=True, standalone=True)
+        for blob in (b"", b"invalid JavaScript asset", b"wrong-header" * 20):
+            self.rewrite_apk(apk, {"assets/index.android.bundle": blob})
+            with self.assertRaisesRegex(ValueError, "standalone_(?:embedded_bundle_size_or_kind|hermes_bundle_required)"):
+                check.inspect_apk(apk, xml, trial=True, standalone=True)
+        apk, xml = self.standalone_fixture()
+        with mock.patch.object(check, "MAX_BUNDLE_BYTES", 16):
+            with self.assertRaisesRegex(ValueError, "standalone_embedded_bundle_size_or_kind"):
+                check.inspect_apk(apk, xml, trial=True, standalone=True)
+
+    def test_standalone_rejects_any_non_arm_library_not_only_siprix(self):
+        apk, xml = self.standalone_fixture()
+        self.rewrite_apk(apk, {"lib/x86_64/libother.so": b"uncommissioned ABI"})
+        with self.assertRaisesRegex(ValueError, "standalone_non_arm_native_inventory"):
+            check.inspect_apk(apk, xml, trial=True, standalone=True)
+
+    def test_standalone_rejects_ota_configuration_or_runtime(self):
+        apk, xml = self.standalone_fixture()
+        metadata = '<meta-data android:name="expo.modules.updates.ENABLED" android:value="true"/>'
+        with self.assertRaisesRegex(ValueError, "standalone_ota_updates_enabled"):
+            check.inspect_apk(apk, xml.replace('</application>', metadata + '</application>'), trial=True, standalone=True)
+        self.rewrite_apk(apk, {"classes2.dex": synthetic_dex((b"Lexpo/modules/updates/UpdatesController;",))})
+        with self.assertRaisesRegex(ValueError, "standalone_ota_updates_runtime_present"):
+            check.inspect_apk(apk, xml, trial=True, standalone=True)
+
+    def test_standalone_rejects_phone11_wake_and_screen_activation(self):
+        apk, xml = self.standalone_fixture()
+        for element, error in [
+            ('<service android:name="ai.phone11.siprix.Phone11WakeService"/>', "service"),
+            ('<receiver android:name="ai.phone11.siprix.Phone11PushReceiver"/>', "service"),
+            ('<service android:name="com.oney.WebRTCModule.Phone11ScreenProjectionService"/>', "service"),
+            ('<meta-data android:name="ai.phone11.meeting.SCREEN_TRANSACTION" android:value="true"/>', "gate"),
+        ]:
+            with self.subTest(element=element):
+                with self.assertRaisesRegex(ValueError, "standalone_(?:uncommissioned_service|screen_capture_gate)"):
+                    check.inspect_apk(apk, xml.replace('</application>', element + '</application>'), trial=True, standalone=True)
+        permission = '<uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION"/>'
+        with self.assertRaisesRegex(ValueError, "standalone_screen_capture_permission"):
+            check.inspect_apk(apk, xml.replace('<application ', permission + '<application '), trial=True, standalone=True)
+
+    def test_standalone_cli_rejects_missing_independent_certificate_before_tools(self):
+        script = str(Path(__file__).resolve().parents[1] / "scripts/verify-phone11-android-apk.py")
+        for flags in ([], ["--expected-signer-sha256", "bad"], ["--expected-signer-sha256", "0" * 64]):
+            result = subprocess.run([sys.executable, script, "--standalone-trial", "--apk", "/absent.apk",
+                                     "--apkanalyzer", "/absent-analyzer", *flags], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(result.stdout, "")
+            self.assertIn("independent expected signer", result.stderr)
+
+    def test_signature_failures_never_emit_or_accept_a_success_receipt(self):
+        apk, _ = self.standalone_fixture()
+        with self.assertRaisesRegex(ValueError, "standalone_independent_signer_required"):
+            check.verify_signature("/absent-tool", apk, "not a fingerprint")
+        with self.assertRaisesRegex(ValueError, "standalone_apksigner_required"):
+            check.verify_signature("relative-apksigner", apk, "a" * 64)
+        # Negative tool-boundary cases only. No mocked cryptographic success is
+        # accepted anywhere in this suite; the real unsigned fixture is rejected
+        # by the installed Android SDK tool in the separate test below.
+        for error in (subprocess.CalledProcessError(1, "apksigner"), subprocess.TimeoutExpired("apksigner", 60)):
+            with mock.patch.object(check.subprocess, "run", side_effect=error):
+                with self.assertRaisesRegex(ValueError, "standalone_signature_verification_failed"):
+                    check.verify_signature(str(self.aar), apk, "a" * 64)
+        output = "Verified using v2 scheme (APK Signature Scheme v2): true\nNumber of signers: 1\nSigner #1 certificate SHA-256 digest: " + "b" * 64 + "\n"
+        cases = [(output, "standalone_signer_mismatch"),
+                 (output.replace("Number of signers: 1", "Number of signers: 2"), "inventory_invalid"),
+                 (output + "Signer #2 certificate SHA-256 digest: " + "b" * 64 + "\n", "inventory_invalid"),
+                 (output.replace("v2 scheme", "v1 scheme"), "inventory_invalid"), ("", "inventory_invalid")]
+        for diagnostic, error in cases:
+            with mock.patch.object(check.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, diagnostic, "")):
+                with self.assertRaisesRegex(ValueError, error):
+                    check.verify_signature(str(self.aar), apk, "a" * 64)
+
+    @unittest.skipUnless(INSTALLED_APKSIGNER, "Explicit installed apksigner path required; no tool installation")
+    def test_actual_apksigner_rejects_unsigned_fixture(self):
+        apk, _ = self.standalone_fixture()
+        with self.assertRaisesRegex(ValueError, "standalone_signature_verification_failed"):
+            check.verify_signature(INSTALLED_APKSIGNER, apk, "a" * 64)
 
     def test_missing_sdk_library_or_bridge_class_refuses(self):
         for args in ({"exclude": "lib/arm64-v8a/libsiprix.so"}, {"missing_descriptor": True}):

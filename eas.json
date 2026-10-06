@@ -26,6 +26,30 @@
       "distribution": "internal",
       "channel": "preview"
     },
+    "preview-android-siprix-foreground-trial": {
+      "distribution": "internal",
+      "developmentClient": false,
+      "environment": "preview",
+      "channel": "android-foreground-trial",
+      "autoIncrement": true,
+      "pnpm": "9.12.0",
+      "env": {
+        "EXPO_PUBLIC_SIP_ENGINE": "siprix",
+        "PHONE11_ANDROID_FOREGROUND_TRIAL": "1",
+        "EXPO_PUBLIC_PHONE11_ANDROID_FOREGROUND_TRIAL": "1",
+        "PHONE11_APP_STORE_BUILD": "0",
+        "PHONE11_VOIP_WAKE_COMMISSIONED": "0",
+        "PHONE11_CHAT_NOTIFICATIONS_COMMISSIONED": "0",
+        "PHONE11_ANDROID_SCREEN_TRANSACTION": "0",
+        "EXPO_PUBLIC_PHONE11_ANDROID_SCREEN_TRANSACTION": "0",
+        "EXPO_PUBLIC_API_BASE_URL": "https://api.phone11.ai",
+        "EXPO_PUBLIC_DEEP_LINK_SCHEME": "phone11"
+      },
+      "android": {
+        "buildType": "apk",
+        "image": "ubuntu-24.04-jdk-17-ndk-r27b"
+      }
+    },
     "preview-ios-existing-credentials": {
       "distribution": "internal",
       "channel": "preview",
