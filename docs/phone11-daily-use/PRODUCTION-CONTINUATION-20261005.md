@@ -512,6 +512,40 @@ Neither correction changes native capture source or enables a flag. Old run
 receipts retain `602391bd`; the failed ON job is not compilation or merged
 manifest proof, and final hosted acceptance requires a fresh corrected run.
 
+## Reviewed relay and release follow-up — 6 October 2026
+
+The relay now refuses WAV replacement, in-place mutation and changed source
+paths before upload. The exact reviewed author revision is
+`2c140a54bfc23e6a9ca780f7df58e56124988553`; integration
+`faffc1a7ba20df3bda7529d00b6c969873960401` preserves its behavioral bytes.
+Seven voicemail suites pass 200 cases with zero skips in both the author and
+integration checkouts. Independent review ran the 28-case relay suite plus four
+additional real-filesystem probes covering FIFO refusal, root replacement,
+retry recovery and stable uploaded bytes. Full integration TypeScript and scoped
+ESLint pass. The author's full TypeScript attempt failed on its reused dependency
+set's missing desktop types; it is not the integration checkout result.
+
+The [relay commissioning findings](PBX-VOICEMAIL-COMMISSIONING-20261006.md)
+describe the bounded inode/path observations and remaining trusted storage
+requirement. The [iOS capture investigation](IOS-CROSS-APP-CAPTURE-CONTRACT-20261006.md)
+records three compiler probes and the missing documented system-broadcast
+teardown acknowledgment. It adds no runtime, capture extension or activation.
+
+Fresh read-only portal observations on 6 October confirm workspace profile
+status enabled and meeting hosting enabled for both members in Test and their
+direct chat. Advanced phone-system sections remain disabled. The public API
+still reports build `team-chat-media-d41fc504`; this is not the source candidate.
+No workspace configuration, membership, routing or deployment was changed.
+Connect11 coordination still supplies no frozen released authoritative
+host-control contract, and shared bot/artifact custody work remains separate.
+
+The owner confirmed **trial-only Siprix coverage** on 6 October. Existing
+60-second trial artifacts do not establish unrestricted production entitlement
+on any platform. Fresh client packaging, exact-build acceptance and the deferred
+physical phone checks remain required. Hosted source checks and unsigned local
+bundles do not replace those gates. The earlier green `617dbd2` runs keep their
+original SHA; a new integrated revision requires its own hosted results.
+
 ## Live and package boundary
 
 After the owner signed in, a fresh read-only portal check confirmed extension
