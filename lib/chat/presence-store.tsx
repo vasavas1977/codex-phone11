@@ -101,6 +101,7 @@ export function usePresencePolling(tenantId: number | undefined, userIds: number
           useChatPresenceStore.getState().fail(owner.id, tenantId, ids); return;
         }
         for (let offset = 0; offset < ids.length; offset += 100) {
+          if (!ownerIsCurrent() || AppState.currentState !== "active") return;
           const requested = ids.slice(offset, offset + 100);
           try {
             const rows = await api.presence(tenantId, requested);

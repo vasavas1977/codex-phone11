@@ -3,6 +3,7 @@ import { resetPresenceOwner, useChatPresenceStore, usePresencePolling } from "..
 
 const m = vi.hoisted(() => ({
   owner: { id: 1 } as { id: number; name?: string } | null,
+  appState: "active",
   effects: [] as (() => void | (() => void))[],
   listeners: new Set<() => void>(),
   capability: vi.fn(),
@@ -14,7 +15,7 @@ vi.mock("react", async () => ({
   useEffect: (effect: () => void | (() => void)) => m.effects.push(effect),
 }));
 vi.mock("react-native", () => ({
-  AppState: { currentState: "active", addEventListener: () => ({ remove: () => {} }) },
+  AppState: { get currentState() { return m.appState; }, addEventListener: () => ({ remove: () => {} }) },
 }));
 vi.mock("../lib/_core/auth", () => ({
   getAuthSnapshot: () => ({ user: m.owner }),
@@ -38,8 +39,8 @@ function deferred<T>() {
 async function flush() {
   for (let i = 0; i < 12; i++) await Promise.resolve();
 }
-function PresencePollingProbe() {
-  usePresencePolling(10, [2]);
+function PresencePollingProbe(ids = [2]) {
+  usePresencePolling(10, ids);
   cleanup = m.effects.splice(0)[0]?.() || undefined;
 }
 function auth(owner: typeof m.owner) {
@@ -60,6 +61,7 @@ function status() {
 beforeEach(() => {
   vi.useFakeTimers();
   m.owner = { id: 1 };
+  m.appState = "active";
   m.effects = [];
   m.listeners.clear();
   m.capability.mockReset().mockResolvedValue({ version: 2 });
@@ -145,4 +147,36 @@ it("accepts a profile refresh within the same exact authenticated lifetime", asy
   wait.resolve([{ userId: 2, status: "on_call", available: true, lastSeenAt: 3 }]);
   await flush();
   expect(status()).toBe("on_call");
+});
+
+it.each([
+  ["unmount", "success"], ["replacement", "success"], ["retirement and return", "success"],
+  ["unmount", "failure"], ["replacement", "failure"], ["retirement and return", "failure"],
+])("does not dispatch another batched poll after %s and first-chunk %s", async (boundary, result) => {
+  const wait = deferred<unknown>();
+  m.presence.mockReturnValueOnce(wait.promise);
+  const owner = m.owner;
+  PresencePollingProbe(Array.from({ length: 101 }, (_, index) => index + 1));
+  await flush();
+  expect(m.presence).toHaveBeenCalledOnce();
+  expect(m.presence.mock.calls[0][1]).toHaveLength(100);
+  if (boundary === "unmount") cleanup?.();
+  else if (boundary === "replacement") auth({ id: 1 });
+  else { auth(null); auth(owner); }
+  freshRows();
+  if (result === "success") wait.resolve([]);
+  else wait.reject(new Error("first chunk retired"));
+  await flush();
+  expect(m.presence).toHaveBeenCalledOnce();
+  expect(status()).toBe("in_meeting");
+});
+
+it("pauses later chunks when the app backgrounds during the first request", async () => {
+  const wait = deferred<unknown>();
+  m.presence.mockReturnValueOnce(wait.promise);
+  PresencePollingProbe(Array.from({ length: 101 }, (_, index) => index + 1));
+  await flush();
+  m.appState = "background";
+  wait.resolve([]); await flush();
+  expect(m.presence).toHaveBeenCalledOnce();
 });
