@@ -1,4 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import {
   ActivityIndicator,
   Platform,
@@ -22,6 +28,27 @@ import { useColors } from "@/hooks/use-colors";
 import { useDirectory } from "@/hooks/use-directory";
 import { usePbxAdminWorkspace } from "@/hooks/use-pbx-admin";
 import { trpc } from "@/lib/trpc";
+import { addAuthChangeListener, getAuthSnapshot } from "@/lib/_core/auth";
+
+type HostScope = {
+  owner: ReturnType<typeof getAuthSnapshot>["user"];
+  tenantId: number | null;
+  active: boolean;
+};
+
+// Keep an already-dispatched write owned across workspace remounts. A new
+// screen must wait for its settlement, rather than send an opposing write.
+const hostChangeListeners = new Set<() => void>();
+let pendingHostChange: object | null = null;
+function subscribeHostChange(listener: () => void) {
+  hostChangeListeners.add(listener);
+  return () => hostChangeListeners.delete(listener);
+}
+const getPendingHostChange = () => pendingHostChange;
+function setPendingHostChange(value: object | null) {
+  pendingHostChange = value;
+  hostChangeListeners.forEach((listener) => listener());
+}
 
 function conversationTitle(conversation: {
   kind: string;
@@ -48,8 +75,37 @@ function AdminMeetingsContent() {
   const { user } = useAuth({ autoFetch: false });
   const workspace = usePbxAdminWorkspace();
   const tenantId = workspace.selectedTenantId;
-  const [saveError, setSaveError] = useState<string | null>(null);
-  const [changing, setChanging] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<{
+    scope: HostScope;
+    message: string;
+  } | null>(null);
+  const pending = useSyncExternalStore(
+    subscribeHostChange,
+    getPendingHostChange,
+    getPendingHostChange,
+  );
+  const mounted = useRef(false);
+  const scope = useRef<HostScope>({ owner: user, tenantId, active: true });
+  if (scope.current.owner !== user || scope.current.tenantId !== tenantId) {
+    scope.current.active = false;
+    scope.current = { owner: user, tenantId, active: true };
+  }
+  const renderedScope = scope.current;
+  useEffect(() => {
+    mounted.current = true;
+    if (!scope.current.active)
+      scope.current = { ...scope.current, active: true };
+    const unsubscribe = addAuthChangeListener(() => {
+      const auth = getAuthSnapshot();
+      if (auth.loading || auth.user !== scope.current.owner)
+        scope.current.active = false;
+    });
+    return () => {
+      mounted.current = false;
+      scope.current.active = false;
+      unsubscribe();
+    };
+  }, []);
   const [selectedConversationId, setSelectedConversationId] = useState<
     string | null
   >(null);
@@ -118,6 +174,35 @@ function AdminMeetingsContent() {
   const conversations = overview.data?.available
     ? [...overview.data.channels, ...overview.data.directConversations]
     : [];
+  const latest = useRef({ conversations, canManage, ready: false });
+  latest.current = {
+    conversations,
+    canManage,
+    ready:
+      !tenant.isLoading &&
+      !tenant.isFetching &&
+      !tenant.isError &&
+      !overview.isLoading &&
+      !overview.isFetching &&
+      !overview.isError &&
+      overview.data?.available === true,
+  };
+  const ownsScope = (captured: HostScope) => {
+    const auth = getAuthSnapshot();
+    return (
+      mounted.current &&
+      captured === scope.current &&
+      captured.active &&
+      captured.owner !== null &&
+      auth.user === captured.owner &&
+      !auth.loading &&
+      captured.tenantId !== null
+    );
+  };
+  const currentScope = (captured: HostScope) =>
+    ownsScope(captured) && latest.current.canManage && latest.current.ready;
+  const saveError =
+    feedback && currentScope(feedback.scope) ? feedback.message : null;
   const selectedConversation = overview.data?.available
     ? conversations.find(
         (conversation) => conversation.id === selectedConversationId,
@@ -130,37 +215,55 @@ function AdminMeetingsContent() {
     : [];
 
   const updateHostPermission = async (
+    captured: HostScope,
     conversation: (typeof conversations)[number],
-    userId: number,
+    member: (typeof conversations)[number]["members"][number],
     canStartMeeting: boolean,
   ) => {
-    if (!tenantId || changing || !overview.data?.available) return;
-    setSaveError(null);
-    setChanging(`${conversation.id}:${userId}`);
+    if (
+      pendingHostChange ||
+      !currentScope(captured) ||
+      !latest.current.conversations.includes(conversation) ||
+      !conversation.members.includes(member)
+    )
+      return;
+    const action = { captured, conversation, member };
+    const currentAction = () =>
+      currentScope(captured) &&
+      latest.current.conversations.includes(conversation) &&
+      conversation.members.includes(member);
+    setPendingHostChange(action);
     try {
+      if (!currentAction()) return;
+      setFeedback(null);
       if (conversation.kind === "direct")
         await setDirectHostPermission.mutateAsync({
-          tenantId,
+          tenantId: captured.tenantId!,
           conversationId: conversation.id,
-          userId,
+          userId: member.userId,
           canStartMeeting,
         });
       else
         await setHostPermission.mutateAsync({
-          tenantId,
+          tenantId: captured.tenantId!,
           channelId: conversation.id,
-          userId,
+          userId: member.userId,
           canStartMeeting,
         });
-      await overview.refetch();
+      // The server request cannot be cancelled here. Only its original screen
+      // may consume its result or refetch; replacements discard late results.
+      if (currentAction()) await overview.refetch();
     } catch (error) {
-      setSaveError(
-        error instanceof Error
-          ? error.message
-          : "The meeting permission was not changed. Try again.",
-      );
+      if (currentAction())
+        setFeedback({
+          scope: captured,
+          message:
+            error instanceof Error
+              ? error.message
+              : "The hosting change could not be confirmed. Refresh before trying again.",
+        });
     } finally {
-      setChanging(null);
+      if (pendingHostChange === action) setPendingHostChange(null);
     }
   };
 
@@ -246,11 +349,15 @@ function AdminMeetingsContent() {
               accessibilityRole="alert"
               style={[styles.stateText, { color: colors.muted }]}
             >
-              Meeting management is unavailable. No settings were changed.
+              Meeting management could not be loaded. Refresh before changing
+              hosting rights.
             </Text>
             <Pressable
               accessibilityRole="button"
-              onPress={() => void overview.refetch()}
+              onPress={() => {
+                if (ownsScope(renderedScope) && latest.current.canManage)
+                  void overview.refetch();
+              }}
             >
               <Text style={{ color: colors.primary }}>Try again</Text>
             </Pressable>
@@ -278,7 +385,7 @@ function AdminMeetingsContent() {
               onPress={() => {
                 setSelectedConversationId(null);
                 setMemberSearch("");
-                setSaveError(null);
+                setFeedback(null);
               }}
               style={styles.allChannels}
             >
@@ -344,11 +451,12 @@ function AdminMeetingsContent() {
                     accessibilityLabel={`${member.name} can start meetings in ${conversationTitle(selectedConversation)}`}
                     accessibilityRole="switch"
                     value={member.canStartMeeting}
-                    disabled={changing !== null}
+                    disabled={pending !== null || !currentScope(renderedScope)}
                     onValueChange={(value) =>
                       void updateHostPermission(
+                        renderedScope,
                         selectedConversation,
-                        member.userId,
+                        member,
                         value,
                       )
                     }
@@ -509,6 +617,15 @@ function AdminMeetingsContent() {
         {saveError ? (
           <Text accessibilityRole="alert" style={styles.error}>
             {saveError}
+          </Text>
+        ) : null}
+        {pending ? (
+          <Text
+            accessibilityLiveRegion="polite"
+            style={[styles.description, { color: colors.muted }]}
+          >
+            Waiting for the current hosting change to finish before another
+            change.
           </Text>
         ) : null}
         <Text style={[styles.footer, { color: colors.muted }]}>
