@@ -32,7 +32,9 @@ The daily-pilot candidate must resolve to all of the following:
 - bundle identifier: `space.manus.phone11ai.t20260425073427`;
 - app version: `1.0.0`; build number strictly greater than the Build 49
   rollback baseline;
-- runtime: `1.0.0-siprix-daily-pilot-1`, with Expo updates disabled;
+- candidate runtime: `1.0.0-siprix-daily-pilot-chat-media-2`, with Expo updates
+  disabled. The retained Build 49 comparison baseline uses
+  `1.0.0-siprix-daily-pilot-1`;
 - SIP engine: Siprix, including `siprix.framework` and
   `siprixMedia.framework`, with the `Phone11Siprix` bridge present and legacy
   PJSIP bridge absent;
