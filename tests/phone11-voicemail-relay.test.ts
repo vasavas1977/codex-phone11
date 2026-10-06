@@ -1,5 +1,5 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
-import { link, mkdtemp, mkdir, readFile, rename, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
+import { link, mkdtemp, mkdir, readFile, realpath, rename, rm, stat, symlink, unlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { relayOnce, type RelayConfig } from "../scripts/phone11-voicemail-relay";
@@ -10,13 +10,22 @@ const durability = vi.hoisted(() => ({
   syncs: [] as { file: string; manifestExists: boolean }[],
   manifest: "",
   handles: 0,
+  beforeOpen: undefined as ((file: string) => Promise<void>) | undefined,
+  afterRead: undefined as ((file: string) => Promise<void>) | undefined,
 }));
 vi.mock("node:fs/promises", async importOriginal => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   return { ...actual,
     open: async (...args: Parameters<typeof actual.open>) => {
+      await durability.beforeOpen?.(String(args[0]));
       const handle = await actual.open(...args);
       const sync = handle.sync.bind(handle), close = handle.close.bind(handle);
+      const read = handle.readFile.bind(handle);
+      handle.readFile = (async (...readArgs: Parameters<typeof handle.readFile>) => {
+        const value = await read(...readArgs);
+        await durability.afterRead?.(String(args[0]));
+        return value;
+      }) as typeof handle.readFile;
       durability.handles++;
       handle.sync = async () => {
         const file = String(args[0]);
@@ -41,8 +50,9 @@ let config: RelayConfig;
 
 beforeEach(async () => {
   durability.failSync = undefined; durability.failUnlink = undefined;
+  durability.beforeOpen = undefined; durability.afterRead = undefined;
   durability.syncs = []; durability.handles = 0;
-  directory = await mkdtemp(path.join(tmpdir(), "phone11-vm-relay-"));
+  directory = await realpath(await mkdtemp(path.join(tmpdir(), "phone11-vm-relay-")));
   config = {
     sourceRoot: path.join(directory, "source"),
     outboxRoot: path.join(directory, "outbox"),
@@ -65,11 +75,81 @@ beforeEach(async () => {
 
 afterEach(async () => {
   durability.failSync = undefined; durability.failUnlink = undefined;
+  durability.beforeOpen = undefined; durability.afterRead = undefined;
   expect(durability.handles).toBe(0);
   if (directory) await rm(directory, { recursive: true, force: true });
 });
 
 describe("private voicemail relay outbox", () => {
+  it.each(["before open", "after read"])("retains evidence when a same-size WAV is replaced %s", async timing => {
+    const wav = path.join(config.sourceRoot, "domain", "3001", `${uuid}.wav`);
+    const replacement = Buffer.from(audio);
+    replacement.fill(120, 12);
+    let changed = false;
+    const replace = async (file: string) => {
+      if (file !== wav || changed) return;
+      changed = true;
+      await rename(wav, `${wav}.retained`);
+      await writeFile(wav, replacement);
+    };
+    if (timing === "before open") durability.beforeOpen = replace;
+    else durability.afterRead = replace;
+    const send = vi.fn(async () => new Response("", { status: 201 }));
+    const result = await relayOnce(config, send as typeof fetch);
+    expect(changed).toBe(true);
+    expect(send).not.toHaveBeenCalled();
+    expect(result).toEqual({ delivered: 0, quarantined: 0, retry: 1 });
+    expect(await readFile(durability.manifest)).toBeDefined();
+    durability.beforeOpen = undefined; durability.afterRead = undefined;
+    expect(await readFile(`${wav}.retained`)).toEqual(audio);
+    expect(await readFile(wav)).toEqual(replacement);
+  });
+
+  it("refuses a mailbox ancestor changed to an external symlink before WAV open", async () => {
+    const mailbox = path.join(config.sourceRoot, "domain", "3001");
+    const wav = path.join(mailbox, `${uuid}.wav`);
+    const outside = path.join(directory, "outside");
+    await mkdir(outside);
+    await writeFile(path.join(outside, `${uuid}.wav`), audio);
+    let changed = false;
+    durability.beforeOpen = async file => {
+      if (file !== wav || changed) return;
+      changed = true;
+      await rename(mailbox, `${mailbox}.retained`);
+      await symlink(outside, mailbox);
+    };
+    const send = vi.fn(async () => new Response("", { status: 201 }));
+    const result = await relayOnce(config, send as typeof fetch);
+    expect(changed).toBe(true);
+    expect(send).not.toHaveBeenCalled();
+    expect(result).toEqual({ delivered: 0, quarantined: 0, retry: 1 });
+    await stat(durability.manifest);
+  });
+
+  it("refuses an in-place WAV rewrite even when size and mtime are restored", async () => {
+    const wav = path.join(config.sourceRoot, "domain", "3001", `${uuid}.wav`);
+    const time = 1_700_000_000;
+    await utimes(wav, time, time);
+    const original = await stat(wav);
+    const replacement = Buffer.from(audio);
+    replacement.fill(120, 12);
+    let changed = false;
+    durability.afterRead = async file => {
+      if (file !== wav || changed) return;
+      changed = true;
+      await writeFile(wav, replacement);
+      await utimes(wav, time, time);
+    };
+    const send = vi.fn(async () => new Response("", { status: 201 }));
+    const result = await relayOnce(config, send as typeof fetch);
+    expect(changed).toBe(true);
+    expect((await stat(wav)).mtimeMs).toBe(original.mtimeMs);
+    expect((await stat(wav)).ctimeMs).not.toBe(original.ctimeMs);
+    expect(send).not.toHaveBeenCalled();
+    expect(result).toEqual({ delivered: 0, quarantined: 0, retry: 1 });
+    await stat(durability.manifest);
+  });
+
   it("uploads the admitted UUID over HTTPS and removes only an acknowledged manifest", async () => {
     const send = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(String(input));

@@ -174,6 +174,8 @@ async function readPrivateManifest(file: string): Promise<{ manifest: RelayManif
 }
 
 async function readPrivateWav(root: string, relativePath: string): Promise<Buffer> {
+  const rootIdentity = await lstat(root);
+  if (!rootIdentity.isDirectory()) throw new Error("Voicemail source root is not a directory");
   const base = await realpath(root);
   const requested = path.join(base, relativePath);
   const entry = await lstat(requested);
@@ -181,19 +183,33 @@ async function readPrivateWav(root: string, relativePath: string): Promise<Buffe
     throw new Error("Voicemail source is missing or invalid");
   const resolved = await realpath(requested);
   if (!resolved.startsWith(base + path.sep)) throw new Error("Voicemail source left the private volume");
-  const handle = await open(requested, constants.O_RDONLY | constants.O_NOFOLLOW);
+  // O_NOFOLLOW protects the final component only. Pin the inspected inode and
+  // recheck the resolved path/root around the read to refuse ancestor changes.
+  // O_NONBLOCK also prevents a regular-file-to-FIFO replacement from hanging.
+  const handle = await open(requested, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const before = await handle.stat();
-    if (!before.isFile() || before.size !== entry.size) throw new Error("Voicemail source changed");
+    assertSameWav(entry, before);
     const bytes = await handle.readFile();
-    const after = await handle.stat();
-    if (after.size !== before.size || after.mtimeMs !== before.mtimeMs ||
+    assertSameWav(entry, await handle.stat());
+    assertSameWav(entry, await lstat(requested));
+    const currentRoot = await lstat(root);
+    if (!currentRoot.isDirectory() || currentRoot.dev !== rootIdentity.dev || currentRoot.ino !== rootIdentity.ino ||
+        currentRoot.mode !== rootIdentity.mode || currentRoot.uid !== rootIdentity.uid || currentRoot.gid !== rootIdentity.gid ||
+        await realpath(root) !== base || await realpath(requested) !== resolved || bytes.length !== entry.size ||
         bytes.toString("ascii", 0, 4) !== "RIFF" || bytes.toString("ascii", 8, 12) !== "WAVE")
       throw new Error("Voicemail source changed or is not WAV");
     return bytes;
   } finally {
     await handle.close();
   }
+}
+
+function assertSameWav(expected: Stats, current: Stats): void {
+  if (!current.isFile() || current.dev !== expected.dev || current.ino !== expected.ino ||
+      current.size !== expected.size || current.mtimeMs !== expected.mtimeMs || current.ctimeMs !== expected.ctimeMs ||
+      current.mode !== expected.mode || current.uid !== expected.uid || current.gid !== expected.gid || current.nlink !== expected.nlink)
+    throw new Error("Voicemail source changed");
 }
 
 export async function relayOnce(config: RelayConfig, send: typeof fetch = fetch) {
