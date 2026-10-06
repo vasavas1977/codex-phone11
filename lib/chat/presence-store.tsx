@@ -1,7 +1,7 @@
 import { useEffect, useMemo } from "react";
 import { AppState } from "react-native";
 import { create } from "zustand";
-import { getAuthSnapshot } from "../_core/auth";
+import { addAuthChangeListener, getAuthSnapshot } from "../_core/auth";
 import { createChatTransport } from "./transport";
 import type { ChatPresence, ChatPresenceStatus } from "./types";
 
@@ -83,32 +83,41 @@ export function usePresencePolling(tenantId: number | undefined, userIds: number
     if (!enabled || !owner || !tenantId || ids.length === 0) return;
     useChatPresenceStore.getState().setOwner(owner.id);
     let stopped = false, running = false, pending = false;
+    // React cleanup can lag a sign-out or same-account replacement. Once the
+    // observed lifetime retires, it cannot revive if its object is seen again.
+    const ownerIsCurrent = () => {
+      if (getAuthSnapshot().user !== owner) stopped = true;
+      return !stopped;
+    };
+    const unsubscribeOwner = addAuthChangeListener(() => { ownerIsCurrent(); });
     const refresh = async () => {
-      if (stopped || AppState.currentState !== "active") return;
+      if (!ownerIsCurrent() || AppState.currentState !== "active") return;
       if (running) { pending = true; return; }
       running = true;
       try {
-        if (!await richPresenceAvailable(owner.id, tenantId)) {
+        const available = await richPresenceAvailable(owner.id, tenantId);
+        if (!ownerIsCurrent()) return;
+        if (!available) {
           useChatPresenceStore.getState().fail(owner.id, tenantId, ids); return;
         }
         for (let offset = 0; offset < ids.length; offset += 100) {
           const requested = ids.slice(offset, offset + 100);
           try {
             const rows = await api.presence(tenantId, requested);
-            if (!stopped && getAuthSnapshot().user === owner) useChatPresenceStore.getState().merge(owner.id, tenantId, requested, rows);
+            if (ownerIsCurrent()) useChatPresenceStore.getState().merge(owner.id, tenantId, requested, rows);
           } catch {
-            if (!stopped && getAuthSnapshot().user === owner) useChatPresenceStore.getState().fail(owner.id, tenantId, requested);
+            if (ownerIsCurrent()) useChatPresenceStore.getState().fail(owner.id, tenantId, requested);
           }
         }
       } catch {
-        if (!stopped && getAuthSnapshot().user === owner) useChatPresenceStore.getState().fail(owner.id, tenantId, ids);
+        if (ownerIsCurrent()) useChatPresenceStore.getState().fail(owner.id, tenantId, ids);
       } finally {
         running = false;
         if (pending && !stopped) { pending = false; void refresh(); }
       }
     };
     const stopPolling = startForegroundPresencePolling(() => void refresh());
-    return () => { stopped = true; stopPolling(); };
+    return () => { stopped = true; unsubscribeOwner(); stopPolling(); };
   }, [enabled, ids, owner, tenantId]);
 }
 
