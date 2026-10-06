@@ -283,6 +283,31 @@ jobs:
             https://raw.githubusercontent.com/siprix/SampleJava/80d198ed6179b45ff8cd8dad9b8086976b4197a0/app/libs/siprix_voip_sdk.aar
           printf '%s  %s\n' 3173ee8bae7aa37d3be3b44f7533d43b4e4d8625110d1d2bd8d79367973c9198 "$RUNNER_TEMP/phone11-siprix-android.aar" | sha256sum --check --strict
           printf 'PHONE11_SIPRIX_ANDROID_AAR=%s\n' "$RUNNER_TEMP/phone11-siprix-android.aar" >> "$GITHUB_ENV"
+      - name: Require standalone trial source and pinned transport regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          PHONE11_SIPRIX_ANDROID_AAR="$RUNNER_TEMP/phone11-siprix-android.aar" \
+            node --test --test-reporter=tap tests/phone11-android-trial-build.test.mjs | tee "$RUNNER_TEMP/phone11-android-standalone-source.tap"
+          python3 - <<'PY'
+          import os, re
+          from pathlib import Path
+          output = (Path(os.environ["RUNNER_TEMP"]) / "phone11-android-standalone-source.tap").read_text()
+          assert output.strip(), "Standalone TAP report is empty"
+          counts = {}
+          for key in ("tests", "pass", "fail", "cancelled", "skipped", "todo"):
+              values = re.findall(rf"^# {key} (\d+)$", output, re.M)
+              assert len(values) == 1, f"Standalone {key} report missing or ambiguous"
+              counts[key] = int(values[0])
+          assert counts["tests"] == 11 and counts["pass"] == 11, counts
+          assert all(counts[key] == 0 for key in ("fail", "cancelled", "skipped", "todo")), counts
+          required = ["already-owned pinned AAR is read-only and avoids transport",
+                      "mocked pinned transfer atomically stages private bytes before environment persistence",
+                      "staging rejects output directory symlinks and failed persistence yields no success"]
+          for name in required:
+              assert re.search(rf"^ok \d+ - {re.escape(name)}$", output, re.M), f"SDK-positive case did not execute: {name}"
+          print("Standalone trial source and pinned transport gates executed with zero skips")
+          PY
       - name: Prebuild separate foreground trial
         run: pnpm exec expo prebuild --clean --platform android --no-install
       - name: Check explicit bridge registration and foreground build gate
@@ -298,8 +323,36 @@ jobs:
             :phone11-siprix-android-runtime:compileDebugJavaWithJavac :app:assembleDebug \
             -PreactNativeArchitectures=arm64-v8a,armeabi-v7a --stacktrace
       - name: Verify trial APK identity, bridge, SDK and audio permissions
+        shell: bash
         run: |
-          python3 tests/phone11-android-apk.test.py
+          set -euo pipefail
+          # Gradle has already assembled with its installed Android build tools.
+          # Select only these supported installed SDK tools; never install one.
+          case "$ANDROID_HOME" in /*) ;; *) echo "Absolute installed Android SDK required" >&2; exit 1 ;; esac
+          selected_apksigner=""
+          for version in 36.0.0 35.0.0 34.0.0; do
+            candidate="$ANDROID_HOME/build-tools/$version/apksigner"
+            if test -x "$candidate" && test -f "$ANDROID_HOME/build-tools/$version/lib/apksigner.jar"; then
+              selected_apksigner="$candidate"
+              break
+            fi
+          done
+          test -n "$selected_apksigner" || { echo "Supported installed apksigner required; no installation performed" >&2; exit 1; }
+          export PHONE11_TEST_APKSIGNER="$selected_apksigner"
+          PHONE11_SIPRIX_ANDROID_AAR="$RUNNER_TEMP/phone11-siprix-android.aar" PYTHONDONTWRITEBYTECODE=1 \
+            python3 tests/phone11-android-apk.test.py -v 2>&1 | tee "$RUNNER_TEMP/phone11-android-trial-parser.log"
+          python3 - <<'PY'
+          import os, re
+          from pathlib import Path
+          output = (Path(os.environ["RUNNER_TEMP"]) / "phone11-android-trial-parser.log").read_text()
+          counts = re.findall(r"^Ran (\d+) tests? in ", output, re.M)
+          assert len(counts) == 1 and int(counts[0]) > 0, "APK tests did not execute"
+          assert re.findall(r"^OK$", output, re.M) == ["OK"], "APK test suite did not pass with zero skips"
+          for name in ("test_explicitly_staged_pinned_sdk_contains_the_expected_core_class",
+                       "test_actual_apksigner_rejects_unsigned_fixture"):
+              assert re.search(rf"^{name}\b.* \.\.\. ok$", output, re.M), f"Required actual SDK/tool case did not execute: {name}"
+          print("Pinned APK parser and actual unsigned-fixture signature rejection executed with zero skips")
+          PY
           python3 scripts/verify-phone11-android-apk.py --trial \
             --apk android/app/build/outputs/apk/debug/app-debug.apk \
             --apkanalyzer "$ANDROID_HOME/cmdline-tools/latest/bin/apkanalyzer"
