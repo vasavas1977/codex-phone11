@@ -567,6 +567,30 @@ and validation; do not retag old artifacts to the new commit. Phone testing is
 still owner-deferred. No new client installation, OTA/store publication,
 production SDK credential, formal signing or provider activation is claimed.
 
+## Standalone Android trial preparation — 6 October 2026
+
+The [standalone Android trial source](ANDROID-STANDALONE-TRIAL-20261006.md)
+adds a separate INTERNAL release-APK profile and guarded, checksum-pinned SDK
+pre-install transport. Existing iOS and debug installation dispatch stays intact.
+The release verifier requires one APK snapshot, actual installed signature
+verification and an independently supplied signing fingerprint. Relative and
+bare manifest component names are normalized before refusing Phone11 wake
+services and receivers. This is foreground evaluation source with 60-second
+calls; no cloud release build, signing, distribution or phone installation was
+performed.
+
+The new CI gates execute all 11 build/transport cases with the actual pinned
+local AAR, and all 40 APK-verifier cases with the installed Android signing tool.
+Local extraction of both workflow gates passed without skips, including actual
+unsigned-fixture rejection. Full integration TypeScript and scoped ESLint were
+checked separately. The previous e6a2995 hosted results retain their source pin;
+this addition requires fresh hosted checks and independent final source review.
+
+A fresh package-presence check found the earlier unsigned e6a2995 Mac app's
+recorded temporary path absent. Historical build, inventory and review receipts
+remain, but they are not a currently available distribution package. Rebuild
+before any distribution; preserve the existing signed rollback packages.
+
 ## Work that remains
 
 1. Finish authoritative meeting controls with Connect11. The reviewed opaque
