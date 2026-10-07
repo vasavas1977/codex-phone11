@@ -99,6 +99,25 @@ test('manual workflow has no arbitrary build inputs and withholds raw EAS result
   assert.doesNotMatch(workflow, /path: .*build-private|--auto-submit|--refresh-ad-hoc|credentials configure/);
   assert.match(workflow, /2> "\$RUNNER_TEMP\/phone11-android-build-private\.stderr"/);
   assert.doesNotMatch(workflow, /cat .*build-private/);
+  assert.match(workflow, /workflow_call:\n    secrets:\n      EXPO_TOKEN:\n        required: true/);
+  assert.doesNotMatch(workflow, /secrets: inherit/);
+});
+
+test('registered native-check entry defaults signing off and requires all native checks', () => {
+  const workflow = readFileSync(new URL('../.github/workflows/phone11-mobile-cloud-check.yml', import.meta.url), 'utf8');
+  assert.match(workflow, /workflow_dispatch:\n    inputs:\n      request_internal_android_trial:\n        description: [^\n]+\n        type: boolean\n        required: false\n        default: false/);
+  const caller = workflow.match(/  internal-android-trial:\n([\s\S]+?)\n  install-test-config:/)?.[1];
+  assert.ok(caller, 'Fixed optional build caller must exist');
+  assert.match(caller, /needs: \[install-test-config, native-dev-client-prebuild, android-gradle-assemble, android-screen-transaction-compile, android-foreground-trial-assemble, siprix-bridge-regressions\]/);
+  assert.match(caller, /if: github\.event_name == 'workflow_dispatch' && inputs\.request_internal_android_trial == true && github\.repository == 'vasavas1977\/codex-phone11' && github\.ref == 'refs\/heads\/codex\/phone11-zoom-mainline-integration-20260928'/);
+  assert.match(caller, /uses: \.\/\.github\/workflows\/phone11-android-trial-internal-build\.yml\n    secrets:\n      EXPO_TOKEN: \$\{\{ secrets\.EXPO_TOKEN \}\}/);
+  assert.doesNotMatch(caller, /secrets: inherit|with:|runs-on:|environment:/);
+  const checkoutRefs = [...workflow.matchAll(/^\s+ref: (.+)$/gm)].map(match => match[1]);
+  assert.equal(checkoutRefs.length, 6, 'All six prerequisites must have a source pin');
+  for (const ref of checkoutRefs) {
+    assert.equal(ref, "${{ github.event_name == 'workflow_dispatch' && github.sha || github.head_ref || github.ref_name }}",
+      'Branch movement after dispatch must not change the checked source');
+  }
 });
 
 test('actual workflow shell keeps asynchronous CLI stdout and stderr private on failure', () => {

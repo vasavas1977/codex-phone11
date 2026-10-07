@@ -1,10 +1,22 @@
 # Android foreground trial internal build
 
-The manual `Phone11 Android foreground trial internal build` workflow prepares
-the existing `preview-android-siprix-foreground-trial` APK profile. It is limited
-to the owned integration branch and depends on the reusable daily-use checks.
+The already registered `Phone11 Mobile Native Check` workflow is the manual
+entry point. Select the owned integration branch and explicitly enable
+`request_internal_android_trial` (default off). All six native-check jobs must
+pass before it calls `Phone11 Android foreground trial internal build`, which
+also requires the reusable daily-use checks. The called workflow prepares the
+fixed `preview-android-siprix-foreground-trial` APK profile and accepts only the
+named `EXPO_TOKEN` secret. Pull requests and ordinary native-check dispatches
+cannot request signing. No arbitrary profile, source or build inputs are exposed.
+Manual prerequisite checkouts bind the dispatch SHA, so later branch movement
+cannot substitute a different source for the checks preceding the signed build.
 It is a standalone, foreground-only Siprix trial with a 60-second call limit;
 Android background wake and store distribution are not enabled.
+
+GitHub does not register a new manual workflow until it exists on the default
+branch. The initial direct dispatch returned HTTP 404 and requested no EAS build.
+Using the existing registered native-check entry avoids merging this feature
+branch merely to register a signing workflow.
 
 The protected runner uses the existing `EXPO_TOKEN`; no key values are printed.
 EAS CLI 23.2.0's Android credential setup can generate a missing keystore despite

@@ -2,6 +2,12 @@ name: Phone11 Mobile Native Check
 
 on:
   workflow_dispatch:
+    inputs:
+      request_internal_android_trial:
+        description: "Build the fixed signed 60-second foreground Android trial after all checks"
+        type: boolean
+        required: false
+        default: false
   pull_request:
     paths:
       - "app/**"
@@ -27,6 +33,14 @@ permissions:
   contents: read
 
 jobs:
+  internal-android-trial:
+    name: Optional Android internal foreground trial
+    needs: [install-test-config, native-dev-client-prebuild, android-gradle-assemble, android-screen-transaction-compile, android-foreground-trial-assemble, siprix-bridge-regressions]
+    if: github.event_name == 'workflow_dispatch' && inputs.request_internal_android_trial == true && github.repository == 'vasavas1977/codex-phone11' && github.ref == 'refs/heads/codex/phone11-zoom-mainline-integration-20260928'
+    uses: ./.github/workflows/phone11-android-trial-internal-build.yml
+    secrets:
+      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+
   install-test-config:
     name: Install, test, and validate Expo config
     runs-on: ubuntu-latest
@@ -35,7 +49,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.head_ref || github.ref_name }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || github.head_ref || github.ref_name }}
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -66,7 +80,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.head_ref || github.ref_name }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || github.head_ref || github.ref_name }}
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -102,7 +116,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.head_ref || github.ref_name }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || github.head_ref || github.ref_name }}
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -195,7 +209,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.head_ref || github.ref_name }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || github.head_ref || github.ref_name }}
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
@@ -260,7 +274,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.head_ref || github.ref_name }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || github.head_ref || github.ref_name }}
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
@@ -367,7 +381,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.head_ref || github.ref_name }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || github.head_ref || github.ref_name }}
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
