@@ -202,7 +202,9 @@ inline ErrorCode Call_Hold(ISiprixModule* m, CallId id) {
   const bool nextHeld = !m->held;
   std::thread([m, id, nextHeld] {
     std::this_thread::sleep_for(std::chrono::milliseconds(160));
-    if (m->initialized && heldCallback) heldCallback(id, HoldState::Remote);
+    // Before the delayed local transition, a remote hold does not remove an
+    // existing local hold. Resume is confirmed only by the final None callback.
+    if (m->initialized && heldCallback) heldCallback(id, nextHeld ? HoldState::Remote : HoldState::LocalAndRemote);
     std::this_thread::sleep_for(std::chrono::milliseconds(90));
     if (m->initialized) {
       m->held = nextHeld;

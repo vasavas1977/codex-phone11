@@ -19,8 +19,18 @@ Continuation base: `b54ae07b66f925111c40d58c1200d4f3bfe32f96`, the current PR 7 
 - Release-profile and Siprix packaging guards: 12 passed, zero skips.
 - Desktop helper source-receipt guards: 87 passed, zero skips.
 - Backend esbuild bundle passed. Changed-source whitespace checks passed. Workflow YAML parsed using Ruby YAML.
-- Full TypeScript was attempted with reused local dependencies and failed on absent Electron/packager types and resulting desktop diagnostics; it is not recorded as passing. No dependency installation was performed.
+- The first full TypeScript attempt failed because the reused setup omitted the desktop dependency tree. A later isolated Git archive of `4f007fb`, using existing byte-matching root and desktop dependency manifests, passed root TypeScript, desktop TypeScript, backend bundling and the desktop Darwin JS build. No dependency installation or shared-tree mutation was performed.
 - Android standalone trial transport suite: 8 passed, 3 skipped because no explicit already-owned AAR was supplied. Those skipped SDK-input cases are not an Android package acceptance claim.
+
+## Hosted follow-up at `4f007fb`
+
+The exact meeting/admin commit is `4f007fbf680cd797dc9c4d37360abed256383ed9` on PR 7. [Daily-use run 37574892164](https://github.com/vasavas1977/codex-phone11/actions/runs/37574892164) passed all ten jobs; actual logs confirm 30 required suites and 1,125 cases with zero skips, plus the executed 41-case prejoin-owner and 33-case admission-race suites. Authentication and release guards passed separately.
+
+[Mobile run 37574892467](https://github.com/vasavas1977/codex-phone11/actions/runs/37574892467) passed all six jobs. Its hosted isolated Android foreground trial verifier reported APK SHA-256 `1c2b6a8195b59e055a46cab3fa56a5fc4edf897ef36aa1aacbe90e4d8578a572`, package `ai.phone11.mobile.foregroundtrial`, and four checksum-pinned ARM SDK libraries. This package was not downloaded or installed; packaging does not establish phone, background wake or unrestricted production acceptance.
+
+[Desktop run 37574892138](https://github.com/vasavas1977/codex-phone11/actions/runs/37574892138) passed macOS/Windows helper compilation but failed the isolated fake-SDK hold-recovery protocol test. The test assumed one uncertainty episode across both delayed hold and resume, then stopped after a short sleep. The old fake also emitted a resume `Remote` callback while its queried local state was still held. The follow-up test uses per-phase command/frame waits, verifies both recovery episodes and preserves rejection, identity, ordering and privacy assertions. The delayed fake now preserves local hold until its final `None` callback. Production helper code is unchanged.
+
+The lead ran all six desktop protocol scripts successfully, including eleven transfer scenarios. A patched-test/old-fake negative replay failed the recovery-order assertion as expected. Independent reproduction and fresh follow-up CI must be recorded separately before treating this test-only change as verified.
 
 ## Fresh unsigned voicemail package
 

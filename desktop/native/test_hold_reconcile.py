@@ -13,16 +13,19 @@ import time
 NATIVE = pathlib.Path(__file__).resolve().parent
 
 
-def assert_late_recovery(trace: list[dict]) -> None:
+def assert_late_recovery(trace: list[dict], target: str = "held") -> None:
     errors = [i for i, item in enumerate(trace) if item.get("event") == "hold_error"]
     recoveries = [i for i, item in enumerate(trace) if item.get("event") == "hold_recovered"]
-    held = [i for i, item in enumerate(trace) if item.get("event") == "call" and
-            item.get("state") == "held"]
-    assert len(errors) == len(recoveries) == 1 and len(held) == 2, trace
+    callbacks = [i for i, item in enumerate(trace) if item.get("event") == "call" and
+                 item.get("state") in ("held", "connected")]
+    # Startup's connected frame belongs outside the delayed-operation trace.
+    assert len(errors) == len(recoveries) == 1 and len(callbacks) == 2, trace
     error_index, recovery_index = errors[0], recoveries[0]
-    # This fake mode emits Remote before Local. The timer thread can report
-    # uncertainty before or after Remote, but only Local may restore control.
-    remote_index, local_index = held
+    # Remote precedes Local for hold; LocalAndRemote precedes None for resume.
+    # Only the final matching local state may restore control after uncertainty.
+    remote_index, local_index = callbacks
+    assert trace[remote_index].get("state") == "held", trace
+    assert trace[local_index].get("state") == target, trace
     assert error_index < recovery_index and remote_index < recovery_index < local_index, trace
     assert all(trace[i].get("callId") == "200" for i in
                (error_index, remote_index, recovery_index, local_index)), trace
@@ -63,8 +66,7 @@ def test_late_recovery_orderings() -> None:
             raise AssertionError("Unsafe recovery trace was accepted")
 
 
-def run_case(flags: list[str], phases: list[tuple[str, float]], *,
-             wait_before_phase: dict[int, str] | None = None) -> list[dict]:
+def run_case(flags: list[str], phases: list[tuple[str, str]]) -> list[dict]:
     with tempfile.TemporaryDirectory(prefix="phone11-hold-reconcile-") as tmp:
         binary = pathlib.Path(tmp) / "helper"
         subprocess.run([
@@ -108,16 +110,6 @@ def run_case(flags: list[str], phases: list[tuple[str, float]], *,
             while not ready():
                 assert next_event(deadline, label) is not None, f"Helper EOF before {label}: {trace}"
 
-        def recovered_local() -> bool:
-            recovered = next((i for i, item in enumerate(trace) if
-                              item.get("event") == "hold_recovered" and
-                              item.get("callId") == "200" and
-                              item.get("code") == "state_confirmed" and
-                              item.get("holdControl") == "ready"), None)
-            return recovered is not None and any(
-                item.get("event") == "call" and item.get("callId") == "200" and
-                item.get("state") == "held" for item in trace[recovered + 1:])
-
         try:
             process.stdin.write("v1 init\nv1 provision\ninvalid.example\n1020\n1020\nfake-secret\nTLS\n")
             process.stdin.flush()
@@ -125,20 +117,37 @@ def run_case(flags: list[str], phases: list[tuple[str, float]], *,
             process.stdin.write("v1 answer 200\n")
             process.stdin.flush()
             wait_for("connected call", lambda: any(item.get("state") == "connected" for item in trace))
-            for index, (commands, delay) in enumerate(phases):
-                event = (wait_before_phase or {}).get(index)
-                if event == "hold_error":
-                    wait_for("blocked hold timeout", lambda: any(
-                        item.get("event") == "hold_error" and item.get("callId") == "200" and
-                        item.get("code") == "state_unconfirmed" and item.get("holdControl") == "blocked"
-                        for item in trace))
-                elif event == "hold_recovered_local":
-                    wait_for("authoritative local hold recovery", recovered_local)
-                else:
-                    assert event is None, f"Unknown phase event: {event}"
+            for commands, event in phases:
+                start = len(trace)
+                reply_count = sum("ok" in item for item in trace) + len(commands.splitlines())
                 process.stdin.write(commands)
                 process.stdin.flush()
-                time.sleep(delay)
+                wait_for("command replies", lambda: sum("ok" in item for item in trace) >= reply_count)
+                def ready() -> bool:
+                    rows = trace[start:]
+                    calls = [item for item in rows if item.get("event") == "call" and
+                             item.get("callId") == "200"]
+                    if event == "reply":
+                        return True
+                    if event in ("held", "connected", "terminated"):
+                        return any(item.get("state") == event for item in calls)
+                    if event == "held_local":
+                        return sum(item.get("state") == "held" for item in calls) == 2
+                    if event == "hold_error":
+                        return any(item.get("event") == event and item.get("callId") == "200" and
+                                   item.get("code") == "state_unconfirmed" and
+                                   item.get("holdControl") == "blocked" for item in rows)
+                    if event == "hold_recovered_local":
+                        recovered = next((i for i, item in enumerate(rows) if
+                                          item.get("event") == "hold_recovered" and
+                                          item.get("callId") == "200" and
+                                          item.get("code") == "state_confirmed" and
+                                          item.get("holdControl") == "ready"), None)
+                        return recovered is not None and any(
+                            item.get("event") == "call" and item.get("callId") == "200" and
+                            item.get("state") == "held" for item in rows[recovered + 1:])
+                    raise AssertionError(f"Unknown phase event: {event}")
+                wait_for(event, ready)
             process.stdin.write("v1 shutdown\n")
             process.stdin.close()
             deadline = time.monotonic() + 5
@@ -171,16 +180,16 @@ def run_case(flags: list[str], phases: list[tuple[str, float]], *,
 def main() -> None:
     test_late_recovery_orderings()
     remote = run_case(["-DPHONE11_FAKE_REMOTE_FIRST"], [
-        ("v1 hold 200 1\nv1 hold 200 0\n", 0.25),
-        ("v1 hold 200 0\n", 0.15),
+        ("v1 hold 200 1\nv1 hold 200 0\n", "held_local"),
+        ("v1 hold 200 0\n", "connected"),
     ])
     remote_replies = [item["ok"] for item in remote if "ok" in item]
     assert remote_replies == [True, True, True, True, False, True, True], remote
     assert not any(item.get("event") == "hold_error" for item in remote)
 
     missing = run_case(["-DPHONE11_FAKE_DROP_HOLD_CALLBACK"], [
-        ("v1 hold 200 1\nv1 hold 200 0\n", 0.25),
-        ("v1 hold 200 0\n", 0.25),
+        ("v1 hold 200 1\nv1 hold 200 0\n", "held"),
+        ("v1 hold 200 0\n", "connected"),
     ])
     missing_replies = [item["ok"] for item in missing if "ok" in item]
     assert missing_replies == [True, True, True, True, False, True, True], missing
@@ -188,8 +197,8 @@ def main() -> None:
     assert any(item.get("state") == "held" for item in missing)
 
     unchanged = run_case(["-DPHONE11_FAKE_DROP_HOLD_CALLBACK", "-DPHONE11_FAKE_HOLD_NO_STATE_CHANGE"], [
-        ("v1 hold 200 1\n", 0.25),
-        ("v1 hold 200 0\nv1 end 200\n", 0.05),
+        ("v1 hold 200 1\n", "hold_error"),
+        ("v1 hold 200 0\nv1 end 200\n", "terminated"),
     ])
     unchanged_replies = [item["ok"] for item in unchanged if "ok" in item]
     assert unchanged_replies == [True, True, True, True, False, True, True], unchanged
@@ -198,14 +207,17 @@ def main() -> None:
     assert any(item.get("event") == "call" and item.get("state") == "terminated" for item in unchanged)
 
     late = run_case(["-DPHONE11_FAKE_HOLD_DELAYED_STATE"], [
-        ("v1 hold 200 1\n", 0),
-        ("v1 hold 200 0\n", 0),
-        ("v1 hold 200 0\n", 0.02),
-    ], wait_before_phase={1: "hold_error", 2: "hold_recovered_local"})
+        ("v1 hold 200 1\n", "hold_error"),
+        ("v1 hold 200 0\n", "hold_recovered_local"),
+        ("v1 hold 200 0\n", "connected"),
+    ])
     assert [item["ok"] for item in late if "ok" in item] == [True, True, True, True, False, True, True], late
-    assert_late_recovery(late)
     error_index = next(i for i, item in enumerate(late) if item.get("event") == "hold_error")
     recovery_index = next(i for i, item in enumerate(late) if item.get("event") == "hold_recovered")
+    incoming_index = next(i for i, item in enumerate(late) if item.get("state") == "connected")
+    held_index = next(i for i in range(recovery_index + 1, len(late)) if late[i].get("state") == "held")
+    assert_late_recovery(late[incoming_index + 1:held_index + 1])
+    assert_late_recovery(late[held_index + 1:], target="connected")
     rejected = [i for i, item in enumerate(late) if item.get("ok") is False]
     assert len(rejected) == 1 and error_index < rejected[0] < recovery_index, late
     print("Phone11 Siprix hold reconciliation protocol test passed")
