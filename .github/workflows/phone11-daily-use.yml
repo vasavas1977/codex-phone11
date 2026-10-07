@@ -423,6 +423,7 @@ jobs:
           node --import tsx --test desktop/tests/*.node.ts
           npm --prefix desktop/app test
           npm --prefix desktop/app run typecheck
+          pnpm exec tsc --noEmit --pretty false
           PHONE11_BUILD_PLATFORM=darwin npm --prefix desktop/app run build
 
       - name: Require desktop helper provenance regressions without skips

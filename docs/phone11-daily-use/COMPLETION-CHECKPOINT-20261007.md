@@ -19,7 +19,7 @@ Continuation base: `b54ae07b66f925111c40d58c1200d4f3bfe32f96`, the current PR 7 
 - Release-profile and Siprix packaging guards: 12 passed, zero skips.
 - Desktop helper source-receipt guards: 87 passed, zero skips.
 - Backend esbuild bundle passed. Changed-source whitespace checks passed. Workflow YAML parsed using Ruby YAML.
-- The first full TypeScript attempt failed because the reused setup omitted the desktop dependency tree. A later isolated Git archive of `4f007fb`, using existing byte-matching root and desktop dependency manifests, passed root TypeScript, desktop TypeScript, backend bundling and the desktop Darwin JS build. No dependency installation or shared-tree mutation was performed.
+- The first full TypeScript attempt failed because the reused setup omitted the desktop dependency tree. A later isolated Git archive of `4f007fb`, using existing root and desktop dependencies, passed root TypeScript, desktop TypeScript, backend bundling and the desktop Darwin JS build. The initial report incorrectly claimed all four package manifests/lockfiles matched: only the desktop pair matched; the root pair differed in the EAS preinstall script and maintained patch references. These remain actual reused-dependency compilation results, not locked-root installation proof. Daily CI now runs root TypeScript after installing the locked root and desktop dependencies. Its exact-head result must be recorded separately. No local dependency installation or shared-tree mutation was performed.
 - Android standalone trial transport suite: 8 passed, 3 skipped because no explicit already-owned AAR was supplied. Those skipped SDK-input cases are not an Android package acceptance claim.
 
 ## Hosted follow-up at `4f007fb`
