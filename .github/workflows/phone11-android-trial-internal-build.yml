@@ -1,0 +1,57 @@
+name: Phone11 Android foreground trial internal build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phone11-android-foreground-trial-internal
+  cancel-in-progress: false
+
+jobs:
+  daily-use-check:
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'vasavas1977/codex-phone11' && github.ref == 'refs/heads/codex/phone11-zoom-mainline-integration-20260928'
+    uses: ./.github/workflows/phone11-daily-use.yml
+  build:
+    needs: daily-use-check
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'vasavas1977/codex-phone11' && github.ref == 'refs/heads/codex/phone11-zoom-mainline-integration-20260928'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Enable pinned package manager
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+      - name: Install locked source dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Validate the isolated trial profile and release guards
+        run: |
+          node --test tests/phone11-android-internal-build.test.mjs tests/phone11-release-profile-guard.test.mjs tests/phone11-wake-build-config.test.mjs
+      - uses: expo/expo-github-action@v8
+        with:
+          eas-version: '23.2.0'
+          token: ${{ secrets.EXPO_TOKEN }}
+          packager: pnpm
+      - name: Request fixed internal APK using only existing signing credentials
+        env:
+          EXPO_NO_TELEMETRY: '1'
+          NODE_OPTIONS: ''
+        run: |
+          umask 077
+          if ! node scripts/run-phone11-android-trial-internal-build.cjs > "$RUNNER_TEMP/phone11-android-build-private.json" 2> "$RUNNER_TEMP/phone11-android-build-private.stderr"; then
+            echo 'Phone11 Android internal build failed. Signing remains restricted to existing credentials.' >&2
+            exit 1
+          fi
+          node scripts/check-phone11-android-trial-build-result.mjs "$RUNNER_TEMP/phone11-android-build-private.json" "$GITHUB_SHA" > "$RUNNER_TEMP/phone11-android-build-receipt.json"
+          cat "$RUNNER_TEMP/phone11-android-build-receipt.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: phone11-android-foreground-trial-build-receipt
+          path: ${{ runner.temp }}/phone11-android-build-receipt.json
+          if-no-files-found: error
