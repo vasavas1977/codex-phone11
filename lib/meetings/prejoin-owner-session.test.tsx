@@ -16,6 +16,8 @@ const state = vi.hoisted(() => ({
   onJoin: undefined as ((preferences: MeetingJoinPreferences) => Promise<void>) | undefined,
   onBack: undefined as (() => void) | undefined,
   routeCleanups: [] as (() => void)[],
+  focusSetup: undefined as (() => void | (() => void)) | undefined,
+  focusCleanup: undefined as (() => void) | undefined,
   admit: vi.fn(),
   webJoin: vi.fn(),
   nativeJoin: vi.fn(),
@@ -38,6 +40,12 @@ vi.mock("@/hooks/use-colors", () => ({ useColors: () => ({ primary: "#05f" }) })
 vi.mock("expo-router", () => ({
   router: { push: state.push, back: vi.fn(), replace: vi.fn(), canGoBack: () => false },
   useLocalSearchParams: () => ({ meetingId: "admitted-id", tenantId: "1", source: state.source }),
+  useFocusEffect: (setup: () => void | (() => void)) => {
+    state.focusSetup = setup;
+    const cleanup = setup();
+    state.focusCleanup = cleanup || undefined;
+    if (cleanup) state.routeCleanups.push(cleanup);
+  },
 }));
 vi.mock("@/hooks/use-auth", () => ({ useAuth: () => ({ user: state.renderedOwner }) }));
 vi.mock("@/lib/_core/auth", () => ({ getAuthSnapshot: () => ({ user: state.currentOwner }) }));
@@ -97,6 +105,8 @@ beforeEach(() => {
   state.renderedOwner = { id: 3001, name: "Pilot" };
   state.currentOwner = state.renderedOwner;
   state.routeCleanups = [];
+  state.focusSetup = undefined;
+  state.focusCleanup = undefined;
   state.onJoin = undefined;
   state.onBack = undefined;
   state.admit.mockReset().mockResolvedValue(admission);
@@ -205,6 +215,41 @@ it("leaves a late connection once when prejoin navigation has already been cance
   const pending = renderJoin()(preferences);
   await vi.waitFor(() => expect(state.webJoin).toHaveBeenCalledOnce());
   state.onBack!();
+  finishConnection({ leave: state.leave });
+  await expect(pending).rejects.toMatchObject({ stage: "post_connect_guard" });
+  expect(state.leave).toHaveBeenCalledOnce();
+  expect(state.push).not.toHaveBeenCalled();
+});
+
+it.each(contexts)("retires pending %s %s admission on blur even after the route refocuses", async (platform, source) => {
+  state.platform = platform; state.source = source;
+  let resolveAdmission!: (value: typeof admission) => void;
+  state.admit.mockReturnValueOnce(new Promise(resolve => { resolveAdmission = resolve; }));
+  const join = renderJoin();
+  const pending = join(preferences);
+  await vi.waitFor(() => expect(state.admit).toHaveBeenCalledOnce());
+  state.focusCleanup?.();
+  state.focusSetup?.();
+  resolveAdmission(admission);
+  await expect(pending).rejects.toMatchObject({ stage: "post_connect_guard" });
+  expect(state.webJoin).not.toHaveBeenCalled();
+  expect(state.nativeJoin).not.toHaveBeenCalled();
+  expect(state.push).not.toHaveBeenCalled();
+  await join(preferences);
+  expect(state.admit).toHaveBeenCalledTimes(2);
+  expect(platform === "web" ? state.webJoin : state.nativeJoin).toHaveBeenCalledOnce();
+  expect(state.push).toHaveBeenCalledOnce();
+});
+
+it.each(contexts)("stops a late %s %s connection from a retired focus lifetime", async (platform, source) => {
+  state.platform = platform; state.source = source;
+  let finishConnection!: (value: { leave: typeof state.leave }) => void;
+  const connect = platform === "web" ? state.webJoin : state.nativeJoin;
+  connect.mockReturnValueOnce(new Promise(resolve => { finishConnection = resolve; }));
+  const pending = renderJoin()(preferences);
+  await vi.waitFor(() => expect(connect).toHaveBeenCalledOnce());
+  state.focusCleanup?.();
+  state.focusSetup?.();
   finishConnection({ leave: state.leave });
   await expect(pending).rejects.toMatchObject({ stage: "post_connect_guard" });
   expect(state.leave).toHaveBeenCalledOnce();

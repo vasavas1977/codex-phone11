@@ -54,6 +54,10 @@ vi.mock("@/hooks/use-colors", () => ({ useColors: () => ({ primary: "#05f" }) })
 vi.mock("expo-router", () => ({
   router: { push: state.push, back: vi.fn(), replace: vi.fn(), canGoBack: () => false },
   useLocalSearchParams: () => state.params,
+  useFocusEffect: (setup: () => void | (() => void)) => {
+    const cleanup = setup();
+    if (cleanup) state.routeCleanups.push(cleanup);
+  },
 }));
 vi.mock("@/hooks/use-auth", () => ({
   useAuth: () => ({ user: state.user }),

@@ -1,8 +1,8 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useRef } from "react";
 import { useAuth } from "@/hooks/use-auth";
 import { trpc } from "@/lib/trpc";
 import { getAuthSnapshot } from "@/lib/_core/auth";
-import { router, useLocalSearchParams } from "expo-router";
+import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { MeetingPrejoin } from "@/components/meetings/meeting-prejoin";
 import { ScreenContainer } from "@/components/screen-container";
 import { Platform, Pressable, Text } from "react-native";
@@ -31,19 +31,27 @@ function EnabledMeetingPrejoin({
   onBack: () => void;
 }) {
   const join = trpc.meetings.join.useMutation();
-  const routeActive = useRef(true);
-  useEffect(() => {
+  const routeActive = useRef(false);
+  const routeLifetime = useRef(0);
+  // Stack routes remain mounted on blur. A later refocus must not revive a
+  // pending admission or connection from the previous focus lifetime.
+  useFocusEffect(useCallback(() => {
+    routeLifetime.current += 1;
     routeActive.current = true;
-    return () => { routeActive.current = false; };
-  }, []);
-  const requireActiveRoute = () => {
-    if (!routeActive.current) throw new MeetingJoinFailure("post_connect_guard");
+    return () => {
+      routeActive.current = false;
+      routeLifetime.current += 1;
+    };
+  }, []));
+  const requireActiveRoute = (lifetime: number) => {
+    if (!routeActive.current || routeLifetime.current !== lifetime)
+      throw new MeetingJoinFailure("post_connect_guard");
     // Profile refreshes preserve this owner reference; a new sign-in does not,
     // even when it belongs to the same numeric account.
     if (getAuthSnapshot().user !== user) throw new MeetingJoinFailure("admission");
   };
-  const openConnectedMeeting = async (meeting: { leave(): Promise<void> }) => {
-    if (!routeActive.current || getAuthSnapshot().user !== user) {
+  const openConnectedMeeting = async (meeting: { leave(): Promise<void> }, lifetime: number) => {
+    if (!routeActive.current || routeLifetime.current !== lifetime || getAuthSnapshot().user !== user) {
       // Stop only this attempt's session. Failed teardown remains owned by its
       // lifecycle for retry; never clear a newer meeting from the registry.
       await meeting.leave().catch(() => { throw new MeetingJoinFailure("room_cleanup"); });
@@ -60,22 +68,23 @@ function EnabledMeetingPrejoin({
       onJoin={async (preferences) => {
         let stage: MeetingJoinStage = "bindings";
         const joiningOwnerId = user.id;
+        const lifetime = routeLifetime.current;
         try {
-          requireActiveRoute();
+          requireActiveRoute(lifetime);
           if (Platform.OS === "web") {
             stage = "admission";
             const admission = await join.mutateAsync({ meetingId: preferences.meetingCode })
               .catch(error => { throw meetingAdmissionFailure(error); });
-            requireActiveRoute();
+            requireActiveRoute(lifetime);
             stage = "bindings";
             const { WebMeetingLifecycle } = await import("@/lib/meetings/web-session");
-            requireActiveRoute();
+            requireActiveRoute(lifetime);
             const meeting = await WebMeetingLifecycle.join(joiningOwnerId, preferences.meetingCode, admission, {
               microphone: preferences.microphoneEnabled,
               camera: preferences.cameraEnabled,
             });
             stage = "connected";
-            await openConnectedMeeting(meeting);
+            await openConnectedMeeting(meeting, lifetime);
             return;
           }
           // Default-off builds never load a native meeting/SIP implementation
@@ -85,7 +94,7 @@ function EnabledMeetingPrejoin({
               import("@/lib/sip/call-store"),
               import("@/lib/meetings/native-session"),
             ]);
-          requireActiveRoute();
+          requireActiveRoute(lifetime);
           stage = "audio_start";
           const calls = useSipCallStore.getState();
           const sipBusy =
@@ -101,14 +110,14 @@ function EnabledMeetingPrejoin({
           const admission = await join.mutateAsync({
             meetingId: preferences.meetingCode,
           }).catch(error => { throw meetingAdmissionFailure(error); });
-          requireActiveRoute();
+          requireActiveRoute(lifetime);
           stage = "native_setup";
           const meeting = await NativeMeetingLifecycle.join(preferences.meetingCode, admission, {
             microphone: preferences.microphoneEnabled,
             camera: preferences.cameraEnabled,
           });
           stage = "connected";
-          await openConnectedMeeting(meeting);
+          await openConnectedMeeting(meeting, lifetime);
         } catch (error) {
           if (meetingJoinFailureStage(error)) throw error;
           throw new MeetingJoinFailure(stage);
@@ -116,6 +125,7 @@ function EnabledMeetingPrejoin({
       }}
       onBack={() => {
         routeActive.current = false;
+        routeLifetime.current += 1;
         onBack();
       }}
     />

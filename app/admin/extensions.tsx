@@ -83,8 +83,9 @@ function AdminExtensionsContent() {
   const canManage = ["owner", "admin"].includes(
     String(tenantQuery.data?.userRole || ""),
   );
+  const [page, setPage] = useState(1);
   const extensionsQuery = useExtensions(
-    1,
+    page,
     100,
     tenantQuery.isSuccess && canManage,
   );
@@ -108,6 +109,7 @@ function AdminExtensionsContent() {
     () => (extensionsQuery.data?.data || []) as ExtensionRow[],
     [extensionsQuery.data?.data],
   );
+  const pagination = extensionsQuery.data?.pagination;
   const filtered = useMemo(() => {
     const needle = search.trim().toLowerCase();
     return rows.filter((row) => {
@@ -335,7 +337,30 @@ function AdminExtensionsContent() {
     </View>
   ) : (
     <View style={[styles.inventory, { borderTopColor: colors.border }]}>
-      <Text style={[styles.resultCount, { color: colors.muted }]}>Showing {filtered.length} of {rows.length} extensions</Text>
+      <Text style={[styles.resultCount, { color: colors.muted }]}>
+        Showing {filtered.length} of {rows.length} extensions on this page · {pagination?.total ?? rows.length} total
+      </Text>
+      {pagination && (pagination.totalPages > 1 || pagination.hasPrev) ? (
+        <View style={[styles.pagination, { borderBottomColor: colors.border }]}>
+          <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel="Previous extensions page"
+            disabled={!pagination.hasPrev || extensionsQuery.isFetching}
+            onPress={() => setPage(Math.max(1, page - 1))}
+          >
+            <Text style={[styles.retry, { color: !pagination.hasPrev || extensionsQuery.isFetching ? colors.muted : colors.primary }]}>Previous</Text>
+          </TouchableOpacity>
+          <Text style={[styles.cellText, { color: colors.foreground }]}>Page {pagination.page} of {pagination.totalPages}</Text>
+          <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel="Next extensions page"
+            disabled={!pagination.hasNext || extensionsQuery.isFetching}
+            onPress={() => setPage(page + 1)}
+          >
+            <Text style={[styles.retry, { color: !pagination.hasNext || extensionsQuery.isFetching ? colors.muted : colors.primary }]}>Next</Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
       <FlatList
         style={styles.inventoryList}
         data={filtered}
@@ -359,7 +384,7 @@ function AdminExtensionsContent() {
               {rows.length === 0 ? "No extensions yet" : "No matching extensions"}
             </Text>
             <Text style={[styles.stateText, { color: colors.muted }]}>
-              {rows.length === 0 ? "Create the first extension for this workspace." : "Change the search or filter."}
+              {rows.length === 0 ? "Create the first extension for this workspace." : "Change the search or filter, or browse another page."}
             </Text>
           </View>
         }
@@ -408,7 +433,7 @@ function AdminExtensionsContent() {
             <TextInput
               accessibilityLabel="Search extensions"
               style={[styles.searchInput, { color: colors.foreground }]}
-              placeholder="Search extension or person"
+              placeholder="Search this page for extension or person"
               placeholderTextColor={colors.muted}
               value={search}
               onChangeText={setSearch}
@@ -668,6 +693,7 @@ function AdminExtensionsContent() {
 }
 
 const styles = StyleSheet.create({
+  pagination: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingVertical: 8, borderBottomWidth: StyleSheet.hairlineWidth },
   header: {
     flexDirection: "row",
     alignItems: "center",
