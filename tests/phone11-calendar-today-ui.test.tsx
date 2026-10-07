@@ -38,6 +38,7 @@ vi.mock("../hooks/use-colors", () => ({
 }));
 
 import CalendarTodayScreen from "../app/calendar";
+import { PhoneTodayView } from "../components/calendar/phone-today-view";
 
 function render() {
   mocks.buttons.clear();
@@ -49,12 +50,34 @@ beforeEach(() => {
   mocks.canGoBack.mockReturnValue(true);
 });
 
-it("keeps the Calendar view read-only until the shared adapter supplies phone items", () => {
+it("reports unavailable sync without claiming an empty schedule until the shared adapter is available", () => {
   const html = render();
   expect(html).toContain("Today");
-  expect(html).toContain("Nothing scheduled today");
+  expect(html).toContain("Calendar sync unavailable");
+  expect(html).toContain("Your shared calendar is not connected in Phone11 yet");
+  expect(html).toContain("Scheduled calls, callbacks and meetings cannot be loaded until calendar sync is available");
+  expect(html).not.toContain("Check Super Number");
+  expect(html).not.toContain("Nothing scheduled today");
+  expect(html).not.toContain("will appear here");
   expect(html).toContain("Personal notes and recording follow-ups stay with the call");
   expect(html).not.toContain("Create event");
+});
+
+it("retains the empty schedule state for an available calendar with no supplied events", () => {
+  const html = renderToStaticMarkup(createElement(PhoneTodayView, { items: [] }));
+  expect(html).toContain("Nothing scheduled today");
+  expect(html).not.toContain("Calendar sync unavailable");
+});
+
+it("renders supplied scheduled events independently of the unavailable route", () => {
+  const now = new Date(2026, 9, 7, 9, 0);
+  const html = renderToStaticMarkup(createElement(PhoneTodayView, {
+    now,
+    items: [{ id: "meeting", kind: "meeting", status: "scheduled", startsAt: new Date(2026, 9, 7, 15, 0).toISOString(), title: "Weekly call" }],
+  }));
+  expect(html).toContain("Weekly call");
+  expect(html).not.toContain("Nothing scheduled today");
+  expect(html).not.toContain("Calendar sync unavailable");
 });
 
 it("returns to Settings from the Calendar view", () => {

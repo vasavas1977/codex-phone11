@@ -1,7 +1,6 @@
 import { ScrollView, Text, TouchableOpacity, View } from "react-native";
 import { router } from "expo-router";
 
-import { PhoneTodayView } from "@/components/calendar/phone-today-view";
 import { ScreenContainer } from "@/components/screen-container";
 import { useColors } from "@/hooks/use-colors";
 
@@ -9,8 +8,6 @@ import { useColors } from "@/hooks/use-colors";
  * Intentionally provider-inert until the shared Super Number calendar adapter
  * is authenticated and available. Do not add local calendar persistence here.
  */
-const sharedCalendarItems = [] as const;
-
 export default function CalendarTodayScreen() {
   const colors = useColors();
   const goBack = () => {
@@ -35,11 +32,18 @@ export default function CalendarTodayScreen() {
             Today
           </Text>
           <Text style={{ color: colors.muted, fontSize: 15, lineHeight: 22 }}>
-            Calls and meetings from your Super Number work calendar.
+            Calendar sync from Super Number is not available in Phone11 yet.
           </Text>
         </View>
 
-        <PhoneTodayView items={sharedCalendarItems} />
+        <View accessibilityLabel="Calendar sync unavailable" style={{ paddingVertical: 28, gap: 8 }}>
+          <Text style={{ color: colors.foreground, fontSize: 17, fontWeight: "600" }}>
+            Calendar sync unavailable
+          </Text>
+          <Text style={{ color: colors.muted, fontSize: 14, lineHeight: 20 }}>
+            Your shared calendar is not connected in Phone11 yet. Scheduled calls, callbacks and meetings cannot be loaded until calendar sync is available.
+          </Text>
+        </View>
 
         <View
           style={{
