@@ -218,9 +218,9 @@ async function main() {
         public.call_queues,public.queue_agents,public.queue_stats,public.time_conditions,public.time_condition_rules TO ${config.writer.user};
       GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA public TO ${config.writer.user}`);
     const readerPreflightAfter = await inspectPbxSchema(reader);
-    assert.equal(readerPreflightAfter.overall, "incompatible");
-    assert(readerPreflightAfter.advanced.issues.length > 0 && readerPreflightAfter.advanced.issues.every((issue) => issue.endsWith(":primary_key")));
-    record("SELECT-only reader preflight fails closed because information_schema hides primary-key metadata", "observed_gap");
+    assert.equal(readerPreflightAfter.overall, "compatible");
+    assert.deepEqual(readerPreflightAfter.advanced.issues, []);
+    record("SELECT-only reader preflight validates catalog primary keys without writer privileges");
     const afterPreflight = await inspectPbxSchema(writer);
     assert.equal(afterPreflight.overall, "compatible"); assert.equal(afterPreflight.advanced.status, "compatible");
     record("restricted writer read-only preflight is compatible after ordered migrations");

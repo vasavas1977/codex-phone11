@@ -39,6 +39,7 @@ type ForeignKeyRow = {
 type PrimaryKeyRow = {
   table_name: string;
   columns: string[];
+  valid_shape: boolean | null;
 };
 
 type TriggerRow = {
@@ -509,14 +510,26 @@ export async function inspectPbxSchema(
     );
     const primaryKeysResult = await client.query<PrimaryKeyRow>(
       `
-        SELECT tc.table_name,array_agg(kcu.column_name::text ORDER BY kcu.ordinal_position) AS columns
-        FROM information_schema.table_constraints tc
-        JOIN information_schema.key_column_usage kcu
-          ON tc.constraint_catalog=kcu.constraint_catalog AND tc.constraint_schema=kcu.constraint_schema
-         AND tc.constraint_name=kcu.constraint_name
-        WHERE tc.constraint_schema=current_schema() AND tc.constraint_type='PRIMARY KEY'
-          AND tc.table_name=ANY($1::text[])
-        GROUP BY tc.table_name`,
+        SELECT c.relname AS table_name,
+               ARRAY(SELECT a.attname::text
+                 FROM pg_catalog.unnest(p.conkey) WITH ORDINALITY AS key(attnum,position)
+                 JOIN pg_catalog.pg_attribute a ON a.attrelid=p.conrelid AND a.attnum=key.attnum
+                 WHERE a.attnum>0 AND NOT a.attisdropped ORDER BY key.position) AS columns,
+               p.convalidated AND NOT p.condeferrable AND p.connamespace=c.relnamespace
+               AND idx.relkind='i' AND idx.relpersistence='p' AND NOT idx.relispartition
+               AND ix.indisprimary AND ix.indisunique AND ix.indimmediate
+               AND ix.indisvalid AND ix.indisready AND ix.indislive
+               AND ix.indnkeyatts=pg_catalog.cardinality(p.conkey)
+               AND ix.indnatts=pg_catalog.cardinality(p.conkey)
+               AND ix.indkey::text=pg_catalog.array_to_string(p.conkey,' ')
+               AND ix.indexprs IS NULL AND ix.indpred IS NULL AS valid_shape
+        FROM pg_catalog.pg_constraint p
+        JOIN pg_catalog.pg_class c ON c.oid=p.conrelid
+        JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+        JOIN pg_catalog.pg_index ix ON ix.indexrelid=p.conindid AND ix.indrelid=p.conrelid
+        JOIN pg_catalog.pg_class idx ON idx.oid=ix.indexrelid
+        WHERE n.nspname=pg_catalog.current_schema() AND p.contype='p'
+          AND c.relname=ANY($1::text[])`,
       [Object.keys(advancedSchema)],
     );
     const triggersResult = await client.query<TriggerRow>(
@@ -596,7 +609,8 @@ export async function inspectPbxSchema(
           advancedIssues.push(`${table}.${column}:foreign_key`);
       }
       const primaryKeys = new Map(
-        primaryKeysResult.rows.map((row) => [row.table_name, row.columns]),
+        primaryKeysResult.rows.filter((row) => row.valid_shape === true)
+          .map((row) => [row.table_name, row.columns]),
       );
       for (const [table, expected] of Object.entries(requiredPrimaryKeys)) {
         if (JSON.stringify(primaryKeys.get(table)) !== JSON.stringify(expected))

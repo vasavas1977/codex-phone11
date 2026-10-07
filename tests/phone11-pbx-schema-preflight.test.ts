@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { isAbsolute } from "node:path";
 import { URL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { Pool, type QueryResultRow } from "pg";
@@ -186,6 +187,12 @@ describe("PBX schema preflight", () => {
 });
 
 const connectionString = process.env.PHONE11_PBX_TEST_DATABASE_URL;
+const socket = process.env.PHONE11_PBX_TEST_SOCKET;
+if (socket && (!isAbsolute(socket) || connectionString))
+  throw new Error("PBX preflight tests require one explicit isolated connection");
+const connection = socket
+  ? { host: socket, user: "phone11_test", database: "phone11_pbx_test" }
+  : { connectionString };
 if (connectionString) {
   const url = new URL(connectionString);
   if (
@@ -202,18 +209,31 @@ if (connectionString) {
   }
 }
 
-describe.skipIf(!connectionString)(
+describe.skipIf(!connectionString && !socket)(
   "PBX schema preflight against isolated PostgreSQL",
   () => {
     const schema = `pbx_preflight_${randomBytes(8).toString("hex")}`;
-    const admin = new Pool({ connectionString, ssl: false });
+    const readerRole = `pbx_reader_${randomBytes(8).toString("hex")}`;
+    const readerPassword = randomBytes(32).toString("hex");
+    const readerConnection = connectionString ? { connectionString: (() => {
+        const url = new URL(connectionString!);
+        url.username = readerRole; url.password = readerPassword;
+        return url.toString();
+      })() } : { ...connection, user: readerRole, password: readerPassword };
+    const admin = new Pool({ ...connection, ssl: false });
     const database = new Pool({
-      connectionString,
+      ...connection,
       ssl: false,
       options: `-c search_path=${schema} -c phone11.expected_database=phone11_pbx_test -c phone11.expected_schema=${schema}`,
     });
+    const reader = new Pool({
+      ...readerConnection, ssl: false,
+      options: `-c search_path=${schema}`,
+    });
 
     beforeAll(async () => {
+      await admin.query(`CREATE ROLE ${readerRole} LOGIN PASSWORD '${readerPassword}'
+        NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOINHERIT`);
       await admin.query(`CREATE SCHEMA ${schema}`);
       await database.query(`
       CREATE TABLE tenants(id INTEGER PRIMARY KEY,name TEXT,plan TEXT,status TEXT);
@@ -236,8 +256,10 @@ describe.skipIf(!connectionString)(
     });
 
     afterAll(async () => {
+      await reader.end();
       await database.end();
       await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+      await admin.query(`DROP ROLE IF EXISTS ${readerRole}`);
       await admin.end();
     });
 
@@ -285,6 +307,71 @@ describe.skipIf(!connectionString)(
         client.release();
       }
     });
+
+    it("accepts catalog primary keys through a real SELECT-only login without granting writes", async () => {
+      await admin.query(`GRANT USAGE ON SCHEMA ${schema} TO ${readerRole};
+        GRANT SELECT ON ALL TABLES IN SCHEMA ${schema} TO ${readerRole}`);
+      const client = await reader.connect();
+      try {
+        const identity = (await client.query(`SELECT session_user,current_user,
+          r.rolsuper,r.rolbypassrls,r.rolcreaterole,r.rolcreatedb
+          FROM pg_catalog.pg_roles r WHERE r.rolname=current_user`)).rows[0];
+        expect(identity).toEqual({ session_user: readerRole, current_user: readerRole,
+          rolsuper: false, rolbypassrls: false, rolcreaterole: false, rolcreatedb: false });
+        expect((await client.query(`SELECT table_name FROM information_schema.table_constraints
+          WHERE constraint_schema=$1 AND constraint_type='PRIMARY KEY'`, [schema])).rows).toEqual([]);
+        const result = await inspectPbxSchema({ query: async (text: string, values?: unknown[]) => {
+          const result = await client.query(text, values);
+          if (text.startsWith("BEGIN")) {
+            expect((await client.query("SHOW transaction_read_only")).rows[0].transaction_read_only).toBe("on");
+            expect((await client.query("SHOW transaction_isolation")).rows[0].transaction_isolation).toBe("repeatable read");
+          }
+          return result;
+        } } as never);
+        expect(result).toMatchObject({ readOnly: true, overall: "compatible",
+          advanced: { status: "compatible", issues: [] } });
+        await expect(client.query("INSERT INTO ring_group_members(ring_group_id,extension_id) VALUES(1,1)"))
+          .rejects.toMatchObject({ code: "42501" });
+        await expect(client.query("CREATE TABLE forbidden_reader_write(id integer)"))
+          .rejects.toMatchObject({ code: "42501" });
+      } finally { client.release(); }
+    });
+
+    for (const [label, definition] of [
+      ["missing", ""],
+      ["other-schema only", ""],
+      ["reversed order", "PRIMARY KEY(extension_id,ring_group_id)"],
+      ["wrong columns", "PRIMARY KEY(ring_group_id)"],
+      ["included column", "PRIMARY KEY(ring_group_id,extension_id) INCLUDE(priority)"],
+      ["deferrable immediate", "PRIMARY KEY(ring_group_id,extension_id) DEFERRABLE INITIALLY IMMEDIATE"],
+      ["deferrable deferred", "PRIMARY KEY(ring_group_id,extension_id) DEFERRABLE INITIALLY DEFERRED"],
+    ] as const) {
+      it(`refuses ${label} advanced primary key through the SELECT-only login`, async () => {
+        const decoySchema = `pbx_pk_decoy_${randomBytes(8).toString("hex")}`;
+        if (label === "other-schema only") await admin.query(`CREATE SCHEMA ${decoySchema};
+          CREATE TABLE ${decoySchema}.ring_group_members(ring_group_id integer,extension_id integer,
+            PRIMARY KEY(ring_group_id,extension_id))`);
+        await database.query("ALTER TABLE ring_group_members DROP CONSTRAINT ring_group_members_pkey");
+        try {
+          if (definition) await database.query(`ALTER TABLE ring_group_members ADD CONSTRAINT ring_group_members_pkey ${definition}`);
+          const catalog = async () => (await database.query(`SELECT p.oid,p.conkey,p.condeferrable,
+            pg_catalog.pg_get_constraintdef(p.oid) AS definition FROM pg_catalog.pg_constraint p
+            WHERE p.conrelid='ring_group_members'::regclass AND p.contype='p'`)).rows;
+          const before = await catalog();
+          const client = await reader.connect();
+          try {
+            const result = await inspectPbxSchema(client);
+            expect(result.overall).toBe("incompatible");
+            expect(result.advanced.issues).toEqual(["ring_group_members:primary_key"]);
+          } finally { client.release(); }
+          expect(await catalog()).toEqual(before);
+        } finally {
+          await database.query("ALTER TABLE ring_group_members DROP CONSTRAINT IF EXISTS ring_group_members_pkey");
+          await database.query("ALTER TABLE ring_group_members ADD PRIMARY KEY(ring_group_id,extension_id)");
+          if (label === "other-schema only") await admin.query(`DROP SCHEMA ${decoySchema} CASCADE`);
+        }
+      });
+    }
 
     it("accepts all advanced foreign keys with ALWAYS-enabled enforcement", async () => {
       const client = await database.connect();
