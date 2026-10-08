@@ -13,6 +13,21 @@ cannot substitute a different source for the checks preceding the signed build.
 It is a standalone, foreground-only Siprix trial with a 60-second call limit;
 Android background wake and store distribution are not enabled.
 
+## Safe build-failure diagnosis
+
+The guarded wrapper writes at most one diagnostic to FD 3, which the workflow
+opens at its fixed private runner-temp filename. Only wrapper-created error
+brands can identify invocation, profile, CLI hash/version or existing-keystore
+failures. Local credential access and credential generation have separate
+refusal codes. An unknown CLI error or asynchronous nonzero exit stays
+`UNKNOWN_CLI_FAILURE`; provider error text is never classified or printed.
+
+The public reporter accepts only a bounded canonical two-field diagnostic and
+prints a literal allowlisted message. Raw EAS stdout/stderr remain private,
+diagnostics are not uploaded, and successful build-receipt JSON is unchanged.
+These diagnostics do not prove the cause of the historical failed request or
+authorize creating, replacing or assigning signing credentials.
+
 GitHub does not register a new manual workflow until it exists on the default
 branch. The initial direct dispatch returned HTTP 404 and requested no EAS build.
 Using the existing registered native-check entry avoids merging this feature

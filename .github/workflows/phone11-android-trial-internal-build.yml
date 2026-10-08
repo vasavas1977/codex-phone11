@@ -48,8 +48,8 @@ jobs:
           NODE_OPTIONS: ''
         run: |
           umask 077
-          if ! node scripts/run-phone11-android-trial-internal-build.cjs > "$RUNNER_TEMP/phone11-android-build-private.json" 2> "$RUNNER_TEMP/phone11-android-build-private.stderr"; then
-            echo 'Phone11 Android internal build failed. Signing remains restricted to existing credentials.' >&2
+          if ! node scripts/run-phone11-android-trial-internal-build.cjs > "$RUNNER_TEMP/phone11-android-build-private.json" 2> "$RUNNER_TEMP/phone11-android-build-private.stderr" 3> "$RUNNER_TEMP/phone11-android-build-diagnostic.json"; then
+            node scripts/report-phone11-android-build-failure.cjs >&2
             exit 1
           fi
           node scripts/check-phone11-android-trial-build-result.mjs "$RUNNER_TEMP/phone11-android-build-private.json" "$GITHUB_SHA" > "$RUNNER_TEMP/phone11-android-build-receipt.json"
