@@ -24,6 +24,9 @@ public final class SiprixAndroidAdapter implements Phone11CallRuntime.Engine {
     if(version==null||!version.trim().matches("(?:Siprix: ?)?1\\.1\\.0 from 20260905_1222"))throw new Phone11CallRuntime.Failure("E_SDK_VERSION");
     activeCallbacks=new Callbacks(listener);core.setModelListener(activeCallbacks);
     IniData config=new IniData();config.setLogLevelFile(IniData.LogLevel.NONE);config.setLogLevelIde(IniData.LogLevel.NONE);
+    // Native build input only. Presence never proves licensed SDK behavior.
+    String buildLicense=Phone11SiprixBuildLicense.value();
+    if(!buildLicense.isEmpty())config.setLicense(buildLicense);
     config.setTlsVerifyServer(true);config.setSingleCallMode(!consultationEnabled);config.setEnableVideoCall(false);
     config.setUseProximity(false);config.setUseTelState(false);config.setUseVolChange(false);
     config.setUnregOnDestroy(true);config.setBrandName("Phone11");ok(core.initialize(config));return version;

@@ -31,7 +31,7 @@ export function AdminWorkspaceBoundary({
   if (!user) {
     title = "Sign in to manage Phone11";
     detail = "Open the admin portal after signing in.";
-  } else if (workspace.membershipsQuery.isLoading) {
+  } else if (workspace.membershipsQuery.isLoading || workspace.admissionChecking) {
     title = "Checking workspace access";
     detail = "Phone11 is confirming your workspace membership.";
     loading = true;
@@ -41,6 +41,14 @@ export function AdminWorkspaceBoundary({
   } else if (workspace.manageableMemberships.length === 0) {
     title = "Administrator access required";
     detail = "Only a workspace owner or administrator can manage Phone11.";
+  } else if (workspace.updateRequired) {
+    title = "Workspace API update required";
+    detail =
+      "This server cannot safely select between your workspaces. Administration will be available after the workspace API is updated.";
+  } else if (workspace.admissionError) {
+    title = "Workspace access unavailable";
+    detail =
+      "Phone11 could not confirm the current workspace identity and administrator role. Try again.";
   } else if (workspace.selectedTenantId === null) {
     title = "Choose a workspace";
     detail = "Select the workspace you want to manage in the admin portal.";
@@ -70,7 +78,9 @@ export function AdminWorkspaceBoundary({
         >
           {detail}
         </Text>
-        {workspace.membershipsQuery.isError ? (
+        {workspace.membershipsQuery.isError ||
+        workspace.admissionError ||
+        workspace.updateRequired ? (
           <TouchableOpacity
             accessibilityRole="button"
             accessibilityLabel="Try again"

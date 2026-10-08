@@ -32,6 +32,7 @@ on:
       - "scripts/phone11-voicemail-runner.sh"
       - "scripts/phone11-voicemail-bundle*.ts"
       - "scripts/phone11-pbx-*.ts"
+      - "scripts/generate-phone11-native-license.py"
       - "package.json"
       - "pnpm-lock.yaml"
       - "patches/**"
@@ -68,6 +69,7 @@ on:
       - "scripts/phone11-voicemail-runner.sh"
       - "scripts/phone11-voicemail-bundle*.ts"
       - "scripts/phone11-pbx-*.ts"
+      - "scripts/generate-phone11-native-license.py"
       - "package.json"
       - "pnpm-lock.yaml"
       - "patches/**"
@@ -90,6 +92,8 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+      - name: Check private native license inputs with synthetic values
+        run: python3 tests/phone11-native-license-input.test.py
       - name: Enable pinned package manager
         run: |
           corepack enable

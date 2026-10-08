@@ -16,6 +16,24 @@ option(PHONE11_DESKTOP_WARM_TRANSFER_SOURCE_ENABLED "Compile source-only bounded
 add_executable(phone11_siprix_helper phone11_siprix_helper.cpp)
 target_compile_definitions(phone11_siprix_helper PRIVATE PHONE11_DESKTOP_WARM_TRANSFER_SOURCE_ENABLED=$<BOOL:${PHONE11_DESKTOP_WARM_TRANSFER_SOURCE_ENABLED}>)
 
+# No secret in CMake cache, compile definitions or argv. Refresh on every build.
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+set(PHONE11_NATIVE_LICENSE_DIR "${CMAKE_CURRENT_BINARY_DIR}/phone11-native-license")
+set(PHONE11_NATIVE_LICENSE_TRIAL_ARGUMENT)
+if(PHONE11_USE_FAKE_SDK)
+  set(PHONE11_NATIVE_LICENSE_TRIAL_ARGUMENT --trial-only)
+else()
+  target_compile_definitions(phone11_siprix_helper PRIVATE PHONE11_NATIVE_LICENSE_INPUT_ENABLED=1)
+  target_include_directories(phone11_siprix_helper PRIVATE "${PHONE11_NATIVE_LICENSE_DIR}")
+endif()
+add_custom_target(phone11_native_license_input
+  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/generate-phone11-native-license.py"
+    --language cpp --output "${PHONE11_NATIVE_LICENSE_DIR}/Phone11SiprixBuildLicense.h"
+    ${PHONE11_NATIVE_LICENSE_TRIAL_ARGUMENT}
+  BYPRODUCTS "${PHONE11_NATIVE_LICENSE_DIR}/Phone11SiprixBuildLicense.h"
+  VERBATIM)
+add_dependencies(phone11_siprix_helper phone11_native_license_input)
+
 if(PHONE11_USE_FAKE_SDK)
   if(WIN32)
     # The real Windows SDK names its otherwise compatible C++ header Siprix.h.

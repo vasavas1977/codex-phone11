@@ -8,12 +8,35 @@ def expectedApiSha = '4929fc4b157bb65b9739a8d872079975d369501c9b55ece7b4506a9c5a
 def sdkApiJar = layout.buildDirectory.file('phone11-siprix-api/classes.jar')
 def sourceEnabled = findProperty('phone11AndroidForegroundSourceEnabled') == 'true'
 def consultationEnabled = findProperty('phone11AndroidConsultationSourceEnabled') == 'true'
+// Private generated native input only; never a Gradle property/BuildConfig field.
+// Re-run on every compile so removing the environment value removes stale input.
+def nativeLicenseDir = layout.buildDirectory.dir('phone11-native-license')
+def generateNativeLicense = tasks.register('generatePhone11SiprixNativeLicense') {
+  outputs.upToDateWhen { false }
+  doLast {
+    Process child = null
+    try {
+      // Gradle Exec debug logging can dump inherited environment values. Use a
+      // direct child with both streams discarded and only a constant failure.
+      child = new ProcessBuilder('python3', new File(projectDir, '../../../scripts/generate-phone11-native-license.py').canonicalPath,
+        '--language', 'java', '--output', new File(nativeLicenseDir.get().asFile.canonicalFile, 'Phone11SiprixBuildLicense.java').path)
+        .redirectOutput(ProcessBuilder.Redirect.DISCARD).redirectError(ProcessBuilder.Redirect.DISCARD).start()
+      if (!child.waitFor(30, java.util.concurrent.TimeUnit.SECONDS) || child.exitValue() != 0)
+        throw new GradleException('E_PHONE11_NATIVE_LICENSE_INPUT')
+    } catch (Exception ignored) {
+      throw new GradleException('E_PHONE11_NATIVE_LICENSE_INPUT')
+    } finally {
+      if (child != null && child.isAlive()) child.destroyForcibly()
+    }
+  }
+}
 if (consultationEnabled && !sourceEnabled) throw new GradleException('Android consultation source requires the explicit foreground source gate')
 android {
   namespace 'ai.phone11.siprix'
   compileSdkVersion rootProject.ext.compileSdkVersion
   defaultConfig { minSdkVersion 24 }
   buildFeatures { buildConfig true }
+  sourceSets.main.java.srcDir(nativeLicenseDir)
   defaultConfig {
     buildConfigField 'boolean', 'FOREGROUND_SOURCE_ENABLED', sourceEnabled.toString()
     buildConfigField 'boolean', 'CONSULTATION_SOURCE_ENABLED', consultationEnabled.toString()
@@ -64,7 +87,7 @@ gradle.projectsEvaluated {
     if (!included) throw new GradleException('Phone11 Android source activation requires :app implementation(files(pinnedSiprixAar)); compileOnly cannot supply the executable SIP runtime')
   }
 }
-tasks.matching { it.name.startsWith('compile') && it.name.endsWith('JavaWithJavac') }.configureEach { dependsOn stageSdkApi }
+tasks.matching { it.name.startsWith('compile') && it.name.endsWith('JavaWithJavac') }.configureEach { dependsOn stageSdkApi, generateNativeLicense }
 dependencies {
   implementation 'com.facebook.react:react-android'
   compileOnly files(sdkApiJar).builtBy(stageSdkApi)

@@ -19,6 +19,13 @@
 #error "Phone11 desktop helper supports macOS and Windows only"
 #endif
 
+#ifndef PHONE11_NATIVE_LICENSE_INPUT_ENABLED
+#define PHONE11_NATIVE_LICENSE_INPUT_ENABLED 0
+#endif
+#if PHONE11_NATIVE_LICENSE_INPUT_ENABLED
+#include "Phone11SiprixBuildLicense.h"
+#endif
+
 #ifndef PHONE11_DESKTOP_WARM_TRANSFER_SOURCE_ENABLED
 #define PHONE11_DESKTOP_WARM_TRANSFER_SOURCE_ENABLED 0
 #endif
@@ -130,8 +137,13 @@ class SiprixModule {
     if (module_ == nullptr) return false;
     Siprix::IniData* ini = Siprix::Ini_GetDefault();
     if (ini == nullptr) { shutdown(); return false; }
-    // Keep certificate verification on and all vendor logging off. The trial
-    // SDK enforces its own 60-second call limit; no key is embedded here.
+    // Native build input only: never argv, runtime environment, IPC or output.
+    // Presence does not prove entitlement; SDK failure/trial behavior prevails.
+#if PHONE11_NATIVE_LICENSE_INPUT_ENABLED
+    const char* buildLicense = Phone11NativeBuild::license();
+    if (buildLicense[0] != '\0') Siprix::Ini_SetLicense(ini, buildLicense);
+#endif
+    // Keep certificate verification on and all vendor logging off.
     Siprix::Ini_SetTlsVerifyServer(ini, true);
     Siprix::Ini_SetLogLevelFile(ini, Siprix::LogLevel::NoLog);
     Siprix::Ini_SetLogLevelIde(ini, Siprix::LogLevel::NoLog);

@@ -417,7 +417,9 @@ export const pbxRouter = router({
       if (input?.tenantId !== undefined) {
         await getTenantAdminReadCtx(ctx, input.tenantId);
       }
-      return readManagementCapabilities();
+      // This router enforces selectedTenantSchema and fresh authority for tenant.get/members.
+      // Legacy deployed routers omit this bit; clients must not infer it from schema flags.
+      return { ...(await readManagementCapabilities()), explicitTenantReads: true as const };
     }),
 
   // ========================================================================

@@ -299,9 +299,21 @@ describe("PBX selected workspace reads", () => {
     db.query.mockResolvedValueOnce({ rows: memberships })
       .mockResolvedValueOnce({ rows: phoneNumberSchemaRows });
     await expect(pbxRouter.createCaller(context()).capabilities({ tenantId: 12 }))
-      .resolves.toMatchObject({ phoneNumbers: true });
+      .resolves.toMatchObject({ phoneNumbers: true, explicitTenantReads: true });
     expect(requireLiveTenantAdminMembership).toHaveBeenCalledWith(9, 12);
     expect(db.query.mock.calls[1][0]).toContain("information_schema.columns");
+  });
+
+  it("advertises explicit reads only through the strict selected-tenant contract", async () => {
+    for (const input of [{ tenantId: 0 }, { tenantId: -1 }, { tenantId: 7, extra: true }]) {
+      await expect(pbxRouter.createCaller(context()).capabilities(input as any))
+        .rejects.toMatchObject({ code: "BAD_REQUEST" });
+      await expect(pbxRouter.createCaller(context()).tenant.get(input as any))
+        .rejects.toMatchObject({ code: "BAD_REQUEST" });
+      await expect(pbxRouter.createCaller(context()).tenant.members(input as any))
+        .rejects.toMatchObject({ code: "BAD_REQUEST" });
+    }
+    expect(db.query).not.toHaveBeenCalled();
   });
 
   it("does not inspect capabilities after selected admin access is revoked", async () => {
@@ -376,6 +388,7 @@ describe("PBX management capabilities", () => {
     await expect(
       pbxRouter.createCaller(context()).capabilities(),
     ).resolves.toEqual({
+      explicitTenantReads: true,
       phoneNumbers: false,
       sites: false,
       ringGroups: false,

@@ -6,7 +6,18 @@
  * call records, fraud controls, and dashboard stats.
  */
 import { trpc } from "@/lib/trpc";
-import { useEffect, useSyncExternalStore } from "react";
+import {
+  createContext,
+  createElement,
+  useContext,
+  useEffect,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import type { TenantMembership } from "@/server/pbx/tenant-middleware";
+import type { inferRouterOutputs } from "@trpc/server";
+import type { AppRouter } from "@/server/routers";
 import { useAuth } from "@/hooks/use-auth";
 import * as Auth from "@/lib/_core/auth";
 
@@ -49,75 +60,268 @@ Auth.addAuthChangeListener(() => {
     setAdminWorkspaceSelection(userId, null);
 });
 
-/** A session-only admin choice. Never infer a multi-workspace write target. */
-export function usePbxAdminWorkspace() {
-  const { user } = useAuth({ autoFetch: false });
+type TenantRead = inferRouterOutputs<AppRouter>["pbx"]["tenant"]["get"];
+
+export class AdminWorkspaceAdmissionError extends Error {
+  constructor(readonly code: "UPDATE_REQUIRED" | "ACCESS_UNAVAILABLE") {
+    super(code);
+  }
+}
+
+function membershipIdentity(
+  rows: TenantMembership[],
+  userId: number,
+): string | null {
+  if (!Array.isArray(rows) || rows.length === 0) return null;
+  const ids = new Set<number>();
+  for (const row of rows) {
+    if (
+      row.userId !== userId ||
+      !Number.isSafeInteger(row.tenantId) ||
+      row.tenantId <= 0 ||
+      row.tenantStatus !== "active" ||
+      typeof row.tenantName !== "string" ||
+      !["owner", "admin", "manager", "user"].includes(row.role) ||
+      ids.has(row.tenantId)
+    )
+      return null;
+    ids.add(row.tenantId);
+  }
+  return JSON.stringify(
+    rows
+      .map(({ userId, tenantId, tenantName, tenantStatus, role }) => [
+        userId,
+        tenantId,
+        tenantName,
+        tenantStatus,
+        role,
+      ])
+      .sort((a, b) => Number(a[1]) - Number(b[1])),
+  );
+}
+
+/** A fresh capability and matching tenant response admit reads, never a guessed API version. */
+export async function verifyAdminWorkspaceAdmission(input: {
+  userId: number;
+  tenantId: number;
+  memberships: TenantMembership[];
+  readCapabilities: () => Promise<PbxManagementCapabilities>;
+  readTenant: () => Promise<TenantRead>;
+}) {
+  const identity = membershipIdentity(input.memberships, input.userId);
+  const selected = input.memberships.find(
+    (row) => row.tenantId === input.tenantId,
+  );
+  if (!identity || !selected || !["owner", "admin"].includes(selected.role))
+    throw new AdminWorkspaceAdmissionError("ACCESS_UNAVAILABLE");
+  const capabilities = await input.readCapabilities();
+  if (input.memberships.length > 1 && capabilities.explicitTenantReads !== true)
+    throw new AdminWorkspaceAdmissionError("UPDATE_REQUIRED");
+  const tenant = await input.readTenant();
+  if (
+    tenant.id !== input.tenantId ||
+    tenant.userRole !== selected.role ||
+    !["owner", "admin"].includes(String(tenant.userRole)) ||
+    membershipIdentity(tenant.memberships, input.userId) !== identity
+  )
+    throw new AdminWorkspaceAdmissionError("ACCESS_UNAVAILABLE");
+  return {
+    ownerId: input.userId,
+    tenantId: input.tenantId,
+    identity,
+    capabilities,
+    tenant,
+  };
+}
+
+function useAdminWorkspaceState() {
+  // One provider hydrates direct admin navigation and shares admission across all descendants.
+  const { user, loading: authLoading } = useAuth();
   const userId = typeof user?.id === "number" ? user.id : null;
   const selection = useSyncExternalStore(
     subscribeAdminWorkspace,
     getAdminWorkspaceSelection,
     getAdminWorkspaceSelection,
   );
+  const utils = trpc.useUtils();
+  const queryClient = useQueryClient();
   const membershipsQuery = trpc.pbx.tenant.memberships.useQuery(undefined, {
-    enabled: userId !== null,
+    enabled: userId !== null && !authLoading,
     staleTime: 0,
+    gcTime: 0,
     refetchOnMount: "always",
+    refetchOnWindowFocus: true,
   });
-  // This query has no server input, so a cached response may belong to the
-  // prior login until refetch completes. Discard it before resolving a target.
-  const memberships = (membershipsQuery.data ?? []).filter(
-    (membership) => membership.userId === userId,
-  );
+  const freshMemberships =
+    membershipsQuery.isSuccess && !membershipsQuery.isFetching && !authLoading;
+  const rows = Array.isArray(membershipsQuery.data)
+    ? membershipsQuery.data
+    : [];
+  const memberships =
+    freshMemberships && rows.every((row) => row?.userId === userId) ? rows : [];
   const manageableMemberships = memberships.filter(
     (membership) => membership.role === "owner" || membership.role === "admin",
   );
   const storedTenantId =
     selection.userId === userId ? selection.tenantId : null;
-  const selectedTenantId =
+  const requestedTenantId =
     manageableMemberships.length === 1
       ? manageableMemberships[0].tenantId
-      : manageableMemberships.some(
-            (membership) => membership.tenantId === storedTenantId,
-          )
+      : manageableMemberships.some((row) => row.tenantId === storedTenantId)
         ? storedTenantId
         : null;
-
-  useEffect(() => {
-    // A different signed-in account must never inherit the previous account's
-    // workspace choice, even if React Query still has old response data.
-    if (selection.userId !== userId) setAdminWorkspaceSelection(userId, null);
-  }, [selection.userId, userId]);
-
-  const chooseTenant = (tenantId: number) => {
-    if (
-      userId === null ||
-      !manageableMemberships.some(
-        (membership) => membership.tenantId === tenantId,
-      )
-    )
-      return;
-    setAdminWorkspaceSelection(userId, tenantId);
+  const identity =
+    userId === null ? null : membershipIdentity(memberships, userId);
+  const admissionQuery = useQuery({
+    // A refreshed membership result or a workspace/account change must never reuse admission.
+    queryKey: [
+      "phone11-admin-workspace-admission",
+      userId,
+      requestedTenantId,
+      identity,
+      membershipsQuery.dataUpdatedAt,
+    ],
+    enabled:
+      freshMemberships &&
+      userId !== null &&
+      requestedTenantId !== null &&
+      identity !== null,
+    queryFn: async ({ signal }) => {
+      if (userId === null || requestedTenantId === null)
+        throw new AdminWorkspaceAdmissionError("ACCESS_UNAVAILABLE");
+      // Retire rows from an earlier implicit workspace before admitting another scope.
+      const predicate = (query: { queryKey: readonly unknown[] }) => {
+        const path = query.queryKey[0];
+        return (
+          Array.isArray(path) &&
+          (path[0] === "ivr" ||
+            (path[0] === "pbx" &&
+              !(path[1] === "tenant" && path[2] === "memberships")))
+        );
+      };
+      await queryClient.cancelQueries({ predicate });
+      signal.throwIfAborted();
+      queryClient.removeQueries({ predicate });
+      const result = await verifyAdminWorkspaceAdmission({
+        userId,
+        tenantId: requestedTenantId,
+        memberships,
+        readCapabilities: async () => {
+          const result = await utils.pbx.capabilities.fetch(
+            { tenantId: requestedTenantId },
+            { staleTime: 0 },
+          );
+          signal.throwIfAborted();
+          return result;
+        },
+        readTenant: async () => {
+          signal.throwIfAborted();
+          const result = await utils.pbx.tenant.get.fetch(
+            { tenantId: requestedTenantId },
+            { staleTime: 0 },
+          );
+          signal.throwIfAborted();
+          return result;
+        },
+      });
+      if (Auth.getAuthSnapshot().user?.id !== userId)
+        throw new AdminWorkspaceAdmissionError("ACCESS_UNAVAILABLE");
+      return {
+        ...result,
+        membershipObservedAt: membershipsQuery.dataUpdatedAt,
+      };
+    },
+    staleTime: 0,
+    gcTime: 0,
+    retry: false,
+    refetchOnWindowFocus: false, // Membership focus refresh runs the complete admission sequence.
+  });
+  const admitted =
+    freshMemberships &&
+    admissionQuery.isSuccess &&
+    !admissionQuery.isFetching &&
+    admissionQuery.data?.ownerId === userId &&
+    admissionQuery.data?.tenantId === requestedTenantId &&
+    admissionQuery.data?.identity === identity &&
+    admissionQuery.data?.membershipObservedAt ===
+      membershipsQuery.dataUpdatedAt;
+  const selectedTenantId = admitted ? requestedTenantId : null;
+  const admissionChecking =
+    authLoading ||
+    membershipsQuery.isFetching ||
+    (requestedTenantId !== null &&
+      (admissionQuery.isPending || admissionQuery.isFetching));
+  const updateRequired =
+    admissionQuery.isError &&
+    admissionQuery.error instanceof AdminWorkspaceAdmissionError &&
+    admissionQuery.error.code === "UPDATE_REQUIRED";
+  const admissionError = admissionQuery.isError && !updateRequired;
+  // Child hooks share these results rather than mounting queries that repeatedly invalidate the gate.
+  const tenantQuery = {
+    ...admissionQuery,
+    data: admitted ? admissionQuery.data?.tenant : undefined,
+    isSuccess: admitted,
+    isLoading: admissionChecking,
+    isError: admissionError,
+  };
+  const capabilitiesQuery = {
+    ...admissionQuery,
+    data: admitted ? admissionQuery.data?.capabilities : undefined,
+    isSuccess: admitted,
+    isLoading: admissionChecking,
+    isError: admissionError,
   };
 
+  useEffect(() => {
+    if (selection.userId !== userId) setAdminWorkspaceSelection(userId, null);
+  }, [selection.userId, userId]);
+  const chooseTenant = (tenantId: number) => {
+    if (
+      userId !== null &&
+      freshMemberships &&
+      manageableMemberships.some((row) => row.tenantId === tenantId)
+    )
+      setAdminWorkspaceSelection(userId, tenantId);
+  };
   return {
     membershipsQuery,
     manageableMemberships,
     selectedTenantId,
+    requestedTenantId,
     chooseTenant,
-    // Legacy PBX procedures without tenantId are safe only when the account
-    // has exactly one active membership, regardless of its role elsewhere.
-    canUseImplicitTenant:
-      membershipsQuery.isSuccess && memberships.length === 1,
+    isAdmitted: admitted,
+    admissionChecking,
+    admissionError,
+    updateRequired,
+    tenantQuery,
+    capabilitiesQuery,
+    canUseImplicitTenant: admitted && memberships.length === 1,
     needsSelection:
-      membershipsQuery.isSuccess &&
+      freshMemberships &&
       manageableMemberships.length > 1 &&
-      selectedTenantId === null,
-    hasMultipleMemberships:
-      membershipsQuery.isSuccess && memberships.length > 1,
+      requestedTenantId === null,
+    hasMultipleMemberships: freshMemberships && memberships.length > 1,
   };
+}
+const AdminWorkspaceContext = createContext<ReturnType<
+  typeof useAdminWorkspaceState
+> | null>(null);
+export function AdminWorkspaceProvider({ children }: { children: ReactNode }) {
+  return createElement(
+    AdminWorkspaceContext.Provider,
+    { value: useAdminWorkspaceState() },
+    children,
+  );
+}
+export function usePbxAdminWorkspace() {
+  const workspace = useContext(AdminWorkspaceContext);
+  if (!workspace) throw new Error("Admin workspace provider is required");
+  return workspace;
 }
 
 export type PbxManagementCapabilities = {
+  /** Absent on legacy APIs. Only the explicit selected-tenant router advertises true. */
+  explicitTenantReads?: boolean;
   phoneNumbers: boolean;
   sites: boolean;
   ringGroups: boolean;
@@ -144,16 +348,11 @@ export function usePbxCapabilities(enabled: boolean = true) {
 /** Schema availability bound to a live selected workspace administrator. */
 export function usePbxAdminCapabilities(enabled: boolean = true) {
   const workspace = usePbxAdminWorkspace();
-  return trpc.pbx.capabilities.useQuery(
-    { tenantId: workspace.selectedTenantId ?? 0 },
-    {
-      enabled: enabled && workspace.selectedTenantId !== null,
-      staleTime: 0,
-      gcTime: 0,
-      refetchOnMount: "always",
-      refetchOnWindowFocus: true,
-    },
-  );
+  return {
+    ...workspace.capabilitiesQuery,
+    data: enabled ? workspace.capabilitiesQuery.data : undefined,
+    isSuccess: enabled && workspace.capabilitiesQuery.isSuccess,
+  };
 }
 
 // ============================================================================
@@ -198,13 +397,11 @@ export function usePbxCallAnalytics(period: PbxAnalyticsPeriod) {
 // ============================================================================
 export function useTenant(enabled: boolean = true) {
   const workspace = usePbxAdminWorkspace();
-  return trpc.pbx.tenant.get.useQuery(
-    { tenantId: workspace.selectedTenantId ?? 0 },
-    {
-      enabled: enabled && workspace.selectedTenantId !== null,
-      staleTime: 300_000, // 5 min cache
-    },
-  );
+  return {
+    ...workspace.tenantQuery,
+    data: enabled ? workspace.tenantQuery.data : undefined,
+    isSuccess: enabled && workspace.tenantQuery.isSuccess,
+  };
 }
 
 export function useTenantMemberships(enabled: boolean = true) {

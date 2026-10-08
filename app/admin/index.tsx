@@ -210,7 +210,7 @@ export default function AdminDashboard() {
     );
   }
 
-  if (workspace.membershipsQuery.isLoading) {
+  if (workspace.membershipsQuery.isLoading || workspace.admissionChecking) {
     return (
       <AdminAccessState
         title="Checking workspace access"
@@ -236,6 +236,27 @@ export default function AdminDashboard() {
       <AdminAccessState
         title="Workspace administration"
         detail="Only workspace owners and administrators can open this area."
+      />
+    );
+  }
+
+  if (workspace.updateRequired) {
+    return (
+      <AdminAccessState
+        title="Workspace API update required"
+        detail="This server cannot safely select between your workspaces. Administration will be available after the workspace API is updated."
+        actionLabel="Try again"
+        onAction={() => void workspace.membershipsQuery.refetch()}
+      />
+    );
+  }
+  if (workspace.admissionError) {
+    return (
+      <AdminAccessState
+        title="Workspace administration is unavailable"
+        detail="Phone11 could not confirm the current workspace identity and administrator role."
+        actionLabel="Try again"
+        onAction={() => void workspace.membershipsQuery.refetch()}
       />
     );
   }

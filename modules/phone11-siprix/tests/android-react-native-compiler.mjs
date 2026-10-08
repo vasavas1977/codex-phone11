@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, readdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, writeFileSync, rmSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -31,11 +31,13 @@ test("actual React Native 0.81.5 + pinned Siprix + Android API compile the three
     }
     const source = path.join(root, "android/src/main/java/ai/phone11/siprix");
     const files = readdirSync(source).filter(name => name.endsWith(".java")).map(name => path.join(source, name));
+    const buildLicense = path.join(realpathSync(directory), "phone11-native-license", "Phone11SiprixBuildLicense.java");
+    execFileSync("python3", [path.join(root, "../../scripts/generate-phone11-native-license.py"), "--language", "java", "--output", buildLicense], {env: {PATH: process.env.PATH}, encoding: "utf8"});
     for (const [enabled,consultation] of [[false,false],[true,false],[true,true]]) {
       const buildConfig = path.join(directory, "BuildConfig.java");
       writeFileSync(buildConfig, `package ai.phone11.siprix; public final class BuildConfig {public static final boolean FOREGROUND_SOURCE_ENABLED=${enabled};public static final boolean CONSULTATION_SOURCE_ENABLED=${consultation};}`);
       execFileSync("javac", ["-Xlint:all", "-Werror", "-cp", [sdkJar, reactJar, androidJar, kotlinJar, fbjniJar, inferJar, kotlinAnnotations, jsr305Jar].join(path.delimiter),
-        "-d", path.join(directory, `gate-${enabled}-${consultation}`), ...files, buildConfig], { encoding: "utf8", cwd: directory });
+        "-d", path.join(directory, `gate-${enabled}-${consultation}`), ...files, buildConfig, buildLicense], { encoding: "utf8", cwd: directory });
     }
     console.log("PASS actual React Native 0.81.5 declarations and exact SDK/Android APIs, gates OFF/OFF, ON/OFF, ON/ON; no declaration stubs, Gradle/APK/runtime/device claim.");
   } finally { rmSync(directory, { recursive: true, force: true }); }
