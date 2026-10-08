@@ -43,10 +43,27 @@ credential files and keystore generation. CLI drift refuses before the build.
 The installed CLI files are not modified. A human must configure credentials
 for `ai.phone11.mobile.foregroundtrial` separately if they do not already exist.
 
-The pinned package is resolved from pnpm's global module directory, so executable
-shell shims are not mistaken for the package entry point. Both EAS output streams
-are captured privately; asynchronous CLI errors produce only a fixed public
-failure line. Private output is not uploaded as a workflow artifact.
+The pinned package is resolved from the Expo action's fixed toolcache slot:
+`RUNNER_TOOL_CACHE/eas-cli/23.2.0/<process architecture>/node_modules/eas-cli`.
+The audited action installs with a local `pnpm add`, caches that directory and
+adds its `.bin` directory to PATH; it does not install EAS globally. The wrapper
+therefore uses that package directly. It accepts pnpm's internal package symlink
+only when the package and guarded files remain inside the fixed slot. Missing,
+relative or escaping locations refuse with `E_ANDROID_TRIAL_CLI_LOCATION`;
+version, byte and credential guards still apply. There is no global/PATH fallback.
+Both EAS output streams are captured privately; asynchronous CLI errors produce
+only a fixed public failure line. Private output is not uploaded as an artifact.
+
+An offline regression executes the actual wrapper and pinned package entrypoint
+with a separate empty global directory and the local pnpm toolcache layout,
+while stubbing the CLI execution boundary and blocking network calls. Set
+`PHONE11_TEST_EAS_CLI_ROOT` to an already-owned EAS 23.2.0 package when running
+`node --test tests/phone11-android-internal-build.test.mjs`; without that fixture,
+only the cached-package regression skips. No package is downloaded or installed.
+The path mismatch is a proved source defect capable of producing an unknown
+failure before EAS starts. The historical run's installer SHA matches the audited
+action, but its filesystem was not inspected; this does not establish every
+cause of that run's failure or authorize a new build or credential action.
 
 Only a finished build for the exact source SHA, Expo project, Android app identity
 and internal trial profile produces a sanitized workflow receipt. Raw EAS

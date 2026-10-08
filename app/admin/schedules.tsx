@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { AdminWorkspaceBoundary } from "@/components/admin/admin-workspace-boundary";
+import { useAdminDeleteConfirmation } from "@/components/admin/use-admin-delete-confirmation";
 import {
   Platform, useWindowDimensions,
   ActivityIndicator,
@@ -70,6 +71,16 @@ function AdminSchedulesContent() {
   const updateMutation = useUpdateTimeCondition();
   const rulesMutation = useSetTimeConditionRules();
   const deleteMutation = useDeleteTimeCondition();
+  const deletion = useAdminDeleteConfirmation({
+    list: "timeConditions", tenantId,
+    available: businessHoursAvailable && !capabilitiesQuery.isError,
+    requiresImplicitTenant: true,
+    queryReady: schedulesQuery.isSuccess && !schedulesQuery.isFetching && !schedulesQuery.isError,
+    mutationPending: deleteMutation.isPending,
+    title: "Delete business hours?",
+    consequence: name => `“${name}” will no longer control routing.`,
+    mutate: id => deleteMutation.mutateAsync({ id }),
+  });
   const [showCreate, setShowCreate] = useState(false);
   const [editingId, setEditingId] = useState<number>();
   const scheduleQuery = useTimeCondition(editingId ?? 0, businessHoursAvailable);
@@ -193,29 +204,7 @@ function AdminSchedulesContent() {
     }
   };
 
-  const handleDelete = (id: number, scheduleName: string) => {
-    Alert.alert(
-      "Delete business hours?",
-      `“${scheduleName}” will no longer control routing.`,
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Delete",
-          style: "destructive",
-          onPress: async () => {
-            try {
-              await deleteMutation.mutateAsync({ id });
-            } catch (error: any) {
-              Alert.alert(
-                "Schedule not deleted",
-                error?.message || "Please try again.",
-              );
-            }
-          },
-        },
-      ],
-    );
-  };
+
 
   const renderSchedule = ({ item }: { item: any }) => {
     const routes = describeSchedule(item);
@@ -274,7 +263,8 @@ function AdminSchedulesContent() {
             accessibilityRole="button"
             accessibilityLabel={`Delete ${item.name}`}
             style={styles.deleteButton}
-            onPress={() => handleDelete(item.id, item.name)}
+            onPress={() => deletion.request(item)}
+          disabled={deletion.busy}
           >
             <IconSymbol name="trash.fill" size={15} color="#EF4444" />
             <Text style={styles.deleteText}>Delete</Text>
@@ -308,6 +298,7 @@ function AdminSchedulesContent() {
 
   return (
     <ScreenContainer style={Platform.OS === "web" ? { backgroundColor: colors.surface, paddingHorizontal: wideWeb ? 32 : 0, paddingTop: wideWeb ? 20 : 0 } : undefined}>
+      {deletion.ui}
       <View style={[styles.header, { borderBottomColor: colors.border }]}>
         {Platform.OS !== "web" ? (
           <TouchableOpacity accessibilityRole="button" accessibilityLabel="Back to administration" onPress={() => router.back()} style={styles.backButton}>

@@ -6,6 +6,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AdminWorkspaceBoundary } from "@/components/admin/admin-workspace-boundary";
+import { useAdminDeleteConfirmation } from "@/components/admin/use-admin-delete-confirmation";
 import {
   ScrollView, Text, View, TouchableOpacity, StyleSheet, FlatList,
   Alert, TextInput, Modal, ActivityIndicator,
@@ -83,6 +84,16 @@ function AdminRingGroupsContent() {
   const createMutation = useCreateRingGroup();
   const updateMutation = useUpdateRingGroup();
   const deleteMutation = useDeleteRingGroup();
+  const deletion = useAdminDeleteConfirmation({
+    list: "ringGroups", tenantId,
+    available: ringGroupsAvailable && !capabilitiesQuery.isError,
+    requiresImplicitTenant: true,
+    queryReady: ringGroupsQuery.isSuccess && !ringGroupsQuery.isFetching && !ringGroupsQuery.isError,
+    mutationPending: deleteMutation.isPending,
+    title: "Delete Ring Group",
+    consequence: name => `Are you sure you want to delete "${name}"? This cannot be undone.`,
+    mutate: id => deleteMutation.mutateAsync({ id }),
+  });
   const membersMutation = useSetRingGroupMembers();
 
   const [showCreate, setShowCreate] = useState(false);
@@ -242,22 +253,7 @@ function AdminRingGroupsContent() {
     }
   };
 
-  const handleDelete = (id: number, name: string) => {
-    Alert.alert(
-      "Delete Ring Group",
-      `Are you sure you want to delete "${name}"? This cannot be undone.`,
-      [
-        { text: "Cancel" },
-        { text: "Delete", style: "destructive", onPress: async () => {
-          try {
-            await deleteMutation.mutateAsync({ id });
-          } catch (e: any) {
-            Alert.alert("Error", e.message);
-          }
-        }},
-      ]
-    );
-  };
+
 
   const strategyLabel = (strategy: string) =>
     STRATEGIES.find((item) => item.value === strategy)?.label || `Legacy: ${strategy}`;
@@ -322,7 +318,10 @@ function AdminRingGroupsContent() {
         </TouchableOpacity>
         <TouchableOpacity
           style={[styles.actionBtn, { backgroundColor: "#EF444415" }]}
-          onPress={() => handleDelete(item.id, item.name)}
+          accessibilityRole="button"
+          accessibilityLabel={`Delete ${item.name}`}
+          onPress={() => deletion.request(item)}
+          disabled={deletion.busy}
         >
           <IconSymbol name="trash.fill" size={14} color="#EF4444" />
           <Text style={[styles.actionText, { color: "#EF4444" }]}>Delete</Text>
@@ -353,6 +352,7 @@ function AdminRingGroupsContent() {
 
   return (
     <ScreenContainer>
+      {deletion.ui}
       <View style={[styles.header, { borderBottomColor: colors.border }]}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
           <IconSymbol name="chevron.left" size={22} color={colors.primary} />

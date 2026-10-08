@@ -2,7 +2,7 @@
 const { createHash } = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 const { readFileSync, realpathSync, writeSync } = require('node:fs');
-const { isAbsolute, join, resolve } = require('node:path');
+const { isAbsolute, join, relative, resolve, sep } = require('node:path');
 
 const PROFILE = 'preview-android-siprix-foreground-trial';
 const REPOSITORY = 'vasavas1977/codex-phone11';
@@ -94,6 +94,29 @@ function installGuard(cliRoot) {
   return { root, version: pkg.version };
 }
 
+function resolveActionCliRoot(env) {
+  try {
+    if (typeof env.RUNNER_TOOL_CACHE !== 'string' || !isAbsolute(env.RUNNER_TOOL_CACHE)) {
+      throw failure('E_ANDROID_TRIAL_CLI_LOCATION');
+    }
+    const cache = realpathSync(env.RUNNER_TOOL_CACHE);
+    const slot = join(cache, 'eas-cli', '23.2.0', process.arch);
+    // The action caches a local pnpm installation, including its .pnpm store.
+    // Allow the package's internal symlink, but never a slot/package escape.
+    if (realpathSync(slot) !== slot) throw failure('E_ANDROID_TRIAL_CLI_LOCATION');
+    const root = realpathSync(join(slot, 'node_modules', 'eas-cli'));
+    for (const target of [root, ...['package.json', 'bin/run', ...Object.keys(cliFiles)]
+      .map(file => realpathSync(join(root, file)))]) {
+      const withinSlot = relative(slot, target);
+      if (!withinSlot || withinSlot === '..' || withinSlot.startsWith(`..${sep}`)
+          || isAbsolute(withinSlot)) throw failure('E_ANDROID_TRIAL_CLI_LOCATION');
+    }
+    return root;
+  } catch {
+    throw failure('E_ANDROID_TRIAL_CLI_LOCATION');
+  }
+}
+
 function main() {
   if (process.argv.length === 4 && process.argv[2] === '--check-guard') {
     const installed = installGuard(resolve(process.argv[3]));
@@ -116,18 +139,15 @@ function main() {
   }
   const appConfig = readFileSync('app.config.ts', 'utf8');
   if (!appConfig.includes(`projectId: "${PROJECT}"`)) throw failure('E_ANDROID_TRIAL_PROJECT');
-  // pnpm's executable can be a shell shim. Load the pinned package itself.
-  const globalRoot = execFileSync('pnpm', ['root', '--global'], {
-    encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
-  }).trim();
-  if (!isAbsolute(globalRoot)) throw failure('E_ANDROID_TRIAL_CLI_LOCATION');
-  const installed = installGuard(join(globalRoot, 'eas-cli'));
+  // expo/expo-github-action installs locally in its toolcache, not globally.
+  // Load that fixed package directly; pnpm's executable may be a shell shim.
+  const installed = installGuard(resolveActionCliRoot(process.env));
   process.argv = [process.execPath, join(installed.root, 'bin/run'), 'build', '--platform', 'android',
     '--profile', PROFILE, '--non-interactive', '--freeze-credentials', '--wait', '--json'];
   require(join(installed.root, 'bin/run'));
 }
 
-module.exports = { PROFILE, requireManagedInvocation, freezeAndroidProvider, installGuard,
+module.exports = { PROFILE, requireManagedInvocation, freezeAndroidProvider, installGuard, resolveActionCliRoot,
   diagnosticCodeFor, createFailureDiagnostics };
 if (require.main === module) {
   activeDiagnostics = createFailureDiagnostics();

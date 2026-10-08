@@ -5,6 +5,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AdminWorkspaceBoundary } from "@/components/admin/admin-workspace-boundary";
+import { useAdminDeleteConfirmation } from "@/components/admin/use-admin-delete-confirmation";
 import {
   Platform, useWindowDimensions,
   ScrollView, Text, View, TouchableOpacity, StyleSheet, FlatList, Alert,
@@ -75,6 +76,16 @@ function AdminIVRContent() {
   );
   const createMutation = useCreateIvrMenu();
   const deleteMutation = useDeleteIvrMenu();
+  const deletion = useAdminDeleteConfirmation({
+    list: "ivr", tenantId,
+    available: ivrAvailable && !capabilitiesQuery.isError,
+    requiresImplicitTenant: false,
+    queryReady: menusQuery.isSuccess && !menusQuery.isFetching && !menusQuery.isError,
+    mutationPending: deleteMutation.isPending,
+    title: "Delete IVR Menu",
+    consequence: name => `Calls assigned to "${name}" may stop routing.`,
+    mutate: (id, tenant) => deleteMutation.mutateAsync({ id, tenant_id: tenant }),
+  });
   const actionsMutation = useSetIvrActions();
   const [showCreate, setShowCreate] = useState(false);
   const [name, setName] = useState("");
@@ -189,24 +200,7 @@ function AdminIVRContent() {
     }
   };
 
-  const handleDelete = (id: number, menuName: string) => {
-    Alert.alert(
-      "Delete IVR Menu",
-      `Calls assigned to "${menuName}" may stop routing.`,
-      [
-        { text: "Cancel", style: "cancel" },
-        { text: "Delete", style: "destructive", onPress: async () => {
-          if (!activeWorkspace.current) return;
-          try {
-            await deleteMutation.mutateAsync({ id, tenant_id: tenantId });
-          } catch (e: any) {
-            if (activeWorkspace.current)
-              Alert.alert("IVR not deleted", e.message || "Please try again.");
-          }
-        }},
-      ]
-    );
-  };
+
 
   const handleCreate = async () => {
     if (!activeWorkspace.current) return;
@@ -286,7 +280,10 @@ function AdminIVRContent() {
         </TouchableOpacity>
         <TouchableOpacity
           style={[styles.actionBtn, { backgroundColor: "#EF444415" }]}
-          onPress={() => handleDelete(item.id, item.name)}
+          accessibilityRole="button"
+          accessibilityLabel={`Delete ${item.name}`}
+          onPress={() => deletion.request(item)}
+          disabled={deletion.busy}
         >
           <IconSymbol name="trash.fill" size={14} color="#EF4444" />
           <Text style={[styles.actionText, { color: "#EF4444" }]}>Delete</Text>
@@ -316,6 +313,7 @@ function AdminIVRContent() {
 
   return (
     <ScreenContainer style={Platform.OS === "web" ? { backgroundColor: colors.surface, paddingHorizontal: wideWeb ? 32 : 0, paddingTop: wideWeb ? 20 : 0 } : undefined}>
+      {deletion.ui}
       <View style={[styles.header, { borderBottomColor: colors.border }]}>
         {Platform.OS !== "web" ? (
           <TouchableOpacity accessibilityRole="button" accessibilityLabel="Back to administration" onPress={() => router.back()} style={styles.backBtn}>

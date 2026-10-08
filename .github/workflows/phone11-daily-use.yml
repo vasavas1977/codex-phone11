@@ -801,6 +801,8 @@ jobs:
           sudo apt-get install -y postgresql
       - name: Test recording policies, ownership, job leases and retention
         run: node scripts/test-phone11-cloud-recordings.mjs
+      - name: Require four real-component voicemail integration passes without skips
+        run: node scripts/test-phone11-voicemail-integration.mjs
 
   pbx-and-history-postgres-tests:
     runs-on: ubuntu-24.04

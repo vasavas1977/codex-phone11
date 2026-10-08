@@ -6,6 +6,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AdminWorkspaceBoundary } from "@/components/admin/admin-workspace-boundary";
+import { useAdminDeleteConfirmation } from "@/components/admin/use-admin-delete-confirmation";
 import {
   Platform, useWindowDimensions,
   ScrollView, Text, View, TouchableOpacity, StyleSheet, FlatList,
@@ -49,6 +50,16 @@ function AdminQueuesContent() {
   const queuesQuery = useCallQueues(tenantId, queuesAvailable);
   const createMutation = useCreateCallQueue();
   const deleteMutation = useDeleteCallQueue();
+  const deletion = useAdminDeleteConfirmation({
+    list: "queues", tenantId,
+    available: queuesAvailable && !capabilitiesQuery.isError,
+    requiresImplicitTenant: true,
+    queryReady: queuesQuery.isSuccess && !queuesQuery.isFetching && !queuesQuery.isError,
+    mutationPending: deleteMutation.isPending,
+    title: "Delete Queue",
+    consequence: name => `Are you sure you want to delete "${name}"? Active callers will be disconnected.`,
+    mutate: id => deleteMutation.mutateAsync({ id }),
+  });
   const updateMutation = useUpdateCallQueue();
   const [editingQueueId, setEditingQueueId] = useState<number | null>(null);
   const [editingSettingsId, setEditingSettingsId] = useState<number | null>(null);
@@ -287,22 +298,7 @@ function AdminQueuesContent() {
     }
   };
 
-  const handleDelete = (id: number, name: string) => {
-    Alert.alert(
-      "Delete Queue",
-      `Are you sure you want to delete "${name}"? Active callers will be disconnected.`,
-      [
-        { text: "Cancel" },
-        { text: "Delete", style: "destructive", onPress: async () => {
-          try {
-            await deleteMutation.mutateAsync({ id });
-          } catch (e: any) {
-            Alert.alert("Error", e.message);
-          }
-        }},
-      ]
-    );
-  };
+
 
   const strategyLabel = (_s: string) => "Ring All";
 
@@ -364,7 +360,10 @@ function AdminQueuesContent() {
         </TouchableOpacity>
         <TouchableOpacity
           style={[styles.actionBtn, { backgroundColor: "#EF444415" }]}
-          onPress={() => handleDelete(item.id, item.name)}
+          accessibilityRole="button"
+          accessibilityLabel={`Delete ${item.name}`}
+          onPress={() => deletion.request(item)}
+          disabled={deletion.busy}
         >
           <IconSymbol name="trash.fill" size={14} color="#EF4444" />
         </TouchableOpacity>
@@ -393,6 +392,7 @@ function AdminQueuesContent() {
 
   return (
     <ScreenContainer style={Platform.OS === "web" ? { backgroundColor: colors.surface, paddingHorizontal: wideWeb ? 32 : 0, paddingTop: wideWeb ? 20 : 0 } : undefined}>
+      {deletion.ui}
       <View style={[styles.header, { borderBottomColor: colors.border }]}>
         {Platform.OS !== "web" ? (
           <TouchableOpacity accessibilityRole="button" accessibilityLabel="Back to administration" onPress={() => router.back()} style={styles.backBtn}>

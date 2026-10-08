@@ -1,17 +1,18 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createRequire } from 'node:module';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, openSync, closeSync, statSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, openSync, closeSync, statSync, symlinkSync, mkdirSync, cpSync, realpathSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
 import { Buffer } from 'node:buffer';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { validateBuildResult } from '../scripts/check-phone11-android-trial-build-result.mjs';
 
 const require = createRequire(import.meta.url);
 const { requireManagedInvocation, freezeAndroidProvider, diagnosticCodeFor,
-  createFailureDiagnostics, installGuard } = require('../scripts/run-phone11-android-trial-internal-build.cjs');
+  createFailureDiagnostics, installGuard, resolveActionCliRoot } = require('../scripts/run-phone11-android-trial-internal-build.cjs');
 const { classifyDiagnostic, readManagedDiagnostic } = require('../scripts/report-phone11-android-build-failure.cjs');
 const diagnostic = code => Buffer.from(JSON.stringify({ schema: 'phone11.android-build-diagnostic.v1', failureCode: code }) + '\n');
 const sha = 'a'.repeat(40);
@@ -262,3 +263,178 @@ test('workflow publishes only fixed known diagnostics and preserves successful r
     assert.equal(passed.stdout.includes('artifacts/eas'), false);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+const guardedFiles = ['package.json', 'bin/run',
+  'build/credentials/android/AndroidCredentialsProvider.js',
+  'build/credentials/android/actions/SetUpBuildCredentials.js',
+  'build/credentials/android/actions/CreateKeystore.js'];
+
+function actionSlot(cache) { return join(cache, 'eas-cli', '23.2.0', process.arch); }
+
+test('toolcache location refuses missing roots and slot, package or executable escapes', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'phone11-eas-location-')));
+  const cache = join(root, 'cache'), slot = actionSlot(cache), pkg = join(slot, 'node_modules/eas-cli');
+  const outside = join(root, 'cache-elsewhere');
+  const locationFailure = error => diagnosticCodeFor(error) === 'E_ANDROID_TRIAL_CLI_LOCATION';
+  try {
+    for (const value of [undefined, '', 'relative', join(root, 'absent')]) {
+      assert.throws(() => resolveActionCliRoot({ RUNNER_TOOL_CACHE: value }), locationFailure);
+    }
+    mkdirSync(cache);
+    assert.throws(() => resolveActionCliRoot({ RUNNER_TOOL_CACHE: cache }), locationFailure);
+    for (const file of guardedFiles) {
+      mkdirSync(dirname(join(pkg, file)), { recursive: true });
+      writeFileSync(join(pkg, file), 'synthetic');
+    }
+    assert.equal(resolveActionCliRoot({ RUNNER_TOOL_CACHE: cache }), pkg);
+    mkdirSync(outside);
+    const bin = join(pkg, 'bin/run'), externalBin = join(outside, 'run');
+    writeFileSync(externalBin, 'synthetic'); rmSync(bin); symlinkSync(externalBin, bin);
+    assert.throws(() => resolveActionCliRoot({ RUNNER_TOOL_CACHE: cache }), locationFailure);
+    rmSync(bin); writeFileSync(bin, 'synthetic');
+    rmSync(pkg, { recursive: true }); symlinkSync(outside, pkg, 'dir');
+    assert.throws(() => resolveActionCliRoot({ RUNNER_TOOL_CACHE: cache }), locationFailure);
+    rmSync(slot, { recursive: true }); symlinkSync(outside, slot, 'dir');
+    assert.throws(() => resolveActionCliRoot({ RUNNER_TOOL_CACHE: cache }), locationFailure);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// Opt in with an already-owned package. Never install or query a CLI for tests.
+const cachedCli = process.env.PHONE11_TEST_EAS_CLI_ROOT;
+test('actual main uses the pinned action pnpm toolcache while global EAS is absent',
+  { skip: !cachedCli }, async t => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'phone11-eas-cached-main-')));
+    const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+    const cache = join(root, 'toolcache'), slot = actionSlot(cache);
+    const realPackage = join(slot, 'node_modules/.pnpm/eas-cli@23.2.0/node_modules/eas-cli');
+    const packageLink = join(slot, 'node_modules/eas-cli');
+    const preload = join(root, 'offline-boundary.cjs');
+    const diagnosticFile = join(root, 'diagnostic.json');
+    const sourcePackage = realpathSync(cachedCli);
+    const expectedEntrypoint = '#!/usr/bin/env node\n\n(async () => {\n'
+      + "  const oclif = require('@oclif/core');\n  await oclif.execute({ dir: __dirname });\n})();\n";
+    const expectedArgs = ['build', '--platform', 'android', '--profile',
+      'preview-android-siprix-foreground-trial', '--non-interactive', '--freeze-credentials', '--wait', '--json'];
+    try {
+      assert.equal(JSON.parse(readFileSync(join(sourcePackage, 'package.json'))).version, '23.2.0');
+      mkdirSync(dirname(realPackage), { recursive: true });
+      cpSync(sourcePackage, realPackage, { recursive: true });
+      // Verify the complete entrypoint before any child can execute it. Its only
+      // dependency is the execute boundary intercepted below.
+      assert.equal(readFileSync(join(realPackage, 'bin/run'), 'utf8'), expectedEntrypoint);
+      symlinkSync('.pnpm/eas-cli@23.2.0/node_modules/eas-cli', packageLink, 'dir');
+      // This is the action's local pnpm symlink layout. Global root is empty.
+      mkdirSync(join(root, 'global/node_modules'), { recursive: true });
+      const home = join(root, 'synthetic-home'), config = join(root, 'synthetic-config');
+      mkdirSync(home); mkdirSync(config);
+      writeFileSync(preload, `
+const assert = require('node:assert/strict');
+const Module = require('node:module');
+const fs = require('node:fs');
+const originalLoad = Module._load;
+const failNetwork = () => assert.fail('Offline fixture must never contact a provider');
+require('node:http').request = failNetwork;
+require('node:https').request = failNetwork;
+require('node:net').Socket.prototype.connect = failNetwork;
+require('node:tls').connect = failNetwork;
+global.fetch = failNetwork;
+const subprocess = require('node:child_process');
+for (const method of ['exec', 'execSync', 'execFile', 'execFileSync', 'spawn', 'spawnSync', 'fork']) {
+  subprocess[method] = () => assert.fail('Offline fixture must never launch a provider subprocess');
+}
+const expectedBin = ${JSON.stringify(join(realPackage, 'bin/run'))};
+const expectedBinBytes = ${JSON.stringify(expectedEntrypoint)};
+Module._load = function(request, parent, isMain) {
+  if (request.endsWith('/bin/run')) {
+    assert.equal(request, expectedBin, 'Unexpected CLI entrypoint refused before loading');
+    assert.equal(fs.realpathSync(request), expectedBin);
+    assert.equal(fs.readFileSync(request, 'utf8'), expectedBinBytes);
+  }
+  if (request === 'node:child_process' && parent?.filename === ${JSON.stringify(join(repo, 'scripts/run-phone11-android-trial-internal-build.cjs'))}) {
+    return { execFileSync(command, args) {
+      if (command === 'git' && args.join(' ') === 'rev-parse HEAD') return ${JSON.stringify(sha)};
+      if (command === 'git' && ['diff --quiet', 'diff --cached --quiet'].includes(args.join(' '))) return '';
+      assert.fail('No pnpm/global lookup or other subprocess is permitted');
+    }};
+  }
+  if (request === '@oclif/core' && parent?.filename === ${JSON.stringify(join(realPackage, 'bin/run'))}) {
+    return { async execute(options) {
+      assert.equal(options.dir, ${JSON.stringify(join(realPackage, 'bin'))});
+      assert.deepEqual(process.argv.slice(2), ${JSON.stringify(expectedArgs)});
+      await new Promise(resolve => setImmediate(resolve));
+      if (process.env.PHONE11_TEST_CLI_ASYNC_FAILURE === '1') throw new Error('synthetic CLI failure');
+      console.log(JSON.stringify({ fixedArgv: true, asyncCompleted: true, accountQueries: 0, buildRequests: 0 }));
+    }};
+  }
+  if (request === '@oclif/core' && parent?.filename.endsWith('/bin/run')) {
+    assert.fail('Unrecognized CLI entrypoint must not load the real execute boundary');
+  }
+  return originalLoad.call(this, request, parent, isMain);
+};
+`);
+      function run(overrides = {}) {
+        const descriptor = openSync(diagnosticFile, 'w', 0o600);
+        // No inherited Expo/EAS/provider/license tokens or user config. Only
+        // the already-owned dependency directory and synthetic runner inputs.
+        const env = { PATH: process.env.PATH, HOME: home, USERPROFILE: home,
+          APPDATA: config, XDG_CONFIG_HOME: config, TMPDIR: root, EXPO_NO_TELEMETRY: '1',
+          ...invocation, RUNNER_TOOL_CACHE: cache, NODE_PATH: dirname(sourcePackage),
+          NODE_OPTIONS: '', ...overrides };
+        if (overrides.RUNNER_TOOL_CACHE === undefined && Object.hasOwn(overrides, 'RUNNER_TOOL_CACHE')) delete env.RUNNER_TOOL_CACHE;
+        try {
+          const result = spawnSync(process.execPath, ['--require', preload,
+            'scripts/run-phone11-android-trial-internal-build.cjs'], {
+            cwd: repo, encoding: 'utf8', env, stdio: ['ignore', 'pipe', 'pipe', descriptor],
+            timeout: 30_000, killSignal: 'SIGKILL',
+          });
+          assert.ifError(result.error);
+          assert.equal(result.signal, null, 'Offline CLI fixture must finish within its bound');
+          return { ...result, diagnostic: readFileSync(diagnosticFile) };
+        } finally { closeSync(descriptor); }
+      }
+      function refuses(code, overrides) {
+        const result = run(overrides);
+        assert.equal(result.status, 1); assert.equal(result.stdout, '');
+        assert.equal(classifyDiagnostic(result.diagnostic), code);
+        assert.equal(result.diagnostic.includes(root), false);
+        // Asynchronous CLI stacks belong to private stderr; the workflow shell
+        // tests above prove those streams never become public failure output.
+        if (code !== 'UNKNOWN_CLI_FAILURE') assert.equal(result.stderr.includes(root), false);
+      }
+      await t.test('real pinned package accepts internal pnpm symlink with exact fixed argv', () => {
+        const result = run();
+        assert.equal(result.status, 0, result.stderr); assert.equal(result.diagnostic.length, 0);
+        assert.deepEqual(JSON.parse(result.stdout), { fixedArgv: true, asyncCompleted: true, accountQueries: 0, buildRequests: 0 });
+      });
+      await t.test('managed root absence, relative path and missing cached package refuse safely', () => {
+        for (const value of [undefined, 'relative', join(root, 'missing')]) {
+          refuses('E_ANDROID_TRIAL_CLI_LOCATION', { RUNNER_TOOL_CACHE: value });
+        }
+        rmSync(packageLink);
+        refuses('E_ANDROID_TRIAL_CLI_LOCATION');
+        symlinkSync('.pnpm/eas-cli@23.2.0/node_modules/eas-cli', packageLink, 'dir');
+      });
+      await t.test('package symlink outside action cache refuses before CLI or credential loads', () => {
+        rmSync(packageLink); symlinkSync(sourcePackage, packageLink, 'dir');
+        refuses('E_ANDROID_TRIAL_CLI_LOCATION');
+        rmSync(packageLink); symlinkSync('.pnpm/eas-cli@23.2.0/node_modules/eas-cli', packageLink, 'dir');
+      });
+      await t.test('wrong version refuses before CLI execution', () => {
+        const pkgFile = join(realPackage, 'package.json'), bytes = readFileSync(pkgFile);
+        try {
+          writeFileSync(pkgFile, JSON.stringify({ ...JSON.parse(bytes), version: '23.2.1' }));
+          refuses('E_ANDROID_TRIAL_CLI_VERSION');
+        } finally { writeFileSync(pkgFile, bytes); }
+      });
+      await t.test('changed credential module bytes refuse before CLI execution', () => {
+        const file = join(realPackage, guardedFiles[2]), bytes = readFileSync(file);
+        try {
+          writeFileSync(file, Buffer.concat([bytes, Buffer.from('\n// synthetic drift\n')]));
+          refuses('E_ANDROID_TRIAL_CLI_BYTES');
+        } finally { writeFileSync(file, bytes); }
+      });
+      await t.test('asynchronous CLI failure remains private and unknown', () => {
+        refuses('UNKNOWN_CLI_FAILURE', { PHONE11_TEST_CLI_ASYNC_FAILURE: '1' });
+      });
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
