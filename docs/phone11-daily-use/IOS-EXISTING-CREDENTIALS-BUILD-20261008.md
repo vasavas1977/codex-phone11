@@ -136,3 +136,17 @@ credential/config gates remain unchanged; this establishes no store-release
 proof. Offline success admits corrected source only: the first request
 still reports `requestMayHaveOccurred: true`, establishes no build absence and
 authorizes no retry, signing, artifact or device acceptance.
+
+The next exact-source dispatch at `013926c455788a316d82c00b93733aa7ff2d29b4`
+failed its offline signing-guard prerequisite. The new real-config regression
+requires installed locked Expo dependencies, but that job previously ran tests
+immediately after checkout. A clean source-only offline reproduction fails with
+`ENOENT` for `node_modules`; this is a job prerequisite defect, not a credential
+or provider result. The preflight now uses the workflow's established Node 22
+and pnpm 9.12.0 setup, followed by `pnpm install --frozen-lockfile --ignore-scripts`
+before the mandatory full suite. Its timeout is ten minutes to include dependency
+setup. It receives no provider token and executes no dependency lifecycle scripts.
+No configuration test is skipped, and all build/source/credential gates remain.
+Local validation reuses installed dependencies and checks the job structure;
+an actual fresh-runner install remains hosted CI evidence. This correction
+provides no build retry authority or provider/build-absence proof.

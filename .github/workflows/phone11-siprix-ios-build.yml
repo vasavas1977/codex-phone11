@@ -28,12 +28,21 @@ concurrency:
 jobs:
   signing-guard-check:
     runs-on: ubuntu-24.04
-    timeout-minutes: 3
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Enable pinned package manager for offline configuration checks
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+      - name: Install locked configuration dependencies without lifecycle scripts
+        run: pnpm install --frozen-lockfile --ignore-scripts
       - name: Verify iOS signing and output boundary offline
         env:
           NODE_OPTIONS: ''

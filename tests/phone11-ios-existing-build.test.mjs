@@ -265,4 +265,12 @@ test('workflow has only manual fixed daily profile, owned source guard, token on
   assert.equal((w.match(/secrets.EXPO_TOKEN/g) ?? []).length, 1);
   assert.ok(w.indexOf('--check-source') < w.indexOf('expo\/expo-github-action@'));
   assert.equal(w.includes('eas build'), false); assert.equal(w.includes('upload-artifact'), false);
+  const offline = w.split('  signing-guard-check:\n')[1].split('  daily-use-check:\n')[0];
+  assert.match(offline, /uses: actions\/setup-node@v4\s+with:\s+node-version: "22"/);
+  assert.match(offline, /corepack prepare pnpm@9\.12\.0 --activate/);
+  assert.match(offline, /run: pnpm install --frozen-lockfile --ignore-scripts/);
+  assert.ok(offline.indexOf('pnpm install') < offline.indexOf('run: node --test tests/phone11-ios-existing-build.test.mjs'));
+  assert.equal((offline.match(/pnpm install/g) ?? []).length, 1);
+  assert.equal(offline.includes('secrets.'), false); assert.equal(offline.includes('EXPO_TOKEN'), false);
+  assert.equal(offline.includes('if:'), false); assert.equal(offline.includes('--test-name-pattern'), false);
 });
