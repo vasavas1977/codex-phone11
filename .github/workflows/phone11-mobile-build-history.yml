@@ -1,0 +1,57 @@
+name: Phone11 mobile build history
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/phone11-mobile-build-history.yml'
+      - 'scripts/read-phone11-mobile-build-history.mjs'
+      - 'tests/phone11-mobile-build-history.test.mjs'
+      - 'docs/phone11-daily-use/MOBILE-BUILD-HISTORY-20261008.md'
+  push:
+    branches:
+      - 'codex/phone11-zoom-mainline-integration-20260928'
+    paths:
+      - '.github/workflows/phone11-mobile-build-history.yml'
+      - 'scripts/read-phone11-mobile-build-history.mjs'
+      - 'tests/phone11-mobile-build-history.test.mjs'
+      - 'docs/phone11-daily-use/MOBILE-BUILD-HISTORY-20261008.md'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phone11-mobile-build-history
+  cancel-in-progress: false
+
+jobs:
+  offline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify metadata boundary offline
+        env:
+          NODE_OPTIONS: ''
+        run: node --test tests/phone11-mobile-build-history.test.mjs
+  metadata:
+    needs: offline
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'vasavas1977/codex-phone11' && github.ref == 'refs/heads/codex/phone11-zoom-mainline-integration-20260928'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Read fixed Phone11 metadata only
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          NODE_OPTIONS: ''
+          NODE_EXTRA_CA_CERTS: ''
+          NODE_TLS_REJECT_UNAUTHORIZED: ''
+          NODE_USE_ENV_PROXY: ''
+        run: node scripts/read-phone11-mobile-build-history.mjs
