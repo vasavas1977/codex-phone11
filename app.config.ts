@@ -70,6 +70,8 @@ const config: ExpoConfig = {
   slug: env.appSlug,
   version: "1.0.0",
   runtimeVersion: `1.0.0-${sipEngine}${chatNotificationsEnabled ? "-daily-pilot" : wakeSettings.gate === "1" ? "-wake-pilot" : ""}-chat-media-2`,
+  // The commissioned daily pilot requires a fresh signed native installation.
+  ...(chatNotificationsEnabled ? { updates: { enabled: false } } : {}),
   orientation: "portrait",
   icon: "./assets/images/icon.png",
   scheme: env.scheme,

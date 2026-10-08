@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { readFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { EventEmitter } from 'node:events';
 import { spawn, spawnSync } from 'node:child_process';
 import { captureChild, validateResult, run, STDERR_LIMIT } from '../scripts/request-phone11-ios-existing-build.mjs';
@@ -110,6 +113,76 @@ test('resolved profile and evaluated config retain standalone daily pilot and tr
     const changed = structuredClone(eas); change(changed.build[guard.PROFILE]); assert.throws(() => guard.assertSourceConfig(changed, src));
   }
   assert.throws(() => guard.assertExpoConfig({ ...exp(), extra: { ...exp().extra, buildInfo: { ...exp().extra.buildInfo, sipSdkVersion: '1.0.40-licensed' } } }));
+});
+test('actual isolated Expo config matches all 13 guarded fields; nonpilot behavior and refusal gates remain', () => {
+  const sourceRoot = fileURLToPath(new URL('../', import.meta.url));
+  const scratch = mkdtempSync(join(tmpdir(), 'phone11-ios-config-'));
+  const files = ['app.config.ts', 'package.json', 'eas.json', 'scripts/load-env.js',
+    'plugins/with-phone11-voip-wake.js', 'plugins/with-phone11-android-runtime.js',
+    'plugins/with-phone11-android-screen.js', 'modules/phone11-siprix/android/sdk-lock.json'];
+  try {
+    for (const file of files) {
+      const destination = join(scratch, file);
+      mkdirSync(dirname(destination), { recursive: true });
+      copyFileSync(join(sourceRoot, file), destination);
+    }
+    symlinkSync(realpathSync(join(sourceRoot, 'node_modules')), join(scratch, 'node_modules'), 'dir');
+    writeFileSync(join(scratch, 'evaluate.cjs'), `
+      const assert = require('node:assert/strict');
+      const fs = require('node:fs');
+      const { createRequire } = require('node:module');
+      const expoRequire = createRequire(require.resolve('expo/package.json'));
+      assert.equal(expoRequire('@expo/config/package.json').version, '12.0.12');
+      const guard = require(${JSON.stringify(join(sourceRoot, 'scripts/run-phone11-ios-existing-build.cjs'))});
+      const eas = JSON.parse(fs.readFileSync('eas.json', 'utf8'));
+      const profileName = process.argv[2];
+      const resolveEnv = name => ({ ...(eas.build[name].extends ? resolveEnv(eas.build[name].extends) : {}), ...eas.build[name].env });
+      const ownedEnv = resolveEnv(profileName);
+      // macOS framework initialization can add this variable after PATH-only spawn.
+      // Remove it without reading its value before evaluating application config.
+      delete process.env.__CF_USER_TEXT_ENCODING;
+      assert.deepEqual(Object.keys(process.env), ['PATH']);
+      Object.assign(process.env, ownedEnv);
+      const exp = expoRequire('@expo/config').getConfig(process.cwd(), { skipPlugins: true }).exp;
+      if (profileName !== guard.PROFILE) {
+        assert.equal(exp.updates, undefined);
+        console.log(JSON.stringify({ nonPilotUpdatesMissing: true }));
+      } else {
+        const expected = {
+          slug: 'phone11ai', version: '1.0.0', runtimeVersion: '1.0.0-siprix-daily-pilot-chat-media-2', newArchEnabled: false,
+          'updates.enabled': false, 'ios.bundleIdentifier': guard.BUNDLE, 'ios.entitlements.aps-environment': 'production',
+          'extra.eas.projectId': guard.PROJECT, 'extra.buildInfo.sipEngine': 'siprix', 'extra.buildInfo.sipSdkVersion': '1.0.40-trial',
+          'extra.buildInfo.appStoreBuild': false, 'extra.phone11ChatNotificationsEnabled': true, 'extra.phone11ApnsEnvironment': 'production'
+        };
+        for (const [path, value] of Object.entries(expected))
+          assert.equal(path.split('.').reduce((object, key) => object?.[key], exp), value, path);
+        guard.assertExpoConfig(exp);
+        const changes = [
+          value => { delete value.updates; }, value => { value.updates.enabled = true; },
+          value => { value.slug = 'wrong'; }, value => { value.ios.bundleIdentifier = 'wrong.app'; },
+          value => { value.runtimeVersion = 'wrong'; }, value => { value.extra.eas.projectId = 'wrong'; },
+          value => { value.extra.buildInfo.sipSdkVersion = '1.0.40-licensed'; },
+          value => { value.extra.buildInfo.appStoreBuild = true; }
+        ];
+        for (const change of changes) {
+          // Config contains mod functions: copy only guarded nested data, preserving the source evaluation.
+          const changed = { ...exp, updates: { ...exp.updates }, ios: { ...exp.ios },
+            extra: { ...exp.extra, eas: { ...exp.extra.eas }, buildInfo: { ...exp.extra.buildInfo } } };
+          change(changed); assert.throws(() => guard.assertExpoConfig(changed));
+        }
+        console.log(JSON.stringify({ guardedFields: Object.keys(expected).length, guardAccepted: true, refusedChanges: changes.length }));
+      }
+    `);
+    for (const profile of [guard.PROFILE, 'preview-ios-siprix-wake-pilot', 'preview-ios-siprix']) {
+      const result = spawnSync(process.execPath, [join(scratch, 'evaluate.cjs'), profile], {
+        cwd: scratch, env: { PATH: process.env.PATH ?? '/usr/bin:/bin' }, encoding: 'utf8', timeout: 15000, maxBuffer: 16384,
+      });
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.stderr, '');
+      assert.deepEqual(JSON.parse(result.stdout), profile === guard.PROFILE
+        ? { guardedFields: 13, guardAccepted: true, refusedChanges: 8 } : { nonPilotUpdatesMissing: true });
+    }
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
 test('result allowlist strips provider private fields and binds exact release source/identity/newer number', () => {
   const result = validateResult(bytes([row()]), SHA);

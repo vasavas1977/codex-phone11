@@ -106,9 +106,33 @@ Focused offline validation:
 node --test tests/phone11-ios-existing-build.test.mjs
 ```
 
-Fixtures are synthetic and credential-free. They exercise reuse/map preservation,
+Credential fixtures are synthetic and credential-free. They exercise reuse/map preservation,
 mutation/local/auth refusals, profile/identity/expiry/device failures, exact source
 guards, safe result admission, the legacy privacy failure, real synthetic child
 capture, stream limits, timeout/cancellation, failure diagnostics and the actual
 unmanaged entrypoint. They do not execute EAS, read signing credentials or submit
 provider requests.
+
+The configuration regression also evaluates the actual `app.config.ts` with the
+locked installed `@expo/config` 12.0.12. A fresh minimal scratch project contains
+only required source files and the existing dependency symlink; the child starts
+with PATH only and applies public environment values from the owned profile.
+It reads no workspace `.env`, private process environment or credentials, runs
+no config mods/provider calls, installs nothing, and has no optional skip. It
+checks all 13 fixed config fields, missing/enabled OTA and identity/trial refusal,
+and unchanged absence of an explicit updates flag in the nonchat trial/wake profiles.
+
+The first guarded request at `aa1b58fb714b4da33a90728641fd237b26fac697`
+refused with `CONFIG_REFUSED`. Offline exact-source evaluation reproduced the
+cause: `updates.enabled` was absent, while the strict guard required literal
+`false`; the old synthetic config fixture supplied that field and hid the gap.
+Expo's native updates default uses URL presence when the flag is absent, so
+native OTA-off evidence does not imply the JS config contains an explicit flag.
+The commissioned daily chat pilot now explicitly sets `updates.enabled: false`.
+Nonchat trial/wake profiles preserve their existing behavior. Every
+commissioned-chat config, including the gated `production-ios-siprix-store`
+profile, receives `updates.enabled: false`. All store, license, signing and
+credential/config gates remain unchanged; this establishes no store-release
+proof. Offline success admits corrected source only: the first request
+still reports `requestMayHaveOccurred: true`, establishes no build absence and
+authorizes no retry, signing, artifact or device acceptance.
