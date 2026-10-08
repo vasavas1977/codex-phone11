@@ -103,6 +103,11 @@ export async function verifyWindowsHelperSourceReceipt(options: {
   const inputs = record(receipt.inputs, 'missing consumed inputs');
   requireValue(inputs.cppSha256 === source.digest('desktop/native/phone11_siprix_helper.cpp') &&
     inputs.cmakeSha256 === source.digest('desktop/native/CMakeLists.txt'), 'native input source mismatch');
+  const nativeInputs = {
+    'desktop/native/phone11_siprix_helper.cpp': inputs.cppSha256,
+    'desktop/native/CMakeLists.txt': inputs.cmakeSha256,
+    'desktop/native/test_bootstrap.py': bootstrap.testSha256,
+  };
   const vendor = record(inputs.vendorSha256, 'missing vendor inputs');
   requireValue(Object.keys(vendor).sort().join(',') === 'siprix.dll,siprix.lib,siprixMedia.dll', 'invalid vendor input set');
   async function assertCurrent(helperPath = options.helperPath, copiedDirectory?: string, pinnedManifestSha256?: string): Promise<void> {
@@ -144,6 +149,9 @@ export async function verifyWindowsHelperSourceReceipt(options: {
     requireValue(git(options.sdkRoot, 'rev-parse', 'HEAD') === options.sdkRevision &&
       !git(options.sdkRoot, 'status', '--porcelain') &&
       !git(options.sdkRoot, 'ls-files', '--others', '--'), 'SDK checkout is not pinned and unchanged');
+    // Index flags such as assume-unchanged and skip-worktree can hide edited inputs from Git status.
+    for (const [path, digest] of Object.entries(nativeInputs))
+      requireDigestSync(join(options.repoRoot, path), digest, `native source input changed: ${path}`);
     source.assertCurrent();
   }
   await assertCurrent();

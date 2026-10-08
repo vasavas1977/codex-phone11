@@ -97,6 +97,28 @@ test('missing receipt fails before a package can be built', async () => {
   finally { await f.cleanup(); }
 });
 
+for (const flag of ['--assume-unchanged', '--skip-worktree'])
+  test(`Windows accepts unchanged native inputs with ${flag}`, async () => {
+    const f = await fixture(); try {
+      git(f.repoRoot, 'update-index', flag, 'desktop/native/phone11_siprix_helper.cpp',
+        'desktop/native/CMakeLists.txt', 'desktop/native/test_bootstrap.py');
+      const gate = await verifyWindowsHelperSourceReceipt(f);
+      await gate.assertCurrent();
+    } finally { await f.cleanup(); }
+  });
+
+for (const flag of ['--assume-unchanged', '--skip-worktree'])
+  for (const path of ['desktop/native/phone11_siprix_helper.cpp', 'desktop/native/CMakeLists.txt', 'desktop/native/test_bootstrap.py'])
+    test(`Windows rejects ${flag} native input modification: ${path}`, async () => {
+      const f = await fixture(); try {
+        git(f.repoRoot, 'update-index', flag, path);
+        await writeFile(join(f.repoRoot, path), 'modified native input hidden from git status');
+        assert.equal(git(f.repoRoot, 'status', '--porcelain', '--', 'desktop/native'), '',
+          'Git status cannot establish the worktree input bytes for this index flag');
+        await assert.rejects(verifyWindowsHelperSourceReceipt(f), /native source input changed/);
+      } finally { await f.cleanup(); }
+    });
+
 for (const mutation of ['receipt', 'helper', 'header', 'sdk', 'source', 'untracked-native', 'copied-helper', 'head'])
   test(`snapshot rejects changed ${mutation} at the later package boundary`, async () => {
     const f = await fixture(); try {
@@ -260,7 +282,7 @@ async function afterRead(path: string, mutate: () => void, attempt: () => Promis
   try { await assert.rejects(attempt()); assert.equal(changed, true, 'mutation hook actually ran'); }
   finally { fsPromises.readFile = original; syncBuiltinESMExports(); }
 }
-for (const mutation of ['receipt', 'sdk-head', 'sdk-header', 'sdk-dll', 'helper'])
+for (const mutation of ['receipt', 'sdk-head', 'sdk-header', 'sdk-dll', 'helper', 'native-cpp', 'native-cmake', 'native-bootstrap'])
   test(`Windows rejects persistent ${mutation} replacement after awaited input checks`, async () => {
     const f = await fixture(); try {
       const gate = await verifyWindowsHelperSourceReceipt(f);
@@ -271,6 +293,12 @@ for (const mutation of ['receipt', 'sdk-head', 'sdk-header', 'sdk-dll', 'helper'
         if (mutation === 'sdk-header') writeFileSync(join(f.sdkRoot, 'win/siprix.framework/include/Siprix.h'), 'changed');
         if (mutation === 'sdk-dll') writeFileSync(join(f.sdkRoot, 'win/siprix.framework/lib/siprix.dll'), 'changed');
         if (mutation === 'helper') writeFileSync(f.helperPath, 'changed');
+        const nativePath = { 'native-cpp': 'desktop/native/phone11_siprix_helper.cpp',
+          'native-cmake': 'desktop/native/CMakeLists.txt', 'native-bootstrap': 'desktop/native/test_bootstrap.py' }[mutation];
+        if (nativePath) {
+          git(f.repoRoot, 'update-index', '--assume-unchanged', nativePath);
+          writeFileSync(join(f.repoRoot, nativePath), 'changed native input after final await');
+        }
       }, () => gate.assertCurrent());
     } finally { await f.cleanup(); }
   });
