@@ -41,3 +41,11 @@ tests exercise strict inputs and selected authority alongside the additive bit.
 Source/tests do not establish live API compatibility, deployment, provider,
 calling, or physical-device acceptance. The retained `abca591` export is unchanged;
 a reviewed, committed correction needs a new source-bound export before cutover.
+
+At `402c1ec`, CI found two stale exact-response assertions in the read-revocation
+suite: admitted admin/owner capabilities now include `explicitTenantReads: true`.
+Those assertions retain exact equality with the additive field; the schema fixture
+still returns only `phoneNumbers: false`, proving the router supplies the contract
+bit. All cache-invalidation race, demotion, removal, cross-workspace, failed-lookup,
+and query-scope assertions remain unchanged. No hook or authority behavior changed.
+The completed `402c1ec` export remains frozen as failed-source CI evidence.

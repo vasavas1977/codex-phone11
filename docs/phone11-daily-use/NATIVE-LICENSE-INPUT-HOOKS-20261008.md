@@ -32,6 +32,14 @@ embedded in native clients remain extractable. Nonempty Windows generation
 custody. Empty Windows trial builds remain supported. A separately reviewed ACL
 producer is needed before a Windows licensed input can be used.
 
+Xcode's output-path preparation creates byproduct parent directories with mode
+0755. The always-run input target therefore omits the header `BYPRODUCTS` only
+for Xcode; other generators retain that declaration. CMake resolves its builder
+root before selecting the private directory, supporting legitimate runner temp
+aliases. The generator still refuses direct noncanonical input paths, header or
+directory symlinks, shared permissions and incorrect ownership. Xcode clean/full
+builds regenerate deleted private output, and unsetting input clears the header.
+
 A future authorized licensed build must establish vendor rights/SDK compatibility,
 approved key delivery/embedding, private build outputs and diagnostics, and no
 public/shared build caches containing generated or compiled key bytes. No such
@@ -53,6 +61,16 @@ Focused offline checks use synthetic markers only:
 
 ```sh
 python3 tests/phone11-native-license-input.test.py
+```
+
+The real Xcode regression requires an explicitly staged official macOS SDK and a
+fresh evidence directory. It compiles/links the trial native helper with unset
+input for canonical and symlinked builder roots, tests removal and clean/deletion,
+and runs only the generator target with a synthetic marker. It never launches
+the helper or reads a license:
+
+```sh
+python3 tests/phone11-native-license-xcode.test.py --sdk-root /absolute/SiprixUA --evidence /absolute/fresh-evidence
 ```
 
 The independently reviewed source packet records exact hashes, actual commands,

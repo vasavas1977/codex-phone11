@@ -103,7 +103,7 @@ it.each(["admin", "owner"])("admits current %s and preserves query limits and te
 
 it.each(["admin", "owner"])("admits current %s for explicit workspace capabilities", async role => {
   m.roles.set(7, role); await resolveTenantMemberships(9); m.query.mockClear();
-  await expect(caller().capabilities({ tenantId: 7 })).resolves.toEqual({ phoneNumbers: false });
+  await expect(caller().capabilities({ tenantId: 7 })).resolves.toEqual({ phoneNumbers: false, explicitTenantReads: true });
   expect(m.query).toHaveBeenCalledTimes(1); expect(m.query.mock.calls[0][1]).toEqual([9, 7]);
   expect(m.capabilities).toHaveBeenCalledOnce();
 });

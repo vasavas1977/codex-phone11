@@ -18,7 +18,17 @@ target_compile_definitions(phone11_siprix_helper PRIVATE PHONE11_DESKTOP_WARM_TR
 
 # No secret in CMake cache, compile definitions or argv. Refresh on every build.
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
-set(PHONE11_NATIVE_LICENSE_DIR "${CMAKE_CURRENT_BINARY_DIR}/phone11-native-license")
+# Canonicalize only the builder root, not arbitrary generator input paths.
+file(REAL_PATH "${CMAKE_CURRENT_BINARY_DIR}" PHONE11_NATIVE_LICENSE_BUILD_ROOT)
+set(PHONE11_NATIVE_LICENSE_DIR "${PHONE11_NATIVE_LICENSE_BUILD_ROOT}/phone11-native-license")
+# Xcode precreates parents of declared outputPaths with mode 0755. Do not let
+# it create this private directory before the generator creates it as 0700.
+# This target always runs and the helper explicitly depends on it; other
+# generators retain the header byproduct rule.
+set(PHONE11_NATIVE_LICENSE_BYPRODUCTS)
+if(NOT CMAKE_GENERATOR STREQUAL "Xcode")
+  set(PHONE11_NATIVE_LICENSE_BYPRODUCTS BYPRODUCTS "${PHONE11_NATIVE_LICENSE_DIR}/Phone11SiprixBuildLicense.h")
+endif()
 set(PHONE11_NATIVE_LICENSE_TRIAL_ARGUMENT)
 if(PHONE11_USE_FAKE_SDK)
   set(PHONE11_NATIVE_LICENSE_TRIAL_ARGUMENT --trial-only)
@@ -30,7 +40,7 @@ add_custom_target(phone11_native_license_input
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/generate-phone11-native-license.py"
     --language cpp --output "${PHONE11_NATIVE_LICENSE_DIR}/Phone11SiprixBuildLicense.h"
     ${PHONE11_NATIVE_LICENSE_TRIAL_ARGUMENT}
-  BYPRODUCTS "${PHONE11_NATIVE_LICENSE_DIR}/Phone11SiprixBuildLicense.h"
+  ${PHONE11_NATIVE_LICENSE_BYPRODUCTS}
   VERBATIM)
 add_dependencies(phone11_siprix_helper phone11_native_license_input)
 

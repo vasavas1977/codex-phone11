@@ -104,6 +104,19 @@ class NativeLicenseInputTest(unittest.TestCase):
             private.chmod(0o755)
             self.assertEqual(self.run_generator("cpp").stderr, FAILURE)
 
+    def test_private_directory_symlink_and_lexical_root_alias_refused(self):
+        target = self.directory / "private-target"
+        target.mkdir(mode=0o700)
+        self.output("cpp").parent.symlink_to(target, target_is_directory=True)
+        result = self.run_generator("cpp", "SYNTHETIC-ONLY")
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (1, "", FAILURE))
+        self.assertEqual(list(target.iterdir()), [])
+        self.output("cpp").parent.unlink()
+        alias = self.directory / "builder-alias"
+        alias.symlink_to(self.directory, target_is_directory=True)
+        result = self.run_generator("cpp", output=alias / "phone11-native-license" / "Phone11SiprixBuildLicense.h")
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (1, "", FAILURE))
+
     def test_native_only_setters_precede_initialization_and_gates_stay(self):
         android = (ROOT / "modules/phone11-siprix/android/src/main/java/ai/phone11/siprix/SiprixAndroidAdapter.java").read_text()
         self.assertLess(android.index("config.setLicense(buildLicense)"), android.index("core.initialize(config)"))

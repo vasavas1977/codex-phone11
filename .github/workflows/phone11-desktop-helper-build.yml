@@ -6,6 +6,9 @@ on:
     paths:
       - .github/workflows/phone11-desktop-helper-build.yml
       - desktop/native/**
+      - scripts/generate-phone11-native-license.py
+      - tests/phone11-native-license-input.test.py
+      - tests/phone11-native-license-xcode.test.py
 
 permissions:
   contents: read
@@ -45,6 +48,12 @@ jobs:
           cmake -S desktop/native -B "$RUNNER_TEMP/phone11-desktop-helper" -G Xcode \
             -DSIPRIX_SDK_ROOT="$GITHUB_WORKSPACE/_vendor/siprixua"
           cmake --build "$RUNNER_TEMP/phone11-desktop-helper" --config Release
+      - name: Require Xcode private build-input regeneration
+        shell: bash
+        run: |
+          python3 tests/phone11-native-license-xcode.test.py \
+            --sdk-root "$GITHUB_WORKSPACE/_vendor/siprixua" \
+            --evidence "$RUNNER_TEMP/phone11-native-license-xcode-regression"
       - name: Smoke-test private-pipe bootstrap
         shell: bash
         run: |
