@@ -1,6 +1,10 @@
 import { createElement, type ReactNode } from "react";
 import { createRequire } from "node:module";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  AdminShell,
+  type AdminShellProps,
+} from "../components/admin/admin-shell";
 const { renderToStaticMarkup } = createRequire(import.meta.url)(
   "react-dom/server",
 ) as { renderToStaticMarkup: (node: ReactNode) => string };
@@ -32,10 +36,6 @@ vi.mock("../hooks/use-colors", () => ({
     background: "#fafafa",
   }),
 }));
-import {
-  AdminShell,
-  type AdminShellProps,
-} from "../components/admin/admin-shell";
 const props = (): AdminShellProps => ({
   children: createElement("p", null, "protected page"),
   pathname: "/admin/users",
@@ -73,6 +73,7 @@ describe("admin navigation boundaries", () => {
     );
     expect(m.links.has("People")).toBe(false);
     expect(m.links.has("Call queues")).toBe(false);
+    expect(m.links.has("Auto receptionists")).toBe(false);
     expect(m.links.has("Overview")).toBe(true);
   });
   it("requires a selected workspace and schema capability before exposing facility links", () => {
@@ -80,6 +81,7 @@ describe("admin navigation boundaries", () => {
       createElement(AdminShell, { ...props(), selectedTenantId: null }),
     );
     expect(m.links.has("Extensions")).toBe(false);
+    expect(m.links.has("Auto receptionists")).toBe(false);
     m.links.clear();
     renderToStaticMarkup(
       createElement(AdminShell, { ...props(), capabilities: undefined }),
@@ -87,6 +89,7 @@ describe("admin navigation boundaries", () => {
     expect(m.links.has("People")).toBe(true);
     expect(m.links.has("Call queues")).toBe(false);
     expect(m.links.has("Phone numbers")).toBe(false);
+    expect(m.links.has("Auto receptionists")).toBe(false);
   });
   it("hides legacy implicit-tenant routes for multi-workspace accounts", () => {
     renderToStaticMarkup(
@@ -94,13 +97,31 @@ describe("admin navigation boundaries", () => {
     );
     for (const label of [
       "Call queues",
-      "Auto receptionists",
       "Business hours",
       "Ring groups",
       "Call analytics",
     ])
       expect(m.links.has(label)).toBe(false);
     expect(m.links.has("People")).toBe(true);
+    expect(m.links.has("Phone numbers")).toBe(true);
+  });
+  it("exposes the explicit-workspace IVR route for authorized multi-workspace administrators", () => {
+    const p = { ...props(), canUseImplicitTenant: false };
+    renderToStaticMarkup(createElement(AdminShell, p));
+    expect(m.links.has("Auto receptionists")).toBe(true);
+    m.links.get("Auto receptionists").onPress();
+    expect(p.onNavigate).toHaveBeenCalledWith("/admin/ivr");
+  });
+  it("requires IVR capability even when a multi-workspace administrator has selected a workspace", () => {
+    const p = props();
+    renderToStaticMarkup(
+      createElement(AdminShell, {
+        ...p,
+        canUseImplicitTenant: false,
+        capabilities: { ...p.capabilities!, ivr: false },
+      }),
+    );
+    expect(m.links.has("Auto receptionists")).toBe(false);
     expect(m.links.has("Phone numbers")).toBe(true);
   });
   it("offers the compact navigation control at mobile width", () => {

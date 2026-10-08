@@ -104,6 +104,7 @@ test('manual workflow has no arbitrary build inputs and withholds raw EAS result
   assert.match(workflow, /phone11-android-build-receipt\.json\n\s+if-no-files-found: error/);
   assert.doesNotMatch(workflow, /path: .*build-private|--auto-submit|--refresh-ad-hoc|credentials configure/);
   assert.match(workflow, /2> "\$RUNNER_TEMP\/phone11-android-build-private\.stderr"/);
+  assert.match(workflow, /4> "\$RUNNER_TEMP\/phone11-android-build-progress\.txt"/);
   assert.doesNotMatch(workflow, /cat .*build-private/);
   assert.match(workflow, /workflow_call:\n    secrets:\n      EXPO_TOKEN:\n        required: true/);
   assert.doesNotMatch(workflow, /secrets: inherit/);
@@ -145,6 +146,7 @@ test('actual workflow shell keeps asynchronous CLI stdout and stderr private on 
     assert.equal(readFileSync(join(root, 'phone11-android-build-private.json'), 'utf8'), 'synthetic-private-stdout\n');
     assert.equal(readFileSync(join(root, 'phone11-android-build-private.stderr'), 'utf8'), 'synthetic-private-stderr\n');
     assert.equal(statSync(join(root, 'phone11-android-build-diagnostic.json')).mode & 0o777, 0o600);
+    assert.equal(statSync(join(root, 'phone11-android-build-progress.txt')).mode & 0o777, 0o600);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -247,15 +249,20 @@ test('actual wrapper emits a bounded owned failure on FD3 without a path overrid
 test('workflow publishes only fixed known diagnostics and preserves successful receipt JSON', () => {
   const workflow = readFileSync(new URL('../.github/workflows/phone11-android-trial-internal-build.yml', import.meta.url), 'utf8');
   assert.match(workflow, /3> "\$RUNNER_TEMP\/phone11-android-build-diagnostic\.json"/);
+  assert.match(workflow, /4> "\$RUNNER_TEMP\/phone11-android-build-progress\.txt"/);
+  assert.doesNotMatch(workflow, /cat .*progress\.txt|PHONE11_ANDROID_PROGRESS_PATH|--progress/);
   assert.doesNotMatch(workflow, /cat .*diagnostic\.json|PHONE11_ANDROID_DIAGNOSTIC_PATH|--diagnostic/);
   const step = workflow.match(/          umask 077\n([\s\S]+?)\n      - uses: actions\/upload-artifact/);
   const commands = 'umask 077\n' + step[1].split('\n').map(line => line.slice(10)).join('\n');
-  const root = mkdtempSync(join(tmpdir(), 'phone11-android-diagnostic-shell-'));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'phone11-android-diagnostic-shell-')));
   try {
-    const known = "node() { if [ \"$1\" = scripts/run-phone11-android-trial-internal-build.cjs ]; then printf '%s\\n' 'private-stdout'; printf '%s\\n' 'private-stderr' >&2; printf '%s\\n' '{\"schema\":\"phone11.android-build-diagnostic.v1\",\"failureCode\":\"E_ANDROID_EXISTING_CREDENTIALS_REQUIRED\"}' >&3; return 1; else command node \"$@\"; fi; }\n";
+    const known = "node() { if [ \"$1\" = scripts/run-phone11-android-trial-internal-build.cjs ]; then printf '%s\\n' 'private-stdout'; printf '%s\\n' 'private-stderr' >&2; printf '%s\\n' '{\"schema\":\"phone11.android-build-diagnostic.v1\",\"failureCode\":\"E_ANDROID_EXISTING_CREDENTIALS_REQUIRED\"}' >&3; printf '%s\\n' SOURCE_CONFIG_VERIFIED GUARD_INSTALLED EAS_ENTRYPOINT_INVOKED REMOTE_READ_STARTED REMOTE_READ_COMPLETED >&4; return 1; else command node \"$@\"; fi; }\n";
     const failed = spawnSync('bash', ['-e', '-c', known + commands], { encoding: 'utf8', env: { ...process.env, RUNNER_TEMP: root, GITHUB_SHA: sha } });
     assert.equal(failed.status, 1); assert.match(failed.stderr, /E_ANDROID_EXISTING_CREDENTIALS_REQUIRED/);
     assert.equal(failed.stdout, ''); assert.equal(failed.stderr.includes('private-'), false);
+    assert.deepEqual(JSON.parse(failed.stderr.trim().split('\n').at(-1)), {
+      schema: 'phone11.android-build-progress.v1', status: 'OBSERVED_PREFIX', lastObservedMilestone: 'REMOTE_READ_COMPLETED',
+    });
     const good = "node() { if [ \"$1\" = scripts/run-phone11-android-trial-internal-build.cjs ]; then printf '%s\\n' '" + JSON.stringify([build()]) + "'; return 0; else command node \"$@\"; fi; }\n";
     const passed = spawnSync('bash', ['-e', '-c', good + commands], { encoding: 'utf8', env: { ...process.env, RUNNER_TEMP: root, GITHUB_SHA: sha } });
     assert.equal(passed.status, 0); assert.equal(passed.stderr, '');

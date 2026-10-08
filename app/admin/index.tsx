@@ -108,7 +108,6 @@ export default function AdminDashboard() {
       route: "/admin/ivr",
       group: "Phone system",
       facility: "ivr",
-      requiresImplicitTenant: true,
     },
     {
       icon: "person.3.fill",

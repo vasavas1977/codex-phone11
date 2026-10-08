@@ -153,6 +153,45 @@ jobs:
           assert len(matches) == 1 and matches[0]['assertionResults'], 'Required PBX read-authority suite must run'
           assert all(case['status'] == 'passed' for case in matches[0]['assertionResults']), 'PBX read-authority cases must pass without skips'
           PYREAD
+      - name: Require explicit-workspace IVR navigation and deletion regressions
+        run: |
+          for suite in tests/phone11-admin-home-navigation.test.tsx tests/phone11-admin-shell.test.tsx tests/phone11-ivr-admin-ui.test.ts tests/phone11-admin-delete-confirmation.test.tsx; do
+            test -f "$suite" || { echo "Required suite missing: $suite" >&2; exit 1; }
+          done
+          pnpm exec vitest run \
+            tests/phone11-admin-home-navigation.test.tsx \
+            tests/phone11-admin-shell.test.tsx \
+            tests/phone11-ivr-admin-ui.test.ts \
+            tests/phone11-admin-delete-confirmation.test.tsx \
+            --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/phone11-ivr-navigation-results.json"
+          python3 - <<'PYIVR'
+          import json, os
+          from pathlib import Path
+          report = json.loads((Path(os.environ['RUNNER_TEMP']) / 'phone11-ivr-navigation-results.json').read_text())
+          required = ['tests/phone11-admin-home-navigation.test.tsx', 'tests/phone11-admin-shell.test.tsx', 'tests/phone11-ivr-admin-ui.test.ts', 'tests/phone11-admin-delete-confirmation.test.tsx']
+          for name in required:
+              matches = [suite for suite in report['testResults'] if Path(suite['name']).resolve() == Path(name).resolve()]
+              assert len(matches) == 1 and matches[0]['assertionResults'], 'Required IVR suite must run'
+              assert all(case['status'] == 'passed' for case in matches[0]['assertionResults']), 'IVR cases must pass without skips'
+          print('Explicit-workspace IVR navigation and deletion suites passed without skips')
+          PYIVR
+      - name: Require isolated Android progress descriptor regressions
+        run: |
+          test -f tests/phone11-android-progress-diagnostics.test.mjs
+          node --test --test-reporter=tap tests/phone11-android-progress-diagnostics.test.mjs | tee "$RUNNER_TEMP/phone11-android-progress.tap"
+          python3 - <<'PYPROGRESS'
+          import os, re
+          from pathlib import Path
+          tap = (Path(os.environ['RUNNER_TEMP']) / 'phone11-android-progress.tap').read_text()
+          def total(label):
+              matches = re.findall(r'^# ' + label + r' (\d+)$', tap, re.MULTILINE)
+              assert len(matches) == 1, 'Required Android progress totals missing'
+              return int(matches[0])
+          count = total('tests')
+          assert count > 0 and total('pass') == count, 'Android progress suite must execute and pass'
+          assert all(total(label) == 0 for label in ('fail', 'cancelled', 'skipped', 'todo')), 'Android progress suite must not skip cases'
+          print(f'Isolated Android progress descriptor regressions: {count} passed, zero skips')
+          PYPROGRESS
       - name: Test media, push, PBX authorization, and durable chat state
         run: |
           for suite in \

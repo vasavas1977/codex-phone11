@@ -17,6 +17,39 @@ const cliFiles = {
 // is never inspected, copied or used as a diagnostic code.
 const ownedFailures = new WeakMap();
 let activeDiagnostics;
+let activeProgress;
+const PROGRESS_MILESTONES = Object.freeze([
+  'SOURCE_CONFIG_VERIFIED', 'GUARD_INSTALLED', 'EAS_ENTRYPOINT_INVOKED',
+  'REMOTE_READ_STARTED', 'REMOTE_READ_COMPLETED', 'CONVERSION_STARTED', 'CONVERSION_COMPLETED',
+]);
+const PROGRESS_MAX_RECORDS = 128;
+const progressMilestones = new Set(PROGRESS_MILESTONES);
+const progressUnavailable = 'PROGRESS_UNAVAILABLE\n';
+function createProgressDiagnostics(write = bytes => writeSync(4, bytes)) {
+  let records = 0;
+  let stopped = false;
+  function invalidate() {
+    stopped = true;
+    try { write(progressUnavailable); } catch { /* Progress loss never changes CLI outcome. */ }
+  }
+  function record(milestone) {
+    if (stopped) return;
+    if (!progressMilestones.has(milestone) || records >= PROGRESS_MAX_RECORDS) {
+      invalidate();
+      return;
+    }
+    const bytes = milestone + '\n';
+    records++;
+    try {
+      const written = write(bytes);
+      if (typeof written === 'number' && written !== bytes.length) invalidate();
+    } catch { invalidate(); }
+  }
+  return Object.freeze({ record });
+}
+function observe(progress, milestone) {
+  try { progress?.record(milestone); } catch { /* Optional output cannot interfere with the CLI. */ }
+}
 function failure(code, message = code) {
   const error = new Error(message);
   ownedFailures.set(error, code);
@@ -53,7 +86,7 @@ function requireManagedInvocation(env, actualHead) {
   }
 }
 
-function freezeAndroidProvider(Provider, Setup, Create) {
+function freezeAndroidProvider(Provider, Setup, Create, progress = activeProgress) {
   if (typeof Provider?.prototype?.getRemoteAsync !== 'function'
       || typeof Provider.prototype.getLocalAsync !== 'function'
       || typeof Setup?.prototype?.getFullySetupBuildCredentialsAsync !== 'function'
@@ -65,11 +98,16 @@ function freezeAndroidProvider(Provider, Setup, Create) {
   // mutation branch entirely; missing or concurrently removed credentials refuse.
   Provider.prototype.getRemoteAsync = async function () {
     const setup = new Setup(this.options);
+    observe(progress, 'REMOTE_READ_STARTED');
     const existing = await setup.getFullySetupBuildCredentialsAsync({
       ctx: this.ctx, app: this.options.app, name: this.options.name,
     });
+    observe(progress, 'REMOTE_READ_COMPLETED');
     if (!existing?.androidKeystore) fail();
-    return this.toAndroidCredentials(existing);
+    observe(progress, 'CONVERSION_STARTED');
+    const credentials = this.toAndroidCredentials(existing);
+    observe(progress, 'CONVERSION_COMPLETED');
+    return credentials;
   };
   Provider.prototype.getLocalAsync = blockLocal;
   Create.prototype.runAsync = blockGeneration;
@@ -139,18 +177,23 @@ function main() {
   }
   const appConfig = readFileSync('app.config.ts', 'utf8');
   if (!appConfig.includes(`projectId: "${PROJECT}"`)) throw failure('E_ANDROID_TRIAL_PROJECT');
+  observe(activeProgress, 'SOURCE_CONFIG_VERIFIED');
   // expo/expo-github-action installs locally in its toolcache, not globally.
   // Load that fixed package directly; pnpm's executable may be a shell shim.
   const installed = installGuard(resolveActionCliRoot(process.env));
+  observe(activeProgress, 'GUARD_INSTALLED');
   process.argv = [process.execPath, join(installed.root, 'bin/run'), 'build', '--platform', 'android',
     '--profile', PROFILE, '--non-interactive', '--freeze-credentials', '--wait', '--json'];
+  observe(activeProgress, 'EAS_ENTRYPOINT_INVOKED');
   require(join(installed.root, 'bin/run'));
 }
 
 module.exports = { PROFILE, requireManagedInvocation, freezeAndroidProvider, installGuard, resolveActionCliRoot,
-  diagnosticCodeFor, createFailureDiagnostics };
+  diagnosticCodeFor, createFailureDiagnostics, createProgressDiagnostics,
+  PROGRESS_MILESTONES, PROGRESS_MAX_RECORDS };
 if (require.main === module) {
   activeDiagnostics = createFailureDiagnostics();
+  activeProgress = createProgressDiagnostics();
   try { main(); }
   catch (error) {
     activeDiagnostics.record(error);

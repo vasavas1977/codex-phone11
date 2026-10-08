@@ -57,7 +57,6 @@ export const ADMIN_NAVIGATION = [
     group: "Phone system",
     icon: "rectangle.grid.3x2.fill",
     facility: "ivr",
-    implicit: true,
   },
   {
     label: "Call queues",
