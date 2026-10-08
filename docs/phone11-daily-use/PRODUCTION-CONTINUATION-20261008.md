@@ -46,8 +46,9 @@ it is not counted as zero-query or provider-inert acceptance.
 
 The owner confirmed a Siprix trial license. Current trial calling is limited to
 60 seconds; production redistribution/platform entitlements and representative
-long calls are not established. Desktop packages remain unsigned, with macOS
-notarization and Windows signing/distribution acceptance still open.
+long calls are not established. Desktop trials use local ad-hoc signatures on
+macOS; the Windows application's own binaries remain unsigned. Publisher
+signing, macOS notarization and distribution acceptance remain open.
 
 Live voicemail custody/deposit/playback, matching database/schema commissioning,
 public-number/background incoming calls and the deferred physical meeting
