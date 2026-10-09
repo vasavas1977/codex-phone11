@@ -16,8 +16,14 @@ unchanged. A Unix-socket/null address remains unavailable, not a match.
 `tests/phone11-pbx-readiness-address-postgres.test.ts` executes the exact product
 query and decoder inside a rollback-only RR READ ONLY transaction using the
 existing dedicated IPv4 loopback `PHONE11_PBX_TEST_DATABASE_URL` fixture on port
-5432. Four required cases cover bare-address success (including the old cast's
-false comparison), mismatched IP, /32 input and subnet input. They preserve the
+5432. The client connection's loopback target is not assumed to be PostgreSQL's
+backend interface: Docker port publishing can terminate on a bridge address.
+Within that same leased RR READ ONLY transaction, tests privately validate one
+bare backend IPv4 and the fixed port, then derive the expected host, a guaranteed
+different host, /32 and /8 inputs. Only decoded/fixed booleans are asserted or
+returned; unknown metadata and measured address values are never logged. Four
+required cases cover backend-address success (including the old cast's false
+comparison), mismatched IP, /32 input and subnet input. They preserve the
 product's fixed four parameters; `databaseMatch` is truthfully false on the
 `phone11_pbx_test` database. They do not call app startup, grant roles, create
 schema or access customer rows. The PG16 CI job runs this file and requires all
