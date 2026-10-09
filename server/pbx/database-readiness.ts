@@ -19,7 +19,7 @@ export const READINESS_SQL = `WITH fixed(table_name) AS (SELECT pg_catalog.unnes
 table_flags AS (SELECT f.table_name, c.oid FROM fixed f LEFT JOIN pg_catalog.pg_namespace n ON n.nspname='public' LEFT JOIN pg_catalog.pg_class c ON c.relnamespace=n.oid AND c.relname=f.table_name AND c.relkind IN ('r','p'))
 SELECT pg_catalog.json_build_object(
 'databaseMatch', pg_catalog.current_database()='phone11ai' AND (SELECT oid FROM pg_catalog.pg_database WHERE datname=pg_catalog.current_database())=$2,
-'serverMatch', pg_catalog.inet_server_addr()::pg_catalog.text=$1 AND pg_catalog.inet_server_port()=5432,
+'serverMatch', pg_catalog.host(pg_catalog.inet_server_addr())=$1 AND pg_catalog.inet_server_port()=5432,
 'versionMatch', pg_catalog.current_setting('server_version_num')=$3,
 'schemaMatch', pg_catalog.current_schema()='public',
 'readOnly', pg_catalog.current_setting('transaction_read_only')='on',
