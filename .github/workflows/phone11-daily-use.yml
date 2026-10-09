@@ -910,6 +910,7 @@ jobs:
           tests/phone11-extension-tenant-prerequisites-postgres.test.ts
           tests/phone11-extension-tenant-legacy-default-prerequisites-postgres.test.ts
           tests/phone11-provisioning-extension-schema.test.ts
+          tests/phone11-pbx-readiness-address-postgres.test.ts
           tests/phone11-pbx-advanced-migration.test.ts
           tests/phone11-pbx-schema-preflight.test.ts
           tests/phone11-time-condition-postgres.test.ts
@@ -921,7 +922,7 @@ jobs:
           from pathlib import Path
           report = json.loads((Path(os.environ["RUNNER_TEMP"]) / "phone11-pbx-base-prerequisite-results.json").read_text())
           assert report["success"] is True
-          for name in ("tests/phone11-pbx-advanced-migration.test.ts", "tests/phone11-pbx-schema-preflight.test.ts", "tests/phone11-provisioning-extension-schema.test.ts"):
+          for name in ("tests/phone11-pbx-advanced-migration.test.ts", "tests/phone11-pbx-schema-preflight.test.ts", "tests/phone11-provisioning-extension-schema.test.ts", "tests/phone11-pbx-readiness-address-postgres.test.ts"):
               assert Path(name).is_file(), name
               matches = [suite for suite in report["testResults"] if Path(suite["name"]).resolve() == Path(name).resolve()]
               assert len(matches) == 1, name
