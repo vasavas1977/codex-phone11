@@ -187,7 +187,7 @@ async function applyPhoneProvisioningSchema(db: ReturnType<typeof getPool>) {
     CREATE TABLE IF NOT EXISTS extensions (
       id SERIAL PRIMARY KEY,
       org_id INTEGER DEFAULT 1,
-      tenant_id INTEGER DEFAULT 1,
+      tenant_id INTEGER NOT NULL REFERENCES tenants(id),
       user_id INTEGER,
       extension_number VARCHAR(32) NOT NULL,
       display_name VARCHAR(128),
@@ -206,9 +206,36 @@ async function applyPhoneProvisioningSchema(db: ReturnType<typeof getPool>) {
     )
   `);
 
+  // Existing legacy tenancy is an operator migration, never an initializer backfill.
+  // The empty-table check and column addition share one transaction and table lock.
+  await db.query(`
+    DO $phone11_extension_tenant$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_attribute
+        WHERE attrelid = 'extensions'::pg_catalog.regclass
+          AND attname = 'tenant_id' AND attnum > 0 AND NOT attisdropped
+      ) THEN
+        LOCK TABLE extensions IN ACCESS EXCLUSIVE MODE NOWAIT;
+        -- Another initializer may have added the column before this lock.
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_catalog.pg_attribute
+          WHERE attrelid = 'extensions'::pg_catalog.regclass
+            AND attname = 'tenant_id' AND attnum > 0 AND NOT attisdropped
+        ) THEN
+          IF EXISTS (SELECT 1 FROM extensions) THEN
+            RAISE EXCEPTION 'Phone11 refuses adding tenant_id to populated extensions; reviewed tenant migration required'
+              USING ERRCODE = '55000';
+          END IF;
+          ALTER TABLE extensions ADD COLUMN tenant_id INTEGER NOT NULL REFERENCES tenants(id);
+        END IF;
+      END IF;
+    END;
+    $phone11_extension_tenant$;
+  `);
+
   const extensionColumns = [
     "ADD COLUMN IF NOT EXISTS org_id INTEGER DEFAULT 1",
-    "ADD COLUMN IF NOT EXISTS tenant_id INTEGER DEFAULT 1",
     "ADD COLUMN IF NOT EXISTS user_id INTEGER",
     "ADD COLUMN IF NOT EXISTS display_name VARCHAR(128)",
     "ADD COLUMN IF NOT EXISTS type VARCHAR(32) NOT NULL DEFAULT 'user'",
