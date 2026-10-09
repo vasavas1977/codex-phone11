@@ -85,8 +85,8 @@ function buildPgConfig(): pg.PoolConfig {
 export function getPool(): pg.Pool {
   if (!_pool) {
     _pool = new pg.Pool(buildPgConfig());
-    _pool.on("error", (err) => {
-      console.error("[PBX DB] Unexpected pool error:", err.message);
+    _pool.on("error", () => {
+      console.error("[PBX DB] Pool error");
     });
   }
   return _pool;
@@ -106,7 +106,7 @@ export async function query<T extends pg.QueryResultRow = any>(text: string, par
     }
     return result;
   } catch (error: any) {
-    console.error("[PBX DB] Query error:", error.message, "SQL:", text.substring(0, 200));
+    console.error("[PBX DB] Query error");
     throw error;
   }
 }

@@ -125,8 +125,9 @@ export function hasRole(userRole: string, requiredRole: string): boolean {
 export async function requireLiveTenantAdminMembership(
   userId: number,
   tenantId: number,
+  execute: typeof query = query,
 ): Promise<string> {
-  const result = await query(
+  const result = await execute(
     `SELECT tm.role FROM tenant_memberships tm
      JOIN tenants t ON t.id = tm.tenant_id
      WHERE tm.user_id = $1 AND tm.tenant_id = $2

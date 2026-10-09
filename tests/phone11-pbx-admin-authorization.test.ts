@@ -572,6 +572,7 @@ describe("PBX workspace administrator authorization", () => {
     );
     expect(source).not.toContain("adminProcedure");
     expect(source.match(/await getTenantAdmin(?:LegacyRead|Read|Mutation)?Ctx\(ctx/g)).toHaveLength(28);
+    expect(source).toContain("readPbxDatabaseReadiness(ctx.user.id, input.tenantId)");
   });
 
   it.each(["updateSettings", "updateMember", "createExtension"] as const)(

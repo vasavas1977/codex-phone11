@@ -36,6 +36,7 @@ import { listPersonalCallHistory } from "./personal-call-history";
 import { profilePhotoDescriptors } from "../profile/photo";
 import { reactivateExtensionSipAuth, revokeExtensionSipAuth, rotateExtensionSipAuth } from "../phone-provisioning";
 import { listSelectedTenantDirectory } from "./selected-directory";
+import { readPbxDatabaseReadiness } from "./database-readiness";
 
 // ============================================================================
 // Zod Schemas
@@ -395,6 +396,21 @@ export async function upsertBusinessHoursTimezone(
 // PBX Router
 // ============================================================================
 export const pbxRouter = router({
+  /** Manual metadata diagnostic, scoped to a current workspace administrator. */
+  databaseReadiness: protectedProcedure
+    .input(selectedTenantSchema)
+    .query(async ({ ctx, input }) => {
+      if (ctx.req.method !== "GET" || ctx.req.headers["x-phone11-read-only-probe"] !== "1") {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Use a read-only diagnostic GET" });
+      }
+      ctx.res.setHeader("Cache-Control", "no-store");
+      // Strict tenant input; the helper checks live authority on its bounded client.
+      const result = await readPbxDatabaseReadiness(ctx.user.id, input.tenantId);
+      if (result.status === "forbidden") {
+        throw new TRPCError({ code: "FORBIDDEN", message: "Workspace administrator access is required" });
+      }
+      return result;
+    }),
   directory: router({
     list: protectedProcedure
       .input(z.object({
