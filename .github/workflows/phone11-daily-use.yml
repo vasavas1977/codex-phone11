@@ -159,27 +159,30 @@ jobs:
           assert len(matches) == 1 and matches[0]['assertionResults'], 'Required PBX read-authority suite must run'
           assert all(case['status'] == 'passed' for case in matches[0]['assertionResults']), 'PBX read-authority cases must pass without skips'
           PYREAD
-      - name: Require offline PBX clone adapter and static import audit regressions
+      - name: Require offline PBX clone adapter, import audit and selected entry regressions
         run: |
           test -f scripts/phone11-pbx-clone/real-pg-adapter.ts
           test -f scripts/phone11-pbx-clone/audit-handler-imports.ts
+          test -f scripts/phone11-pbx-clone/selected-handler-entry.ts
           test -f tests/phone11-pbx-clone-real-pg-adapter.test.ts
           test -f tests/phone11-pbx-clone-import-audit.test.ts
+          test -f tests/phone11-pbx-clone-selected-handler-entry.test.ts
           pnpm exec vitest run \
             tests/phone11-pbx-clone-real-pg-adapter.test.ts \
             tests/phone11-pbx-clone-import-audit.test.ts \
+            tests/phone11-pbx-clone-selected-handler-entry.test.ts \
             --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/phone11-pbx-clone-source-results.json"
           python3 - <<'PYCLONE'
           import json, os
           from pathlib import Path
           report = json.loads((Path(os.environ['RUNNER_TEMP']) / 'phone11-pbx-clone-source-results.json').read_text())
-          required = ['tests/phone11-pbx-clone-real-pg-adapter.test.ts', 'tests/phone11-pbx-clone-import-audit.test.ts']
+          required = ['tests/phone11-pbx-clone-real-pg-adapter.test.ts', 'tests/phone11-pbx-clone-import-audit.test.ts', 'tests/phone11-pbx-clone-selected-handler-entry.test.ts']
           assert report.get('success') is True, 'Offline PBX clone source checks must succeed'
           for name in required:
               matches = [suite for suite in report['testResults'] if Path(suite['name']).resolve() == Path(name).resolve()]
               assert len(matches) == 1 and matches[0]['assertionResults'], 'Required offline PBX clone suite must run exactly once'
               assert all(case['status'] == 'passed' for case in matches[0]['assertionResults']), 'Offline PBX clone cases must pass without skips'
-          print('Offline PBX clone adapter and static import audit suites passed without skips; runtime execution remains unadmitted')
+          print('Offline PBX clone adapter, import audit and selected entry suites passed without skips; runtime execution remains unadmitted')
           PYCLONE
       - name: Require explicit-workspace IVR navigation and deletion regressions
         run: |
