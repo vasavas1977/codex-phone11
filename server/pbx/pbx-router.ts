@@ -435,7 +435,14 @@ export const pbxRouter = router({
       }
       // This router enforces selectedTenantSchema and fresh authority for tenant.get/members.
       // Legacy deployed routers omit this bit; clients must not infer it from schema flags.
-      return { ...(await readManagementCapabilities()), explicitTenantReads: true as const };
+      return {
+        ...(await readManagementCapabilities()),
+        explicitTenantReads: true as const,
+        // Selected extensions.list plus ivr/ringGroups/queues/timeConditions.list
+        // and assignRoute enforce fresh owner/admin authority and tenant scope.
+        // Distinct from tenant.get/members; old APIs must omit this capability.
+        explicitDidRouteDirectories: true as const,
+      };
     }),
 
   // ========================================================================

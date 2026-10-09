@@ -1,6 +1,7 @@
 import { applyTaggedSnapshot, callHistoryFailureMessage, signInFailureMessage, VOICEMAIL_ENABLED, type PublicState, type TaggedSnapshot, type TaggedDirectory, type DirectoryEntry } from './ipc';
 import type { DesktopCallHistory, DesktopCallHistoryCursor, DesktopTenantSelection } from '../../src/authenticated-provider';
 import { VoicemailPlayer } from './voicemail-player';
+import { VoicemailDeletion } from './voicemail-deletion';
 import { boundedHistoryQuery, filterHistoryItems, HISTORY_DIRECTIONS, HISTORY_OUTCOMES,
   historyDirectionLabel, historyOutcome, historyOutcomeLabel, historyScopeKey,
   type HistoryDirection, type HistoryOutcome } from './history-filter';
@@ -14,6 +15,7 @@ declare global { interface Window { phone11: {
     sessionRevision: string; items: DesktopCallHistory[]; nextCursor: DesktopCallHistoryCursor | null }>;
   directoryList(sessionRevision: string, search: string, offset: number): Promise<TaggedDirectory>;
   voicemailAudio?(sessionRevision: string, id: number): Promise<{sessionRevision: string; id: number; mimeType: 'audio/wav'; bytes: Uint8Array}>;
+  voicemailDelete?(sessionRevision: string, id: number): Promise<unknown>;
   voicemailMarkRead?(sessionRevision: string, id: number): Promise<unknown>;
   voicemailList?(sessionRevision: string): Promise<{ sessionRevision: string; items: Array<{
     id: number; callerName: string | null; callerNumber: string | null; durationSeconds: number;
@@ -176,17 +178,31 @@ async function loadDirectory(more = false): Promise<void> {
     }
   }
 }
+const deletions = new VoicemailDeletion({
+  currentScope: () => state?.signedIn && state.sessionRevision ? `${accountEpoch}:${state.sessionRevision}:${state.tenantId}` : null,
+  hasMessage: id => !voicemailLoading && voicemailLoadedFor === state?.sessionRevision && voicemailItems.some(item => item.id === id),
+  remove: async (revision, id) => {
+    if (!window.phone11.voicemailDelete) throw new Error('Unavailable');
+    return window.phone11.voicemailDelete(revision, id);
+  },
+  stopPlayback: id => { if (player?.state.id === id) player.stop(); },
+  changed: () => {
+    voicemailItems = voicemailItems.filter(item => !deletions.isRetired(item.id));
+    render();
+  },
+});
 const audio = maybeById('voicemail-audio') as HTMLAudioElement | null;
 const player = audio ? new VoicemailPlayer({
   audio,
   fetchAudio: async (revision, id) => {
-    if (!window.phone11.voicemailAudio) throw new Error('Unavailable');
+    if (!deletions.canPlay(id) || !window.phone11.voicemailAudio) throw new Error('Unavailable');
     return window.phone11.voicemailAudio(revision, id);
   },
   markRead: async (revision, id) => {
-    if (!window.phone11.voicemailMarkRead) throw new Error('Unavailable');
+    const version = deletions.version;
+    if (!deletions.canPlay(id) || !window.phone11.voicemailMarkRead) throw new Error('Unavailable');
     await window.phone11.voicemailMarkRead(revision, id);
-    if (state?.sessionRevision === revision) {
+    if (state?.sessionRevision === revision && deletions.version === version && deletions.canPlay(id)) {
       voicemailItems = voicemailItems.map(item => item.id === id ? {...item, status: 'read'} : item);
       render();
     }
@@ -414,7 +430,10 @@ function render(): void {
       empty.textContent = 'No voicemail messages.';
       voicemailList.append(empty);
     }
-    for (const item of voicemailItems) {
+    for (const item of voicemailItems.filter(item => !deletions.isRetired(item.id))) {
+      const rowEpoch = accountEpoch, rowRevision = state.sessionRevision, rowTenant = state.tenantId, rowRequest = voicemailRequest;
+      const rowCurrent = () => state?.signedIn && accountEpoch === rowEpoch && state.sessionRevision === rowRevision &&
+        state.tenantId === rowTenant && voicemailRequest === rowRequest && voicemailItems.includes(item);
       const row = document.createElement('article');
       row.className = 'voicemail-item';
       const caller = document.createElement('strong');
@@ -426,14 +445,24 @@ function render(): void {
       meta.textContent = [item.status === 'new' ? 'New' : 'Read', duration, dateText].filter(Boolean).join(' · ');
       const play = document.createElement('button'); play.type = 'button'; play.className = 'voicemail-play';
       play.setAttribute('aria-label', `Play voicemail from ${caller.textContent}`);
-      play.disabled = phoneBusy;
+      play.disabled = phoneBusy || !deletions.canPlay(item.id);
       const playIcon = document.createElement('img'); playIcon.src = 'icons/play.svg'; playIcon.alt = '';
       play.append(playIcon);
       play.addEventListener('click', () => {
-        if (state?.sessionRevision && !state.calling.call && state.calling.dialState === 'idle' && state.calling.callActionState === 'idle')
+        if (rowCurrent() && state?.sessionRevision && deletions.canPlay(item.id) && !state.calling.call && state.calling.dialState === 'idle' && state.calling.callActionState === 'idle')
           void player?.play(state.sessionRevision, item.id);
       });
-      row.append(caller, meta, play);
+      const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'voicemail-delete';
+      remove.textContent = deletions.isPending(item.id) ? 'Deleting…' : deletions.hasFailed(item.id) ? 'Retry delete' : 'Delete';
+      remove.setAttribute('aria-label', `Delete voicemail from ${caller.textContent}`);
+      remove.disabled = voicemailLoading || deletions.isPending(item.id);
+      remove.addEventListener('click', () => {
+        if (VOICEMAIL_ENABLED && rowCurrent() && state?.sessionRevision)
+          void deletions.run(state.sessionRevision, item.id);
+      });
+      const feedback = document.createElement('span'); feedback.setAttribute('role', 'status');
+      feedback.textContent = deletions.hasFailed(item.id) ? 'Deletion could not be confirmed. Try again.' : '';
+      row.append(caller, meta, play, remove, feedback);
       voicemailList.append(row);
     }
   }
@@ -455,7 +484,7 @@ async function loadVoicemail(force = false): Promise<void> {
     const response = await window.phone11.voicemailList(revision);
     if (requestId !== voicemailRequest || state?.sessionRevision !== revision) return;
     if (response.sessionRevision !== revision) throw new Error('stale session');
-    voicemailItems = Array.isArray(response.items) ? response.items : [];
+    voicemailItems = Array.isArray(response.items) ? response.items.filter(item => !deletions.isRetired(item.id)) : [];
     voicemailLoadedFor = revision;
     voicemailMessage = '';
   } catch {

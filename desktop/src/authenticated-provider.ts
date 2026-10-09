@@ -109,6 +109,9 @@ export class AuthenticatedDesktopProvider {
   private fingerprint: string | null = null;
   private readonly fingerprintKey = randomBytes(32);
   private controllers = new Set<AbortController>();
+  private voicemailEpoch = 0;
+  private readonly voicemailDeleting = new Set<number>();
+  private readonly voicemailDeleted = new Set<number>();
 
   constructor(options: AuthenticatedProviderOptions) {
     let url: URL;
@@ -260,21 +263,29 @@ export class AuthenticatedDesktopProvider {
   async listVoicemail(expectedRevision: string): Promise<readonly DesktopVoicemail[]> {
     const { token, epoch } = this.sessionAuthority(expectedRevision);
     const tenantId = this.session!.tenantId;
+    const inboxEpoch = this.voicemailEpoch;
     const value = await this.query("pbx.voicemail.list", token, epoch, { tenantId });
+    if (inboxEpoch !== this.voicemailEpoch) throw new DesktopAuthenticationError();
     this.assertSessionAuthority(expectedRevision, epoch);
+    return this.decodeVoicemailInbox(value, tenantId);
+  }
+
+  private decodeVoicemailInbox(value: unknown, tenantId: number): readonly DesktopVoicemail[] {
     if (!Array.isArray(value) || value.length > 100) throw new DesktopAuthenticationError();
+    const seen = new Set<number>();
     return value.map((item): DesktopVoicemail => {
-      if (!isRecord(item) || item.tenant_id !== this.session!.tenantId || !positiveId(item.id) ||
+      if (!isRecord(item) || item.tenant_id !== tenantId || !positiveId(item.id) || seen.has(item.id) ||
           !(item.status === "new" || item.status === "read") ||
           typeof item.duration_seconds !== "number" || !Number.isSafeInteger(item.duration_seconds) ||
           item.duration_seconds < 0 || item.duration_seconds > 86400 ||
           typeof item.created_at !== "string" || item.created_at.length > 64 ||
           !Number.isFinite(Date.parse(item.created_at)))
         throw new DesktopAuthenticationError();
+      seen.add(item.id);
       return { id: item.id, callerName: safeDisplay(item.caller_name, 160),
         callerNumber: safeDisplay(item.caller_number, 64), durationSeconds: item.duration_seconds,
         status: item.status, createdAt: item.created_at };
-    });
+    }).filter(item => !this.voicemailDeleted.has(item.id));
   }
 
   /** One bounded CDR page for the authenticated member and selected tenant. */
@@ -367,21 +378,104 @@ export class AuthenticatedDesktopProvider {
     return (await this.listCallHistoryPage(expectedRevision)).items;
   }
 
+  private voicemailAuthority(revision: string, epoch: number, inboxEpoch: number, id: number): void {
+    this.assertSessionAuthority(revision, epoch);
+    if (inboxEpoch !== this.voicemailEpoch || this.voicemailDeleting.has(id) || this.voicemailDeleted.has(id))
+      throw new DesktopAuthenticationError();
+  }
+
+  /** Only the privileged IPC confirmation may admit this fixed owner-scoped mutation. */
+  async deleteVoicemail(expectedRevision: string, id: number, confirmed: boolean): Promise<void> {
+    if (confirmed !== true || !positiveId(id)) throw new DesktopAuthenticationError();
+    const { token, epoch } = this.sessionAuthority(expectedRevision);
+    const tenantId = this.session!.tenantId;
+    if (this.voicemailDeleting.size > 0 || this.voicemailDeleted.has(id)) throw new DesktopAuthenticationError();
+    this.voicemailDeleting.add(id);
+    this.voicemailEpoch += 1; // Retire concurrent list/read/media replies immediately.
+    try {
+      const inboxEpoch = this.voicemailEpoch;
+      const inboxValue = await this.voicemailDeletionRequest(token, epoch, tenantId, null);
+      this.assertSessionAuthority(expectedRevision, epoch);
+      if (inboxEpoch !== this.voicemailEpoch) throw new DesktopAuthenticationError();
+      const inbox = this.decodeVoicemailInbox(inboxValue, tenantId);
+      if (!inbox.some(message => message.id === id)) throw new DesktopAuthenticationError();
+      const result = await this.voicemailDeletionRequest(token, epoch, tenantId, id);
+      this.assertSessionAuthority(expectedRevision, epoch);
+      if (!isRecord(result) || Object.keys(result).join(',') !== 'success' || result.success !== true)
+        throw new DesktopAuthenticationError();
+      this.voicemailDeleted.add(id);
+    } catch { throw new DesktopAuthenticationError(); }
+    finally {
+      // An old completion must never retire or unblock replacement-account operations.
+      if (this.epoch === epoch) { this.voicemailDeleting.delete(id); this.voicemailEpoch += 1; }
+    }
+  }
+
+  /** Bound only deletion's fresh inbox preflight and mutation through headers AND body. */
+  private async voicemailDeletionRequest(token: string, epoch: number, tenantId: number, id: number | null): Promise<unknown> {
+    const controller = new AbortController();
+    this.controllers.add(controller);
+    const timer = setTimeout(() => controller.abort(), 15000);
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    let response: Response | undefined;
+    try {
+      this.assertEpoch(epoch);
+      const preflight = id === null;
+      const path = preflight
+        ? `/api/trpc/pbx.voicemail.list?input=${encodeURIComponent(JSON.stringify({ json: { tenantId } }))}`
+        : "/api/trpc/pbx.voicemail.delete";
+      response = await this.request(`${this.origin}${path}`, {
+        ...(preflight ? { headers: { authorization: `Bearer ${token}` } } : {
+          method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+          body: JSON.stringify({ json: { tenantId, id } }),
+        }), signal: controller.signal,
+        cache: "no-store", credentials: "omit", redirect: "error",
+      });
+      if (response.status !== 200 || !response.body || controller.signal.aborted) throw new DesktopAuthenticationError();
+      reader = response.body.getReader();
+      controller.signal.addEventListener("abort", () => { void reader?.cancel().catch(() => undefined); }, { once: true });
+      const chunks: Uint8Array[] = []; let length = 0;
+      for (;;) {
+        const { value, done } = await reader.read();
+        this.assertEpoch(epoch);
+        if (controller.signal.aborted) throw new DesktopAuthenticationError();
+        if (done) break;
+        length += value.byteLength;
+        if (length > 65536) throw new DesktopAuthenticationError();
+        chunks.push(value);
+      }
+      const bytes = new Uint8Array(length); let offset = 0;
+      for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+      const payload: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+      if (!isRecord(payload) || Object.keys(payload).join(',') !== 'result' ||
+          !isRecord(payload.result) || Object.keys(payload.result).join(',') !== 'data' ||
+          !isRecord(payload.result.data) || Object.keys(payload.result.data).join(',') !== 'json')
+        throw new DesktopAuthenticationError();
+      return payload.result.data.json;
+    } finally {
+      try { if (reader) await reader.cancel(); else await response?.body?.cancel(); } catch { /* Never expose private response errors. */ }
+      try { reader?.releaseLock(); } catch { /* Reader may already be cancelled. */ }
+      clearTimeout(timer); this.controllers.delete(controller);
+    }
+  }
+
   /** Mark a message read under the server's owner and selected-tenant checks. */
   async markVoicemailRead(expectedRevision: string, id: number): Promise<void> {
     if (!positiveId(id)) throw new DesktopAuthenticationError();
     const { token, epoch } = this.sessionAuthority(expectedRevision);
+    const inboxEpoch = this.voicemailEpoch;
+    this.voicemailAuthority(expectedRevision, epoch, inboxEpoch, id);
     const tenantId = this.session!.tenantId;
     const inbox = await this.listVoicemail(expectedRevision);
-    this.assertSessionAuthority(expectedRevision, epoch);
+    this.voicemailAuthority(expectedRevision, epoch, inboxEpoch, id);
     if (!inbox.some(message => message.id === id)) throw new DesktopAuthenticationError();
-    this.assertSessionAuthority(expectedRevision, epoch);
+    this.voicemailAuthority(expectedRevision, epoch, inboxEpoch, id);
     const response = await this.send("/api/trpc/pbx.voicemail.markRead", {
       method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
       body: JSON.stringify({ json: { tenantId, id } }),
     }, epoch);
     const result = this.unwrapTrpc(await this.json(response));
-    this.assertSessionAuthority(expectedRevision, epoch);
+    this.voicemailAuthority(expectedRevision, epoch, inboxEpoch, id);
     if (!isRecord(result) || result.success !== true) throw new DesktopAuthenticationError();
   }
 
@@ -393,8 +487,10 @@ export class AuthenticatedDesktopProvider {
   async voicemailAudio(expectedRevision: string, id: number): Promise<DesktopVoicemailAudio> {
     if (!positiveId(id)) throw new DesktopAuthenticationError();
     const { token, epoch } = this.sessionAuthority(expectedRevision);
+    const inboxEpoch = this.voicemailEpoch;
+    this.voicemailAuthority(expectedRevision, epoch, inboxEpoch, id);
     const inbox = await this.listVoicemail(expectedRevision);
-    this.assertSessionAuthority(expectedRevision, epoch);
+    this.voicemailAuthority(expectedRevision, epoch, inboxEpoch, id);
     if (!inbox.some(message => message.id === id)) throw new DesktopAuthenticationError();
 
     const controller = new AbortController();
@@ -407,7 +503,7 @@ export class AuthenticatedDesktopProvider {
         cache: "no-store", credentials: "omit", redirect: "error",
       });
       if (controller.signal.aborted) throw new DesktopAuthenticationError();
-      this.assertSessionAuthority(expectedRevision, epoch);
+      this.voicemailAuthority(expectedRevision, epoch, inboxEpoch, id);
       if (response.status !== 200) throw new DesktopAuthenticationError();
       if (!response.body) throw new DesktopAuthenticationError();
       reader = response.body.getReader();
@@ -426,7 +522,7 @@ export class AuthenticatedDesktopProvider {
       for (;;) {
         const { done, value } = await reader.read();
         if (controller.signal.aborted) throw new DesktopAuthenticationError();
-        this.assertSessionAuthority(expectedRevision, epoch);
+        this.voicemailAuthority(expectedRevision, epoch, inboxEpoch, id);
         if (done) break;
         total += value.byteLength;
         if (total > MAX_VOICEMAIL_BYTES) throw new DesktopAuthenticationError();
@@ -442,7 +538,7 @@ export class AuthenticatedDesktopProvider {
           String.fromCharCode(...bytes.subarray(8, 12)) !== "WAVE")
         throw new DesktopAuthenticationError();
       if (controller.signal.aborted) throw new DesktopAuthenticationError();
-      this.assertSessionAuthority(expectedRevision, epoch);
+      this.voicemailAuthority(expectedRevision, epoch, inboxEpoch, id);
       return { id, mimeType: "audio/wav", bytes };
     } catch {
       try { await reader?.cancel(); } catch { /* Ignore stream cleanup failures. */ }
@@ -804,6 +900,7 @@ export class AuthenticatedDesktopProvider {
 
   private clear(): void {
     this.epoch++;
+    this.voicemailEpoch += 1; this.voicemailDeleting.clear(); this.voicemailDeleted.clear();
     this.token = null;
     this.session = null;
     this.pendingSelection = null;

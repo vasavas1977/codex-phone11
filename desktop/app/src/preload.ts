@@ -13,6 +13,7 @@ const api = Object.freeze({
   directoryList: (sessionRevision: string, search: string, offset: number) =>
     ipcRenderer.invoke(CHANNELS.directoryList, { sessionRevision, search, offset }),
   voicemailAudio: (sessionRevision: string, id: number) => ipcRenderer.invoke(CHANNELS.voicemailAudio, { sessionRevision, id }),
+  voicemailDelete: (sessionRevision: string, id: number) => ipcRenderer.invoke(CHANNELS.voicemailDelete, { sessionRevision, id }),
   voicemailMarkRead: (sessionRevision: string, id: number) => ipcRenderer.invoke(CHANNELS.voicemailMarkRead, { sessionRevision, id }),
   voicemailList: (sessionRevision: string) => ipcRenderer.invoke(CHANNELS.voicemailList, { sessionRevision }),
   signOut: () => ipcRenderer.invoke(CHANNELS.signOut),

@@ -296,6 +296,19 @@ function useAdminWorkspaceState() {
     tenantQuery,
     capabilitiesQuery,
     canUseImplicitTenant: admitted && memberships.length === 1,
+    // Independent of tenant.get/members and implicit analytics admission.
+    canEditDidRoutes:
+      admitted &&
+      (memberships.length === 1 ||
+        admissionQuery.data?.capabilities.explicitDidRouteDirectories === true),
+    admissionScope: admitted
+      ? JSON.stringify([
+          userId,
+          requestedTenantId,
+          identity,
+          membershipsQuery.dataUpdatedAt,
+        ])
+      : null,
     needsSelection:
       freshMemberships &&
       manageableMemberships.length > 1 &&
@@ -322,6 +335,8 @@ export function usePbxAdminWorkspace() {
 export type PbxManagementCapabilities = {
   /** Absent on legacy APIs. Only the explicit selected-tenant router advertises true. */
   explicitTenantReads?: boolean;
+  /** All five DID destination lists and assignRoute honor the selected tenant. */
+  explicitDidRouteDirectories?: boolean;
   phoneNumbers: boolean;
   sites: boolean;
   ringGroups: boolean;
@@ -502,6 +517,7 @@ export function useExtensions(
   page: number = 1,
   pageSize: number = 25,
   enabled: boolean = true,
+  fresh: boolean = false,
 ) {
   const workspace = usePbxAdminWorkspace();
   return trpc.pbx.extensions.list.useQuery(
@@ -514,7 +530,10 @@ export function useExtensions(
     },
     {
       enabled: enabled && workspace.selectedTenantId !== null,
-      staleTime: 30_000,
+      gcTime: fresh ? 0 : undefined,
+      refetchOnMount: fresh ? "always" : true,
+      trpc: { abortOnUnmount: fresh },
+      staleTime: fresh ? 0 : 30_000,
     },
   );
 }
@@ -571,13 +590,17 @@ export function usePhoneNumbers(
   page: number = 1,
   pageSize: number = 25,
   enabled: boolean = true,
+  fresh: boolean = false,
 ) {
   const workspace = usePbxAdminWorkspace();
   return trpc.pbx.phoneNumbers.list.useQuery(
     { page, pageSize, tenantId: workspace.selectedTenantId ?? 0 },
     {
       enabled: enabled && workspace.selectedTenantId !== null,
-      staleTime: 30_000,
+      gcTime: fresh ? 0 : undefined,
+      refetchOnMount: fresh ? "always" : true,
+      trpc: { abortOnUnmount: fresh },
+      staleTime: fresh ? 0 : 30_000,
     },
   );
 }
@@ -719,17 +742,28 @@ export function useAuditLogs(params?: {
 // ============================================================================
 // IVR Menus (Milestone 7)
 // ============================================================================
-export function useIvrMenus(tenantId: number, enabled: boolean = true) {
+export function useIvrMenus(
+  tenantId: number,
+  enabled: boolean = true,
+  fresh: boolean = false,
+) {
   return trpc.ivr.ivr.list.useQuery(
     { tenant_id: tenantId },
     {
       enabled: tenantId > 0 && enabled,
-      staleTime: 30_000,
+      gcTime: fresh ? 0 : undefined,
+      refetchOnMount: fresh ? "always" : true,
+      trpc: { abortOnUnmount: fresh },
+      staleTime: fresh ? 0 : 30_000,
     },
   );
 }
 
-export function useIvrMenu(id: number, tenantId: number, enabled: boolean = true) {
+export function useIvrMenu(
+  id: number,
+  tenantId: number,
+  enabled: boolean = true,
+) {
   return trpc.ivr.ivr.get.useQuery(
     { id, tenant_id: tenantId },
     {
@@ -779,12 +813,19 @@ export function useSetIvrActions() {
 // ============================================================================
 // Ring Groups (Milestone 7)
 // ============================================================================
-export function useRingGroups(tenantId: number, enabled: boolean = true) {
+export function useRingGroups(
+  tenantId: number,
+  enabled: boolean = true,
+  fresh: boolean = false,
+) {
   return trpc.ivr.ringGroups.list.useQuery(
     { tenant_id: tenantId },
     {
       enabled: tenantId > 0 && enabled,
-      staleTime: 30_000,
+      gcTime: fresh ? 0 : undefined,
+      refetchOnMount: fresh ? "always" : true,
+      trpc: { abortOnUnmount: fresh },
+      staleTime: fresh ? 0 : 30_000,
     },
   );
 }
@@ -839,12 +880,19 @@ export function useSetRingGroupMembers() {
 // ============================================================================
 // Call Queues (Milestone 7)
 // ============================================================================
-export function useCallQueues(tenantId: number, enabled: boolean = true) {
+export function useCallQueues(
+  tenantId: number,
+  enabled: boolean = true,
+  fresh: boolean = false,
+) {
   return trpc.ivr.queues.list.useQuery(
     { tenant_id: tenantId },
     {
       enabled: tenantId > 0 && enabled,
-      staleTime: 30_000,
+      gcTime: fresh ? 0 : undefined,
+      refetchOnMount: fresh ? "always" : true,
+      trpc: { abortOnUnmount: fresh },
+      staleTime: fresh ? 0 : 30_000,
     },
   );
 }
@@ -934,12 +982,19 @@ export function useQueueStats(
 // ============================================================================
 // Time Conditions (Milestone 7)
 // ============================================================================
-export function useTimeConditions(tenantId: number, enabled: boolean = true) {
+export function useTimeConditions(
+  tenantId: number,
+  enabled: boolean = true,
+  fresh: boolean = false,
+) {
   return trpc.ivr.timeConditions.list.useQuery(
     { tenant_id: tenantId },
     {
       enabled: tenantId > 0 && enabled,
-      staleTime: 60_000,
+      gcTime: fresh ? 0 : undefined,
+      refetchOnMount: fresh ? "always" : true,
+      trpc: { abortOnUnmount: fresh },
+      staleTime: fresh ? 0 : 60_000,
     },
   );
 }

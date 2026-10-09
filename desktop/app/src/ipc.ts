@@ -9,7 +9,7 @@ export const CHANNELS = Object.freeze({ state: 'phone11:state', signIn: 'phone11
   action: 'phone11:action', signOut: 'phone11:sign-out', update: 'phone11:update',
   voicemailList: 'phone11:voicemail-list', historyList: 'phone11:history-list',
   directoryList: 'phone11:directory-list',
-  voicemailAudio: 'phone11:voicemail-audio', voicemailMarkRead: 'phone11:voicemail-mark-read' });
+  voicemailDelete: 'phone11:voicemail-delete', voicemailAudio: 'phone11:voicemail-audio', voicemailMarkRead: 'phone11:voicemail-mark-read' });
 export type PublicState = { signedIn: boolean; sessionRevision: string | null; generation: string | null;
   tenantId: number | null; extensionNumber: string | null; calling: ReturnType<DesktopHelperSupervisor['snapshot']> };
 export type TaggedSnapshot = { sessionRevision: string; generation: string;
@@ -56,7 +56,8 @@ export function validSender(event: Pick<IpcMainInvokeEvent, 'sender' | 'senderFr
     event.senderFrame?.url === rendererUrl && !event.sender.isDestroyed();
 }
 export function createHandlers(provider: AuthenticatedDesktopProvider, helper: DesktopHelperSupervisor,
-                               getGeneration: () => string | null, setGeneration: (value: string | null) => void, additionalMediaBlocked: () => boolean = () => false) {
+                               getGeneration: () => string | null, setGeneration: (value: string | null) => void, additionalMediaBlocked: () => boolean = () => false,
+                               confirmVoicemailDelete: () => Promise<boolean> = async () => false) {
   const state = (): PublicState => {
     const session = provider.currentSession();
     return { signedIn: !!session, sessionRevision: session?.revision ?? null,
@@ -105,6 +106,7 @@ export function createHandlers(provider: AuthenticatedDesktopProvider, helper: D
       throw new Error('Invalid directory request');
     return { revision: session.revision, search: search.trim(), offset, tenantId: session.tenantId };
   };
+  const deleting = new Set<string>();
   return {
     state,
     signOut,
@@ -194,6 +196,23 @@ export function createHandlers(provider: AuthenticatedDesktopProvider, helper: D
       if (provider.currentSession()?.revision !== revision) throw new Error('Calling session changed');
       if (page.tenantId !== tenantId) throw new Error('PHONE11_DIRECTORY_TENANT_MISMATCH');
       return { sessionRevision: revision, ...page };
+    },
+    voicemailDelete: async (input: unknown) => {
+      requireVoicemail();
+      const { revision, id } = inboxSession(input, true);
+      if (Object.keys(input as object).sort().join(',') !== 'id,sessionRevision') throw new Error('Invalid inbox request');
+      const session = provider.currentSession();
+      const key = `${revision}:${id}`;
+      if (deleting.has(key)) throw new Error('Voicemail deletion already pending');
+      deleting.add(key);
+      try {
+        const confirmed = await confirmVoicemailDelete();
+        if (provider.currentSession() !== session) throw new Error('Calling session changed');
+        if (confirmed !== true) return { sessionRevision: revision, id, deleted: false };
+        await provider.deleteVoicemail(revision, id, true);
+        if (provider.currentSession() !== session) throw new Error('Calling session changed');
+        return { sessionRevision: revision, id, deleted: true };
+      } finally { deleting.delete(key); }
     },
     voicemailAudio: async (input: unknown) => {
       requireVoicemail();
