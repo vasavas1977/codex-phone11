@@ -7,7 +7,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { EventEmitter } from 'node:events';
 import { spawn, spawnSync } from 'node:child_process';
-import { captureChild, validateResult, run, STDERR_LIMIT } from '../scripts/request-phone11-ios-existing-build.mjs';
+import { captureChild, validateResult, run, STDERR_LIMIT, RETAINED_SIGNED_PILOT_BUILD } from '../scripts/request-phone11-ios-existing-build.mjs';
 const guard = createRequire(import.meta.url)('../scripts/run-phone11-ios-existing-build.cjs');
 const SHA = 'abca59139b856b8612d652906e73e4d913ca49c2';
 const SECRET = 'FIXTURE_PRIVATE_VALUE_NEVER_PUBLISHED';
@@ -19,7 +19,7 @@ const exp = () => ({ slug: 'phone11ai', version: '1.0.0', runtimeVersion: '1.0.0
   extra: { eas: { projectId: guard.PROJECT }, buildInfo: { sipEngine: 'siprix', sipSdkVersion: '1.0.40-trial', appStoreBuild: false },
     phone11ChatNotificationsEnabled: true, phone11ApnsEnvironment: 'production' } });
 const row = () => ({ id: '05486dfc-cb37-46b6-aaca-b46a0ac33246', status: 'FINISHED', platform: 'IOS', distribution: 'INTERNAL',
-  buildProfile: guard.PROFILE, appIdentifier: guard.BUNDLE, appVersion: '1.0.0', appBuildVersion: '122', gitCommitHash: SHA,
+  buildProfile: guard.PROFILE, appIdentifier: guard.BUNDLE, appVersion: '1.0.0', appBuildVersion: '124', gitCommitHash: SHA,
   app: { id: guard.PROJECT, slug: 'phone11ai', ownerAccount: { name: 'vasavas' } }, error: null,
   artifacts: { buildUrl: 'https://invalid.test/'+SECRET }, logFiles: [SECRET] });
 const bytes = value => Buffer.from(JSON.stringify(value));
@@ -191,11 +191,37 @@ test('result allowlist strips provider private fields and binds exact release so
   for (const change of [b => b.gitCommitHash = 'a'.repeat(40), b => b.id = SECRET, b => b.status = 'ERRORED',
     b => b.platform = 'ANDROID', b => b.distribution = 'STORE', b => b.app.id = 'wrong', b => b.app.ownerAccount.name = 'wrong',
     b => b.buildProfile = 'preview-ios-siprix', b => b.appIdentifier = 'wrong', b => b.appVersion = null,
-    b => b.appBuildVersion = '121', b => b.appBuildVersion = '00122', b => b.error = { message: SECRET }]) {
+    b => b.appBuildVersion = '121', b => b.appBuildVersion = '00124', b => b.error = { message: SECRET }]) {
     const bad = row(); change(bad); assert.throws(() => validateResult(bytes([bad]), SHA));
   }
   for (const bad of [[], [row(), row()], {}, Buffer.alloc(262145)]) assert.throws(() => validateResult(Buffer.isBuffer(bad) ? bad : bytes(bad), SHA));
   assert.throws(() => validateResult(Buffer.from('[{"id":"x","\\u0069d":"y"}]'), SHA));
+});
+test('metadata rejects retained signed Build123 and older, accepting only newer canonical decimals', () => {
+  assert.equal(RETAINED_SIGNED_PILOT_BUILD, 123n);
+  for (const number of ['1', '120', '121', '122', '123']) {
+    assert.throws(() => validateResult(bytes([{ ...row(), appBuildVersion: number }]), SHA), /RESULT_REFUSED/);
+  }
+  for (const number of ['124', '125', '1000', '9007199254740993', '999999999999999999']) {
+    const got = validateResult(bytes([{ ...row(), appBuildVersion: number }]), SHA);
+    assert.equal(got.appBuildVersion, number);
+    assert.equal(got.outcome, 'FINISHED_METADATA_ONLY');
+    assert.equal(got.artifactVerified, false); assert.equal(got.retryAuthorized, false);
+    assert.equal(JSON.stringify(got).includes(SECRET), false);
+  }
+});
+test('newer metadata still rejects noncanonical, nonstring and oversized build numbers', () => {
+  for (const number of ['0124', '+124', '-124', '124.0', '1.24e2', ' 124', '124 ', '0', '',
+    '1000000000000000000', 124, null, ['124']]) {
+    assert.throws(() => validateResult(bytes([{ ...row(), appBuildVersion: number }]), SHA), /RESULT_REFUSED/);
+  }
+});
+test('canonical build numbers refuse every terminal line separator at both numeric boundaries', () => {
+  for (const number of ['124', '999999999999999999']) {
+    for (const suffix of ['\n', '\r', '\r\n', '\u2028', '\u2029']) {
+      assert.throws(() => validateResult(bytes([{ ...row(), appBuildVersion: number + suffix }]), SHA), /RESULT_REFUSED/);
+    }
+  }
 });
 function childFixture() {
   const child = new EventEmitter(); child.pid = 12345; child.stdout = new EventEmitter(); child.stderr = new EventEmitter();
@@ -207,6 +233,20 @@ function childFixture() {
   timers: { setTimeout: (cb, ms) => { callbacks.push({ cb, ms }); return callbacks.length; }, clearTimeout: () => {} } });
   return { child, signals, killed, callbacks, promise };
 }
+test('captured retained or older metadata refuses safely without artifact or retry authority', async () => {
+  for (const number of ['121', '122', '123']) {
+    const f = childFixture();
+    f.child.stderr.emit('data', Buffer.from(SECRET));
+    f.child.stdout.emit('data', bytes([{ ...row(), appBuildVersion: number }]));
+    f.child.emit('close', 0, null);
+    const got = await f.promise;
+    assert.equal(got.failureCode, 'RESULT_REFUSED');
+    assert.equal(got.requestMayHaveOccurred, true);
+    assert.equal(got.absenceEstablished, false); assert.equal(got.artifactVerified, false);
+    assert.equal(got.retryAuthorized, false); assert.equal(JSON.stringify(got).includes(SECRET), false);
+    assert.equal(f.signals.listenerCount('SIGTERM'), 0); assert.equal(f.signals.listenerCount('SIGINT'), 0);
+  }
+});
 test('privacy regression: provider stderr and raw artifact/error fields never reach the parent receipt', async () => {
   const legacy = readFileSync(new URL('../.github/workflows/phone11-siprix-ios-build.yml', import.meta.url), 'utf8');
   assert.equal(legacy.includes('buildUrl'), false); assert.equal(legacy.includes('upload-artifact'), false);

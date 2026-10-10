@@ -8,6 +8,9 @@ const guard = createRequire(import.meta.url)('./run-phone11-ios-existing-build.c
 const CODES = new Set([...guard.FAILURE_CODES, 'TOKEN_UNAVAILABLE', 'TIMEOUT', 'INTERRUPTED', 'OUTPUT_LIMIT', 'RESULT_REFUSED', 'CHILD_FAILED']);
 export const TIMEOUT_MS = 119 * 60 * 1000;
 export const STDERR_LIMIT = 4 * 1024 * 1024;
+// Retained signed daily-pilot Build123 (source237); metadata must be newer.
+// Pinned in source, never lowered by request input or runtime configuration.
+export const RETAINED_SIGNED_PILOT_BUILD = 123n;
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 export function failureReceipt(code, mayHaveOccurred = false) {
   return { outcome: 'REFUSED', failureCode: CODES.has(code) ? code : 'CHILD_FAILED',
@@ -23,7 +26,7 @@ export function validateResult(bytes, source) {
       || b.app?.id !== guard.PROJECT || b.app.slug !== 'phone11ai' || b.app.ownerAccount?.name !== 'vasavas'
       || b.appIdentifier !== guard.BUNDLE || b.appVersion !== '1.0.0'
       || typeof b.appBuildVersion !== 'string' || !/^[1-9][0-9]{0,17}$/.test(b.appBuildVersion)
-      || BigInt(b.appBuildVersion) <= 121n || b.error != null) throw new Error('RESULT_REFUSED');
+      || BigInt(b.appBuildVersion) <= RETAINED_SIGNED_PILOT_BUILD || b.error != null) throw new Error('RESULT_REFUSED');
   // Only typed literals, validated UUID/decimal/SHA survive; private fragment fields do not.
   return { outcome: 'FINISHED_METADATA_ONLY', id: b.id, status: 'FINISHED', projectId: guard.PROJECT,
     platform: 'IOS', distribution: 'INTERNAL', buildProfile: guard.PROFILE, appIdentifier: guard.BUNDLE,

@@ -77,7 +77,11 @@ No device list is printed or independently collected during preparation.
 The parent admits exactly one bounded JSON record, rejecting duplicate keys,
 malformed UTF-8/JSON or excessive depth. It requires a valid UUID, FINISHED,
 IOS, INTERNAL, the fixed project/owner/slug/profile/app/version, exact submitted
-SHA and a decimal build number greater than retained Build121. It reconstructs
+SHA and a canonical decimal build number greater than retained signed Build123.
+The floor is pinned in source; request input and environment cannot lower it.
+Build123 is the verified internal trial artifact from source
+`237983ee5ef005758a6ca4a5cd008de54cd97e8f`; package verification does not establish
+installation or physical acceptance. It reconstructs
 the fixed Expo details link from that UUID. Default-fragment private fields are
 discarded, and errors never enter the safe receipt. A finished metadata record
 still states artifact/install/physical acceptance and retry authority false.
