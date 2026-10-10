@@ -50,7 +50,7 @@ export const SELECTED_BUILD_CONTRACT = Object.freeze({
   schema: "phone11-pbx-selected-build/v1",
   sourceCommit: SELECTED_PRODUCT_SOURCE,
   graphSha256: "b0ecf11d87b2f96e6efd57fbc1339415564a1c0edbfb19ce5f982983b7318cf6",
-  adapterSha256: "cee4a40d7692b32975fcec89091db4dd11b4dbf02aa30a83570b67f365b1cf4b",
+  adapterSha256: "3a82401460aa46622b1a155f9b073b0e8ddbb1719ddcc7de665b358a548d8a08",
   databaseAlias: "scripts/phone11-pbx-clone/selected-resource-bridge.ts",
   redisTransportAlias: "scripts/phone11-pbx-clone/selected-resource-bridge.ts",
 });
