@@ -1,0 +1,207 @@
+diff --git a/lib/compile.js b/lib/compile.js
+index dce69be..636a67f 100644
+--- a/lib/compile.js
++++ b/lib/compile.js
+@@ -4,6 +4,7 @@ const fill = require('fill-range');
+ const utils = require('./utils');
+
+ const compile = (ast, options = {}) => {
++  utils.assertDepth(ast, utils.maxDepth(options));
+   const walk = (node, parent = {}) => {
+     const invalidBlock = utils.isInvalidBrace(parent);
+     const invalidNode = node.invalid === true && options.escapeInvalid === true;
+diff --git a/lib/expand.js b/lib/expand.js
+index 35b2c41..2bd0882 100644
+--- a/lib/expand.js
++++ b/lib/expand.js
+@@ -30,19 +30,26 @@ const append = (queue = '', stash = '', enclose = false) => {
+   return utils.flatten(result);
+ };
+
++const queueOwner = node => {
++  const seen = new Set();
++  while (node.type !== 'brace' && node.type !== 'root' && node.parent) {
++    if (seen.has(node)) {
++      throw new RangeError('AST parent chain contains a cycle');
++    }
++    seen.add(node);
++    node = node.parent;
++  }
++  return node;
++};
++
+ const expand = (ast, options = {}) => {
++  utils.assertDepth(ast, utils.maxDepth(options));
+   const rangeLimit = options.rangeLimit === undefined ? 1000 : options.rangeLimit;
+
+   const walk = (node, parent = {}) => {
+     node.queue = [];
+
+-    let p = parent;
+-    let q = parent.queue;
+-
+-    while (p.type !== 'brace' && p.type !== 'root' && p.parent) {
+-      p = p.parent;
+-      q = p.queue;
+-    }
++    const q = queueOwner(parent).queue;
+
+     if (node.invalid || node.dollar) {
+       q.push(append(q.pop(), stringify(node, options)));
+@@ -72,13 +79,7 @@ const expand = (ast, options = {}) => {
+     }
+
+     const enclose = utils.encloseBrace(node);
+-    let queue = node.queue;
+-    let block = node;
+-
+-    while (block.type !== 'brace' && block.type !== 'root' && block.parent) {
+-      block = block.parent;
+-      queue = block.queue;
+-    }
++    const queue = queueOwner(node).queue;
+
+     for (let i = 0; i < node.nodes.length; i++) {
+       const child = node.nodes[i];
+diff --git a/lib/parse.js b/lib/parse.js
+index 3a6988e..198fc2a 100644
+--- a/lib/parse.js
++++ b/lib/parse.js
+@@ -1,6 +1,7 @@
+ 'use strict';
+
+ const stringify = require('./stringify');
++const utils = require('./utils');
+
+ /**
+  * Constants
+@@ -34,6 +35,7 @@ const parse = (input, options = {}) => {
+   }
+
+   const opts = options || {};
++  const maxDepth = utils.maxDepth(opts);
+   const max = typeof opts.maxLength === 'number' ? Math.min(MAX_LENGTH, opts.maxLength) : MAX_LENGTH;
+   if (input.length > max) {
+     throw new SyntaxError(`Input length (${input.length}), exceeds max characters (${max})`);
+@@ -47,6 +49,7 @@ const parse = (input, options = {}) => {
+   const length = input.length;
+   let index = 0;
+   let depth = 0;
++  let nesting = 0;
+   let value;
+
+   /**
+@@ -143,6 +146,10 @@ const parse = (input, options = {}) => {
+      */
+
+     if (value === CHAR_LEFT_PARENTHESES) {
++      if (nesting + 1 > maxDepth) {
++        throw new SyntaxError(`Input depth (${nesting + 1}), exceeds max depth (${maxDepth})`);
++      }
++      nesting++;
+       block = push({ type: 'paren', nodes: [] });
+       stack.push(block);
+       push({ type: 'text', value });
+@@ -155,6 +162,7 @@ const parse = (input, options = {}) => {
+         continue;
+       }
+       block = stack.pop();
++      nesting--;
+       push({ type: 'text', value });
+       block = stack[stack.length - 1];
+       continue;
+@@ -195,6 +203,10 @@ const parse = (input, options = {}) => {
+      */
+
+     if (value === CHAR_LEFT_CURLY_BRACE) {
++      if (nesting + 1 > maxDepth) {
++        throw new SyntaxError(`Input depth (${nesting + 1}), exceeds max depth (${maxDepth})`);
++      }
++      nesting++;
+       depth++;
+
+       const dollar = prev.value && prev.value.slice(-1) === '$' || block.dollar === true;
+@@ -231,6 +243,7 @@ const parse = (input, options = {}) => {
+
+       push({ type, value });
+       depth--;
++      nesting--;
+
+       block = stack[stack.length - 1];
+       continue;
+diff --git a/lib/stringify.js b/lib/stringify.js
+index 8bcf872..1e0634e 100644
+--- a/lib/stringify.js
++++ b/lib/stringify.js
+@@ -3,6 +3,7 @@
+ const utils = require('./utils');
+
+ module.exports = (ast, options = {}) => {
++  utils.assertDepth(ast, utils.maxDepth(options));
+   const stringify = (node, parent = {}) => {
+     const invalidBlock = options.escapeInvalid && utils.isInvalidBrace(parent);
+     const invalidNode = node.invalid === true && options.escapeInvalid === true;
+diff --git a/lib/utils.js b/lib/utils.js
+--- a/lib/utils.js
++++ b/lib/utils.js
+@@ -1,4 +1,60 @@
+ 'use strict';
++
++// Maintained depth-only mitigation for GHSA-vfj7-8cjw-p6xm, not an upstream release.
++// A stricter finite threshold is honored; no option can raise the ceiling.
++exports.maxDepth = options => Number.isFinite(options.maxDepth)
++  ? Math.min(100, options.maxDepth)
++  : 100;
++
++// Preflight every structural subtree before recursive walkers short-circuit.
++// Completed subtree heights make shared DAG paths linear in nodes and edges;
++// check that height at every incoming depth so aliases cannot hide a long path.
++exports.assertDepth = (ast, maxDepth) => {
++  const active = new Set();
++  const heights = new Map();
++  const stack = [{ node: ast, depth: ast.type === 'root' ? 0 : 1, height: 0 }];
++  const check = depth => {
++    if (depth > maxDepth) {
++      throw new RangeError(`AST depth (${depth}), exceeds max depth (${maxDepth})`);
++    }
++  };
++
++  while (stack.length) {
++    const frame = stack[stack.length - 1];
++    if (!frame.children) {
++      if (!frame.node.nodes) {
++        stack.pop();
++        continue;
++      }
++      check(frame.depth);
++      active.add(frame.node);
++      frame.children = frame.node.nodes[Symbol.iterator]();
++    }
++
++    const child = frame.children.next();
++    if (child.done) {
++      heights.set(frame.node, frame.height);
++      active.delete(frame.node);
++      stack.pop();
++      if (stack.length) {
++        const parent = stack[stack.length - 1];
++        parent.height = Math.max(parent.height, frame.height + 1);
++      }
++    } else if (child.value.nodes) {
++      if (active.has(child.value)) {
++        throw new RangeError('AST node chain contains a cycle');
++      }
++      const depth = frame.depth + 1;
++      const height = heights.get(child.value);
++      if (height !== undefined) {
++        check(depth + height);
++        frame.height = Math.max(frame.height, height + 1);
++      } else {
++        stack.push({ node: child.value, depth, height: 0 });
++      }
++    }
++  }
++};
+
+ exports.isInteger = num => {
+   if (typeof num === 'number') {

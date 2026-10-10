@@ -1,0 +1,38 @@
+name: Phone11 live clean V30 capture
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - ".github/workflows/phone11-live-clean-v30-capture.yml"
+
+permissions:
+  contents: read
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_USER: ubuntu
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+  EC2_HOST: 43.210.122.111
+
+jobs:
+  clean-v30-capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Connect and remove root-owned capture
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          INSTANCE_JSON=$(aws ec2 describe-instances --filters "Name=ip-address,Values=$EC2_HOST" "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0]' --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          test -n "$INSTANCE_ID" && test "$INSTANCE_ID" != null
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_clean_v30_key -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key --instance-id "$INSTANCE_ID" --availability-zone "$AZ" --instance-os-user "$EC2_USER" --ssh-public-key "file://$HOME/.ssh/phone11_clean_v30_key.pub" >/dev/null
+          ssh -i ~/.ssh/phone11_clean_v30_key -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" 'sudo rm -f /tmp/phone11-v30.pcap.txt && echo V30_CAPTURE_CLEANUP_RESULT=pass'

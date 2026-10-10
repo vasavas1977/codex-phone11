@@ -1,0 +1,213 @@
+name: Phone11 V83 Live iOS Register Capture
+
+on:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - .github/workflows/phone11-live-ios-register-capture-v83.yml
+  workflow_dispatch:
+    inputs:
+      capture_seconds:
+        description: Seconds to capture SIP REGISTER traffic
+        required: false
+        default: '180'
+
+permissions:
+  contents: read
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_HOST: 43.210.122.111
+  EC2_USER: ubuntu
+  CAPTURE_SECONDS: ${{ github.event.inputs.capture_seconds || '180' }}
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+
+jobs:
+  live-ios-register-capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Locate EC2 instance
+        id: ec2
+        run: |
+          set -Eeuo pipefail
+          INSTANCE_JSON=$(aws ec2 describe-instances \
+            --filters "Name=ip-address,Values=${EC2_HOST}" "Name=instance-state-name,Values=running" \
+            --query 'Reservations[0].Instances[0]' \
+            --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          test -n "$INSTANCE_ID" && test "$INSTANCE_ID" != null
+          echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
+          echo "az=$AZ" >> "$GITHUB_OUTPUT"
+
+      - name: Capture and verify iOS REGISTER digest
+        run: |
+          set -Eeuo pipefail
+          KEY_PATH="${HOME}/.ssh/phone11_v83_register_capture_key"
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f "$KEY_PATH" -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key \
+            --instance-id "${{ steps.ec2.outputs.instance_id }}" \
+            --availability-zone "${{ steps.ec2.outputs.az }}" \
+            --instance-os-user "$EC2_USER" \
+            --ssh-public-key "file://${KEY_PATH}.pub" >/dev/null
+
+          ssh -i "$KEY_PATH" -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          CAPTURE_SECONDS="${CAPTURE_SECONDS:-180}"
+          echo "V83_STARTED_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "V83_HOST=$(hostname)"
+          echo "V83_CAPTURE_SECONDS=$CAPTURE_SECONDS"
+
+          POSTGRES_CONTAINER=$(docker ps --format '{{.Names}}' | grep -Ei 'postgres|db' | head -1 || true)
+          KAMAILIO_CONTAINER=$(docker ps --format '{{.Names}}' | grep -Ei 'kamailio|sip' | head -1 || true)
+          test -n "$POSTGRES_CONTAINER"
+          test -n "$KAMAILIO_CONTAINER"
+          command -v python3 >/dev/null
+          echo "V83_POSTGRES_CONTAINER=$POSTGRES_CONTAINER"
+          echo "V83_KAMAILIO_CONTAINER=$KAMAILIO_CONTAINER"
+
+          SIP_PASSWORD=$(docker exec "$POSTGRES_CONTAINER" sh -lc 'DB_USER="${POSTGRES_USER:-postgres}"; DB_NAME="${POSTGRES_DB:-$DB_USER}"; psql -U "$DB_USER" -d "$DB_NAME" -At -v ON_ERROR_STOP=1 -c "SELECT password FROM subscriber WHERE username='"'"'1001'"'"' AND domain='"'"'sip.phone11.ai'"'"' LIMIT 1;"')
+          test -n "$SIP_PASSWORD"
+          echo "V83_DB_USERNAME=1001"
+          echo "V83_DB_DOMAIN=sip.phone11.ai"
+          echo "V83_DB_PASSWORD_LEN=${#SIP_PASSWORD}"
+          echo "V83_DB_PASSWORD_FP=$(printf '%s' "$SIP_PASSWORD" | sha256sum | awk '{print $1}' | cut -c1-16)"
+
+          if ! command -v tcpdump >/dev/null 2>&1; then
+            echo "V83_CAPTURE_TOOL=missing_tcpdump"
+            docker logs --since 10m "$KAMAILIO_CONTAINER" 2>&1 | tail -200 | sed -E 's/(response=")[^"]+("?)/\1[redacted]\2/g' || true
+            exit 3
+          fi
+          echo "V83_CAPTURE_TOOL=tcpdump"
+
+          CAPTURE_FILE=$(mktemp)
+          CAPTURE_ERR=$(mktemp)
+          SUDO="sudo -n"
+          if ! sudo -n true >/dev/null 2>&1; then
+            SUDO=""
+          fi
+
+          echo "V83_ACTION_REQUIRED=Tap Start SIP Registration Test on the iPhone while this capture is running"
+          echo "V83_CAPTURE_STARTED_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          set +e
+          $SUDO timeout "$CAPTURE_SECONDS" tcpdump -i any -nn -s 0 -A 'udp port 5060' >"$CAPTURE_FILE" 2>"$CAPTURE_ERR"
+          CAPTURE_STATUS=$?
+          set -e
+          echo "V83_CAPTURE_EXIT=$CAPTURE_STATUS"
+          echo "V83_CAPTURE_ENDED_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "V83_CAPTURE_STDERR_BEGIN"
+          sed -n '1,60p' "$CAPTURE_ERR" || true
+          echo "V83_CAPTURE_STDERR_END"
+
+          SIP_PASSWORD="$SIP_PASSWORD" CAPTURE_FILE="$CAPTURE_FILE" python3 - <<'PY'
+          import hashlib
+          import os
+          import re
+          from pathlib import Path
+
+          raw = Path(os.environ['CAPTURE_FILE']).read_text(errors='replace')
+          password = os.environ['SIP_PASSWORD']
+
+          def md5(value):
+              return hashlib.md5(value.encode('utf-8')).hexdigest()
+
+          def parse_digest(header):
+              if header.lower().startswith('digest '):
+                  header = header[7:]
+              parts = {}
+              for key, quoted, bare in re.findall(r'(\w+)=(?:"([^"]*)"|([^,\s]+))', header):
+                  parts[key.lower()] = quoted if quoted else bare
+              return parts
+
+          def safe(value):
+              return value if value else 'none'
+
+          register_uris = re.findall(r'REGISTER\s+(sip:[^\s]+)\s+SIP/2\.0', raw, flags=re.I)
+          challenges = re.findall(r'WWW-Authenticate:\s*Digest\s+([^\r\n]+)', raw, flags=re.I)
+          auth_headers = re.findall(r'Authorization:\s*Digest\s+([^\r\n]+)', raw, flags=re.I)
+          status_401 = len(re.findall(r'SIP/2\.0\s+401\b', raw, flags=re.I))
+          status_200 = len(re.findall(r'SIP/2\.0\s+200\b', raw, flags=re.I))
+
+          print(f"V83_CAPTURE_BYTES={len(raw.encode('utf-8', 'replace'))}")
+          print(f"V83_REGISTER_COUNT={len(register_uris)}")
+          print(f"V83_REGISTER_URIS={','.join(sorted(set(register_uris))) if register_uris else 'none'}")
+          print(f"V83_401_COUNT={status_401}")
+          print(f"V83_200_COUNT={status_200}")
+          print(f"V83_WWW_AUTH_COUNT={len(challenges)}")
+          print(f"V83_AUTH_HEADER_COUNT={len(auth_headers)}")
+
+          if challenges:
+              first_challenge = parse_digest(challenges[0])
+              print(f"V83_CHALLENGE_REALM={safe(first_challenge.get('realm'))}")
+              print(f"V83_CHALLENGE_QOP={safe(first_challenge.get('qop'))}")
+              print(f"V83_CHALLENGE_ALGORITHM={safe(first_challenge.get('algorithm'))}")
+              print(f"V83_CHALLENGE_NONCE_PREFIX={safe(first_challenge.get('nonce', '')[:12])}")
+
+          selected = None
+          for header in auth_headers:
+              params = parse_digest(header)
+              if params.get('username') == '1001':
+                  selected = params
+          if selected is None and auth_headers:
+              selected = parse_digest(auth_headers[-1])
+
+          if not selected:
+              print("V83_AUTH_FOUND=false")
+              if len(raw) < 4000:
+                  scrubbed = re.sub(r'(response=")[^"]+(")', r'\1[redacted]\2', raw)
+                  print("V83_CAPTURE_SAMPLE_BEGIN")
+                  print(scrubbed[-3000:])
+                  print("V83_CAPTURE_SAMPLE_END")
+              print("V83_INFERRED_CAUSE=no_authorization_header_seen_from_phone_during_capture")
+              raise SystemExit(0)
+
+          username = selected.get('username', '')
+          realm = selected.get('realm', '')
+          nonce = selected.get('nonce', '')
+          uri = selected.get('uri', '')
+          response = selected.get('response', '')
+          algorithm = selected.get('algorithm', 'MD5')
+          qop = selected.get('qop', '')
+          nc = selected.get('nc', '')
+          cnonce = selected.get('cnonce', '')
+
+          print("V83_AUTH_FOUND=true")
+          print(f"V83_AUTH_USERNAME={safe(username)}")
+          print(f"V83_AUTH_REALM={safe(realm)}")
+          print(f"V83_AUTH_URI={safe(uri)}")
+          print(f"V83_AUTH_ALGORITHM={safe(algorithm)}")
+          print(f"V83_AUTH_QOP={safe(qop)}")
+          print(f"V83_AUTH_NC={safe(nc)}")
+          print(f"V83_AUTH_CNONCE_LEN={len(cnonce)}")
+          print(f"V83_AUTH_NONCE_PREFIX={safe(nonce[:12])}")
+          print(f"V83_AUTH_RESPONSE_PREFIX={safe(response[:12])}")
+
+          if not all([username, realm, nonce, uri, response]):
+              print("V83_AUTH_RESPONSE_MATCH=false")
+              print("V83_INFERRED_CAUSE=authorization_header_missing_required_digest_fields")
+              raise SystemExit(0)
+
+          ha1 = md5(f"{username}:{realm}:{password}")
+          ha2 = md5(f"REGISTER:{uri}")
+          if qop:
+              expected = md5(f"{ha1}:{nonce}:{nc}:{cnonce}:{qop}:{ha2}")
+          else:
+              expected = md5(f"{ha1}:{nonce}:{ha2}")
+          print(f"V83_EXPECTED_RESPONSE_PREFIX={expected[:12]}")
+          matched = expected.lower() == response.lower()
+          print(f"V83_AUTH_RESPONSE_MATCH={'true' if matched else 'false'}")
+          if matched and status_200:
+              print("V83_INFERRED_CAUSE=phone_digest_matches_live_db_and_server_returned_200")
+          elif matched:
+              print("V83_INFERRED_CAUSE=phone_digest_matches_live_db_but_server_did_not_return_200")
+          else:
+              print("V83_INFERRED_CAUSE=phone_digest_does_not_match_live_db_password_or_digest_uri")
+          PY
+          rm -f "$CAPTURE_FILE" "$CAPTURE_ERR"
+          echo "V83_DONE_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          REMOTE

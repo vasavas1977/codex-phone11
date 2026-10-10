@@ -1,0 +1,101 @@
+name: Phone11 live Kamailio route strip auth v33
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - ".github/workflows/phone11-live-kamailio-route-strip-auth-v33.yml"
+
+permissions:
+  contents: read
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_USER: ubuntu
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+  EC2_HOST: 43.210.122.111
+
+jobs:
+  kamailio-route-strip-auth-v33:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Locate EC2 and prepare temporary SSH key
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          INSTANCE_JSON=$(aws ec2 describe-instances --filters "Name=ip-address,Values=$EC2_HOST" "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0]' --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "null" ]; then echo "ERROR: EC2 not found"; exit 31; fi
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_kam_route_strip_v33_key -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key --instance-id "$INSTANCE_ID" --availability-zone "$AZ" --instance-os-user "$EC2_USER" --ssh-public-key "file://$HOME/.ssh/phone11_kam_route_strip_v33_key.pub" >/dev/null
+
+      - name: Patch route-scoped auth stripping
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ssh -i ~/.ssh/phone11_kam_route_strip_v33_key -o StrictHostKeyChecking=no -o ServerAliveInterval=15 -o ServerAliveCountMax=20 "$EC2_USER@$EC2_HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          docker cp p11-kamailio:/etc/kamailio/kamailio.cfg /tmp/kamailio.cfg.v33
+          cp /tmp/kamailio.cfg.v33 /tmp/kamailio.cfg.v33.before
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path("/tmp/kamailio.cfg.v33")
+          text = path.read_text()
+
+          if 'loadmodule "textopsx.so"' not in text:
+              text = text.replace(
+                  'loadmodule "textops.so"\n',
+                  'loadmodule "textops.so"\nloadmodule "textopsx.so"\n',
+                  1,
+              )
+
+          misplaced = re.compile(
+              r'    # phone11-strip-fs-auth-all: Strip authenticated caller headers before the WebRTC/native media split\\.\n'
+              r'    remove_hf\\("Proxy-Authorization"\\);\n'
+              r'    remove_hf\\("Authorization"\\);\n'
+              r'    msg_apply_changes\\(\\);\n'
+          )
+          text = misplaced.sub('', text)
+
+          route_start = text.index('route[TO_FREESWITCH] {')
+          route_end = text.index('\n}', route_start)
+          route_text = text[route_start:route_end]
+          route_marker = "phone11-strip-fs-auth-route"
+          if route_marker not in route_text:
+              branch_marker = '    if ($proto == "ws" || $proto == "wss") {'
+              branch_index = text.index(branch_marker, route_start)
+              if branch_index > route_end:
+                  raise SystemExit("V33_BRANCH_MARKER_OUTSIDE_TO_FREESWITCH")
+              route_block = (
+                  '    # phone11-strip-fs-auth-route: Kamailio authenticated the caller; '
+                  'do not relay stale auth to FreeSWITCH.\n'
+                  '    remove_hf("Proxy-Authorization");\n'
+                  '    remove_hf("Authorization");\n'
+                  '    msg_apply_changes();\n'
+              )
+              text = text[:branch_index] + route_block + text[branch_index:]
+
+          path.write_text(text)
+          PY
+
+          docker cp /tmp/kamailio.cfg.v33 p11-kamailio:/etc/kamailio/kamailio.cfg
+          echo "===== V33 route proof ====="
+          docker exec p11-kamailio sh -lc "grep -n -A35 'route\\[TO_FREESWITCH\\]' /etc/kamailio/kamailio.cfg | sed -n '1,90p'"
+          echo "===== V33 strip marker proof ====="
+          docker exec p11-kamailio sh -lc "grep -n 'phone11-strip-fs-auth\\|remove_hf\\|msg_apply_changes\\|rtpengine_offer' /etc/kamailio/kamailio.cfg | sed -n '1,220p'"
+          docker exec p11-kamailio kamailio -c -f /etc/kamailio/kamailio.cfg
+          docker restart p11-kamailio
+          sleep 5
+          docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' | grep p11-kamailio
+          echo "V33_ROUTE_STRIP_AUTH_PATCH_RESULT=pass"
+          REMOTE

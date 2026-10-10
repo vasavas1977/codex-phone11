@@ -1,249 +1,369 @@
-import { useState } from "react";
-import { View, Text, TouchableOpacity, FlatList, StyleSheet } from "react-native";
-import * as Haptics from "expo-haptics";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Alert, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { router } from "expo-router";
-
 import { ScreenContainer } from "@/components/screen-container";
-import { IconSymbol } from "@/components/ui/icon-symbol";
+import { Playback } from "@/components/cloud-recordings/cloud-playback";
+import { useAuth } from "@/hooks/use-auth";
+import { usePhoneCall } from "@/hooks/use-phone-call";
 import { useColors } from "@/hooks/use-colors";
+import { voicemailPlaybackURL } from "@/lib/cloud-recordings/presentation";
+import { normalizeDialInput } from "@/lib/sip/dial-input";
+import { trpc } from "@/lib/trpc";
+import { getAuthSnapshot } from "@/lib/_core/auth";
+import { useSipAccountStore } from "@/lib/sip/account-store";
 
-interface Voicemail {
-  id: string;
-  from: string;
-  number: string;
-  duration: string;
-  time: string;
-  read: boolean;
-  transcription: string;
+type Voicemail = {
+  id: number;
+  tenant_id?: number;
+  extension_number: string;
+  caller_number: string;
+  caller_name: string | null;
+  duration_seconds: number;
+  status: "new" | "read";
+  created_at: string | number | Date;
+};
+
+const formatDuration = (seconds: number) => {
+  const value = Math.max(0, Math.floor(Number(seconds) || 0));
+  return `${Math.floor(value / 60)}:${String(value % 60).padStart(2, "0")}`;
+};
+
+const voicemailTitle = (message: Voicemail) =>
+  message.caller_name?.trim() || message.caller_number || "Unknown caller";
+
+const voicemailMutationInput = (message: Voicemail) => ({
+  id: message.id,
+  ...(Number.isSafeInteger(message.tenant_id) && message.tenant_id! > 0
+    ? { tenantId: message.tenant_id }
+    : {}),
+});
+
+// Read-state reconciliation may replace a row object without replacing its message.
+const messageIdentity = (message: Voicemail) => JSON.stringify([
+  message.id, message.tenant_id ?? null, message.extension_number,
+  message.caller_number, new Date(message.created_at).getTime(),
+]);
+
+export function voicemailCallbackTarget(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const number = normalizeDialInput(value);
+  return number && /^\+?\d{2,20}$/.test(number) ? number : null;
 }
 
-const VOICEMAILS: Voicemail[] = [
-  {
-    id: "1",
-    from: "John Smith",
-    number: "+1 (555) 234-5678",
-    duration: "0:42",
-    time: "Today, 2:15 PM",
-    read: false,
-    transcription: "Hey, it's John. Just calling to confirm our meeting tomorrow at 3pm. Please call me back if that doesn't work. Thanks!",
-  },
-  {
-    id: "2",
-    from: "Acme Corp",
-    number: "+1 (555) 987-6543",
-    duration: "1:15",
-    time: "Today, 10:30 AM",
-    read: false,
-    transcription: "This is a message from Acme Corp regarding your account. Please call us back at your earliest convenience to discuss the renewal options.",
-  },
-  {
-    id: "3",
-    from: "Unknown",
-    number: "+1 (555) 111-0000",
-    duration: "0:18",
-    time: "Yesterday, 4:50 PM",
-    read: true,
-    transcription: "Hi, I'm calling about the job posting. Please call me back when you get a chance.",
-  },
-  {
-    id: "4",
-    from: "Sarah Lee",
-    number: "Ext. 2001",
-    duration: "2:03",
-    time: "Mar 22, 9:05 AM",
-    read: true,
-    transcription: "Sarah here from the support team. We've resolved the ticket you submitted. Everything should be working now. Let me know if you need anything else.",
-  },
-];
+export function voicemailInboxErrorMessage(error: unknown): string {
+  let code: unknown;
+  if (error !== null && typeof error === "object") {
+    const data = (error as { data?: unknown }).data;
+    if (data !== null && typeof data === "object")
+      code = (data as { code?: unknown }).code;
+  }
+  if (code === "SERVICE_UNAVAILABLE")
+    return "Voicemail storage is not configured. Ask an administrator to finish setup.";
+  if (code === "UNAUTHORIZED") return "Sign in again to view voicemail.";
+  if (code === "FORBIDDEN") return "You do not have access to this voicemail inbox.";
+  return "Could not load voicemail. Check your connection and try again.";
+}
+
+export function VoicemailCallbackAction({
+  callerNumber,
+  callerName,
+  authorize,
+}: {
+  callerNumber: string;
+  callerName: string;
+  authorize?: () => boolean;
+}) {
+  const colors = useColors();
+  const { user } = useAuth({ autoFetch: false });
+  const account = useSipAccountStore((state) => state.account);
+  const { placeCall, calling } = usePhoneCall();
+  const target = voicemailCallbackTarget(callerNumber);
+  if (!target) return null;
+
+  return (
+    <TouchableOpacity
+      accessibilityRole="button"
+      accessibilityLabel={`Call back ${callerName}`}
+      disabled={calling}
+      onPress={() => {
+        const auth = getAuthSnapshot();
+        if (!calling && user && auth.user === user && !auth.loading &&
+          useSipAccountStore.getState().account === account && authorize?.() !== false)
+          void Promise.resolve(placeCall(target)).catch(() => {});
+      }}
+      style={styles.callback}
+    >
+      <Text style={{ color: colors.primary }}>{calling ? "Calling…" : "Call back"}</Text>
+    </TouchableOpacity>
+  );
+}
+
+const voicemailSourceURL = (base: string, path: string) => {
+  const id = /^\/api\/recordings\/voicemail\/([1-9][0-9]*)$/.exec(path)?.[1];
+  return id ? voicemailPlaybackURL(base, Number(id), path) : null;
+};
 
 export default function VoicemailScreen() {
   const colors = useColors();
-  const [playing, setPlaying] = useState<string | null>(null);
-  const [expanded, setExpanded] = useState<string | null>(null);
-
-  const togglePlay = (id: string) => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    setPlaying(playing === id ? null : id);
+  const { user } = useAuth({ autoFetch: false });
+  const account = useSipAccountStore((state) => state.account);
+  const tenantId = account?.ownerUserId === user?.id && Number.isSafeInteger(account?.tenantId) && account!.tenantId! > 0
+    ? account!.tenantId : undefined;
+  const utils = trpc.useUtils();
+  const inbox = trpc.pbx.voicemail.list.useQuery(tenantId ? { tenantId } : undefined, {
+    enabled: Boolean(user),
+    retry: false,
+  });
+  const markRead = trpc.pbx.voicemail.markRead.useMutation();
+  const remove = trpc.pbx.voicemail.delete.useMutation();
+  const available = !inbox.error && !inbox.isLoading && !getAuthSnapshot().loading;
+  const scope = useRef<{ owner: NonNullable<typeof user>; account: typeof account; available: boolean } | null>(null);
+  if (!user) scope.current = null;
+  else if (scope.current?.owner !== user || scope.current.account !== account || scope.current.available !== available)
+    scope.current = { owner: user, account, available };
+  const action = scope.current;
+  const currentInbox = useRef(inbox);
+  currentInbox.current = inbox;
+  // A confirmed server deletion stays retired across phone-workspace changes.
+  const sameOwner = (left: typeof action, right: typeof action) => left?.owner === right?.owner;
+  const retired = useRef<{ scope: typeof action; keys: Set<string> }>({ scope: action, keys: new Set() });
+  if (!sameOwner(retired.current.scope, action)) retired.current = { scope: action, keys: new Set() };
+  const [retiredMessages, setRetiredMessages] = useState<{ scope: typeof action; keys: string[] }>({ scope: action, keys: [] });
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+  type ActionState = { scope: NonNullable<typeof action>; id: number; key: string; pending: boolean; failed: boolean };
+  const operations = useRef<{ scope: typeof action; read: Map<string, ActionState>; delete: Map<string, ActionState> }>({
+    scope: action, read: new Map(), delete: new Map(),
+  });
+  if (operations.current.scope !== action) operations.current = { scope: action, read: new Map(), delete: new Map() };
+  const [feedback, setFeedback] = useState<{ read: ActionState | null; delete: ActionState | null }>({ read: null, delete: null });
+  const [openId, setOpenId] = useState<{ scope: NonNullable<typeof action>; id: number; key: string }>();
+  const selection = useRef(openId);
+  selection.current = openId;
+  const isCurrentReader = useCallback((captured: typeof action) => {
+    const auth = getAuthSnapshot();
+    return mounted.current && !!captured && scope.current === captured && auth.user === captured.owner && !auth.loading &&
+      useSipAccountStore.getState().account === captured.account;
+  }, []);
+  const isCurrent = useCallback((captured: typeof action) => !!captured?.available && isCurrentReader(captured), [isCurrentReader]);
+  const isCurrentMessage = useCallback((captured: typeof action, message: Voicemail) =>
+    isCurrent(captured) && !currentInbox.current.error && !currentInbox.current.isLoading &&
+    !retired.current.keys.has(messageIdentity(message)) &&
+    (!tenantId || !message.tenant_id || message.tenant_id === tenantId) &&
+    (currentInbox.current.data as Voicemail[] | undefined)?.some((row) => messageIdentity(row) === messageIdentity(message)) === true,
+  [isCurrent, tenantId]);
+  const mutateMessage = async (kind: "read" | "delete", message: Voicemail, captured: typeof action) => {
+    if (!captured || !isCurrentMessage(captured, message)) return;
+    const key = messageIdentity(message);
+    const previous = operations.current[kind].get(key);
+    if (previous?.scope === captured && previous.key === key && previous.pending) return;
+    const operation: ActionState = { scope: captured, id: message.id, key, pending: true, failed: false };
+    operations.current[kind].set(key, operation);
+    setFeedback((current) => ({ ...current, [kind]: operation }));
+    const settle = (failed: boolean) => {
+      if (!isCurrentMessage(captured, message)) {
+        if (operations.current.scope === captured && operations.current[kind].get(key) === operation) {
+          operations.current[kind].delete(key);
+          if (isCurrentReader(captured))
+            setFeedback((current) => ({ ...current, [kind]: current[kind] === operation ? null : current[kind] }));
+        }
+        return;
+      }
+      if (!failed) {
+        if (kind === "delete") {
+          retired.current.keys.add(key);
+          setRetiredMessages({ scope: captured, keys: [...retired.current.keys] });
+          if (selection.current?.scope === captured && selection.current.key === key) {
+            selection.current = undefined;
+            setOpenId(undefined);
+          }
+        }
+        // A retired owner's completion must not refresh the replacement inbox.
+        void Promise.resolve(utils.pbx.voicemail.list.invalidate()).catch(() => {});
+      }
+      if (operations.current[kind].get(key) !== operation) return;
+      const result = { ...operation, pending: false, failed };
+      operations.current[kind].delete(key);
+      setFeedback((current) => ({ ...current, [kind]: current[kind] === operation ? result : current[kind] }));
+    };
+    try {
+      const result = await (kind === "read" ? markRead : remove).mutateAsync(voicemailMutationInput(message));
+      settle(result.success !== true);
+    } catch { settle(true); }
   };
-
-  const renderItem = ({ item }: { item: Voicemail }) => {
-    const isPlaying = playing === item.id;
-    const isExpanded = expanded === item.id;
-
-    return (
-      <TouchableOpacity
-        style={[styles.row, { backgroundColor: colors.surface, borderColor: colors.border }]}
-        onPress={() => {
-          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-          setExpanded(isExpanded ? null : item.id);
-        }}
-        activeOpacity={0.8}
-      >
-        {/* Unread indicator */}
-        {!item.read && (
-          <View style={[styles.unreadDot, { backgroundColor: colors.primary }]} />
-        )}
-
-        <View style={styles.rowContent}>
-          <View style={styles.topSection}>
-            <View style={[styles.avatar, { backgroundColor: colors.primary + "20" }]}>
-              <Text style={[styles.avatarText, { color: colors.primary }]}>{item.from.charAt(0)}</Text>
-            </View>
-            <View style={styles.info}>
-              <Text style={[styles.fromName, { color: colors.foreground }, !item.read && styles.bold]}>
-                {item.from}
-              </Text>
-              <Text style={[styles.meta, { color: colors.muted }]}>{item.time} · {item.duration}</Text>
-            </View>
-            <TouchableOpacity
-              style={[styles.playBtn, { backgroundColor: isPlaying ? colors.primary : colors.primary + "20" }]}
-              onPress={() => togglePlay(item.id)}
-            >
-              <IconSymbol
-                name={isPlaying ? "pause.fill" : "phone.fill"}
-                size={16}
-                color={isPlaying ? "#fff" : colors.primary}
-              />
-            </TouchableOpacity>
-          </View>
-
-          {/* Playback bar */}
-          {isPlaying && (
-            <View style={styles.playbackBar}>
-              <View style={[styles.playbackTrack, { backgroundColor: colors.border }]}>
-                <View style={[styles.playbackProgress, { backgroundColor: colors.primary, width: "35%" }]} />
-              </View>
-              <Text style={[styles.playbackTime, { color: colors.muted }]}>0:15 / {item.duration}</Text>
-            </View>
-          )}
-
-          {/* Transcription */}
-          {isExpanded && (
-            <View style={[styles.transcription, { backgroundColor: colors.background, borderColor: colors.border }]}>
-              <View style={styles.transcriptionHeader}>
-                <IconSymbol name="waveform" size={14} color={colors.primary} />
-                <Text style={[styles.transcriptionLabel, { color: colors.primary }]}>AI Transcription</Text>
-              </View>
-              <Text style={[styles.transcriptionText, { color: colors.foreground }]}>
-                {item.transcription}
-              </Text>
-            </View>
-          )}
-
-          {/* Actions */}
-          {isExpanded && (
-            <View style={styles.actions}>
-              <TouchableOpacity
-                style={styles.actionBtn}
-                onPress={() => {
-                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                  router.push({ pathname: "/call/active", params: { number: item.number, type: "voice" } });
-                }}
-              >
-                <IconSymbol name="phone.fill" size={16} color={colors.success} />
-                <Text style={[styles.actionText, { color: colors.success }]}>Call Back</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.actionBtn} onPress={() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)}>
-                <IconSymbol name="message.fill" size={16} color={colors.primary} />
-                <Text style={[styles.actionText, { color: colors.primary }]}>Message</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.actionBtn} onPress={() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)}>
-                <IconSymbol name="trash.fill" size={16} color={colors.error} />
-                <Text style={[styles.actionText, { color: colors.error }]}>Delete</Text>
-              </TouchableOpacity>
-            </View>
-          )}
-        </View>
-      </TouchableOpacity>
-    );
+  const messages = !action?.available ? [] : ((inbox.data ?? []) as Voicemail[]).filter((message) =>
+    (!tenantId || !message.tenant_id || message.tenant_id === tenantId) &&
+    (!sameOwner(retiredMessages.scope, action) || !retiredMessages.keys.includes(messageIdentity(message))));
+  if (openId && (openId.scope !== action || !messages.some((message) =>
+    messageIdentity(message) === openId.key && isCurrentMessage(action, message)))) {
+    // Retire the selection itself, so a removed row cannot later reopen by reappearing.
+    selection.current = undefined;
+    setOpenId(undefined);
+  }
+  const unread = messages.filter((message) => message.status === "new").length;
+  const openMessage = (message: Voicemail) => {
+    if (!action || !isCurrentMessage(action, message)) return;
+    const key = messageIdentity(message);
+    const next = selection.current?.scope === action && selection.current.key === key ? undefined : { scope: action, id: message.id, key };
+    selection.current = next;
+    setOpenId(next);
+    if (message.status === "new") void mutateMessage("read", message, action);
   };
+  const confirmDelete = (message: Voicemail) => {
+    if (!isCurrentMessage(action, message)) return;
+    const selected = selection.current;
+    Alert.alert("Delete voicemail?", "This removes it from your inbox.", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Delete",
+        style: "destructive",
+        onPress: () => {
+          if (selected && selection.current === selected && selected.key === messageIdentity(message))
+            void mutateMessage("delete", message, action);
+        },
+      },
+    ]);
+  };
+  const unavailable = !user
+    ? "Sign in to view voicemail."
+    : inbox.error
+      ? voicemailInboxErrorMessage(inbox.error)
+      : undefined;
+  const selectedSourceURL = useMemo(() => (base: string, path: string) => {
+    const selected = openId;
+    const message = (currentInbox.current.data as Voicemail[] | undefined)?.find((row) => messageIdentity(row) === selected?.key);
+    return selected && selection.current === selected && selected.scope === action && path === `/api/recordings/voicemail/${selected.id}` && message && isCurrentMessage(action, message)
+      ? voicemailSourceURL(base, path) : null;
+  }, [action, isCurrentMessage, openId]);
+  const deleteFailed = feedback.delete?.scope === action && feedback.delete.failed &&
+    messages.some((message) => messageIdentity(message) === feedback.delete?.key);
+  const markReadFailed = feedback.read?.scope === action && feedback.read.failed &&
+    messages.some((message) => messageIdentity(message) === feedback.read?.key && message.status === "new");
 
   return (
-    <ScreenContainer>
-      {/* Header */}
-      <View style={[styles.header, { borderBottomColor: colors.border }]}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
-          <IconSymbol name="chevron.left" size={20} color={colors.primary} />
-          <Text style={[styles.backText, { color: colors.primary }]}>Settings</Text>
-        </TouchableOpacity>
-        <Text style={[styles.title, { color: colors.foreground }]}>Voicemail</Text>
-        <View style={{ width: 80 }} />
-      </View>
+    <ScreenContainer edges={["top", "bottom", "left", "right"]}>
+      <ScrollView contentContainerStyle={styles.content}>
+        <View style={styles.header}>
+          <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel="Back"
+            style={styles.back}
+            onPress={() => router.canGoBack() ? router.back() : router.replace("/(tabs)/recents")}
+          >
+            <Text style={[styles.backText, { color: colors.primary }]}>‹ Back</Text>
+          </TouchableOpacity>
+          <Text accessibilityRole="header" style={[styles.title, { color: colors.foreground }]}>Voicemail</Text>
+          <Text style={[styles.count, { color: colors.muted }]}>{unread ? `${unread} new` : ""}</Text>
+        </View>
 
-      {/* Unread count */}
-      <View style={[styles.summaryBar, { backgroundColor: colors.primary + "10", borderBottomColor: colors.border }]}>
-        <IconSymbol name="waveform" size={16} color={colors.primary} />
-        <Text style={[styles.summaryText, { color: colors.primary }]}>
-          {VOICEMAILS.filter((v) => !v.read).length} new voicemails
-        </Text>
-      </View>
+        {!unavailable && (deleteFailed || markReadFailed) && (
+          <Text accessibilityRole="alert" style={[styles.message, { color: colors.error }]}>
+            {deleteFailed
+              ? "Could not delete voicemail. Try again."
+              : "Could not mark voicemail as read. Open it again to retry."}
+          </Text>
+        )}
 
-      <FlatList
-        data={VOICEMAILS}
-        renderItem={renderItem}
-        keyExtractor={(item) => item.id}
-        contentContainerStyle={styles.list}
-        showsVerticalScrollIndicator={false}
-      />
+        {inbox.isLoading ? (
+          <Text style={[styles.message, { color: colors.muted }]}>Loading voicemail…</Text>
+        ) : unavailable ? (
+          <View style={[styles.empty, { borderColor: colors.border, backgroundColor: colors.surface }]}>
+            <Text style={[styles.message, { color: colors.muted }]}>{unavailable}</Text>
+            {user && (
+              <TouchableOpacity accessibilityRole="button" accessibilityLabel="Refresh voicemail" disabled={inbox.isFetching}
+                onPress={() => { if (isCurrentReader(action)) void Promise.resolve(inbox.refetch()).catch(() => {}); }} style={styles.refresh}>
+                <Text style={{ color: colors.primary }}>{inbox.isFetching ? "Refreshing…" : "Refresh"}</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        ) : messages.length === 0 ? (
+          <View style={[styles.empty, { borderColor: colors.border, backgroundColor: colors.surface }]}>
+            <Text style={[styles.emptyTitle, { color: colors.foreground }]}>No voicemail</Text>
+            <Text style={[styles.message, { color: colors.muted }]}>New messages will appear here.</Text>
+          </View>
+        ) : messages.map((message) => {
+          const open = openId?.scope === action && openId?.key === messageIdentity(message);
+          const pending = operations.current.delete.get(messageIdentity(message));
+          const deletePending = pending?.scope === action && pending.pending;
+          const path = `/api/recordings/voicemail/${message.id}`;
+          return (
+            <View key={message.id} style={[styles.card, { borderColor: colors.border, backgroundColor: colors.surface }]}>
+              <TouchableOpacity
+                accessibilityRole="button"
+                accessibilityLabel={`Voicemail from ${voicemailTitle(message)}`}
+                accessibilityState={{ expanded: open }}
+                onPress={() => openMessage(message)}
+                style={styles.row}
+              >
+                <View style={[styles.avatar, { backgroundColor: message.status === "new" ? colors.primary : colors.border }]}>
+                  <Text style={styles.avatarText}>{voicemailTitle(message).slice(0, 1).toUpperCase()}</Text>
+                </View>
+                <View style={styles.details}>
+                  <Text numberOfLines={1} style={[styles.name, { color: colors.foreground, fontWeight: message.status === "new" ? "700" : "600" }]}>{voicemailTitle(message)}</Text>
+                  <Text numberOfLines={1} style={[styles.number, { color: colors.muted }]}>{message.caller_number || "Caller ID unavailable"}</Text>
+                  <Text style={[styles.meta, { color: colors.muted }]}>{new Date(message.created_at).toLocaleString()} · {formatDuration(message.duration_seconds)}</Text>
+                </View>
+                {message.status === "new" && <View accessibilityLabel="New voicemail" style={[styles.unread, { backgroundColor: colors.primary }]} />}
+              </TouchableOpacity>
+              {open && (
+                <View style={[styles.expanded, { borderTopColor: colors.border }]}>
+                  <Text style={[styles.mailbox, { color: colors.muted }]}>Mailbox {message.extension_number}</Text>
+                  <Playback
+                    key={`voicemail:${message.id}`}
+                    callUuid={`voicemail-${message.id}`}
+                    path={path}
+                    sourceURL={selectedSourceURL}
+                    allowShare={false}
+                  />
+                  <VoicemailCallbackAction
+                    callerNumber={message.caller_number}
+                    callerName={voicemailTitle(message)}
+                    authorize={() => selection.current?.scope === action && selection.current.key === messageIdentity(message) && isCurrentMessage(action, message)}
+                  />
+                  <TouchableOpacity
+                    accessibilityRole="button"
+                    accessibilityLabel={`Delete voicemail from ${voicemailTitle(message)}`}
+                    disabled={deletePending}
+                    onPress={() => confirmDelete(message)}
+                    style={styles.delete}
+                  >
+                    <Text style={{ color: colors.error }}>{deletePending ? "Deleting…" : "Delete voicemail"}</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+            </View>
+          );
+        })}
+      </ScrollView>
     </ScreenContainer>
   );
 }
 
 const styles = StyleSheet.create({
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: 0.5,
-  },
-  backBtn: { flexDirection: "row", alignItems: "center", gap: 4, width: 80 },
-  backText: { fontSize: 16, fontWeight: "500" },
-  title: { fontSize: 17, fontWeight: "700" },
-  summaryBar: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderBottomWidth: 0.5,
-  },
-  summaryText: { fontSize: 13, fontWeight: "600" },
-  list: { padding: 12, gap: 10 },
-  row: {
-    borderRadius: 16,
-    borderWidth: 1,
-    overflow: "hidden",
-    position: "relative",
-  },
-  unreadDot: {
-    position: "absolute",
-    top: 16,
-    left: 10,
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    zIndex: 1,
-  },
-  rowContent: { padding: 14, paddingLeft: 22, gap: 10 },
-  topSection: { flexDirection: "row", alignItems: "center", gap: 12 },
-  avatar: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center" },
-  avatarText: { fontSize: 18, fontWeight: "700" },
-  info: { flex: 1 },
-  fromName: { fontSize: 15, fontWeight: "500" },
-  bold: { fontWeight: "700" },
-  meta: { fontSize: 12, marginTop: 2 },
-  playBtn: { width: 36, height: 36, borderRadius: 18, alignItems: "center", justifyContent: "center" },
-  playbackBar: { gap: 4 },
-  playbackTrack: { height: 4, borderRadius: 2, overflow: "hidden" },
-  playbackProgress: { height: "100%", borderRadius: 2 },
-  playbackTime: { fontSize: 11, textAlign: "right" },
-  transcription: { padding: 12, borderRadius: 12, borderWidth: 1, gap: 6 },
-  transcriptionHeader: { flexDirection: "row", alignItems: "center", gap: 6 },
-  transcriptionLabel: { fontSize: 11, fontWeight: "700", letterSpacing: 0.5 },
-  transcriptionText: { fontSize: 14, lineHeight: 20 },
-  actions: { flexDirection: "row", gap: 8 },
-  actionBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 8 },
-  actionText: { fontSize: 13, fontWeight: "600" },
+  content: { padding: 20, gap: 10 },
+  header: { flexDirection: "row", alignItems: "center", minHeight: 52, marginBottom: 8 },
+  back: { minHeight: 44, justifyContent: "center", paddingRight: 12 },
+  backText: { fontSize: 16, fontWeight: "600" },
+  title: { flex: 1, fontSize: 28, fontWeight: "700" },
+  count: { fontSize: 13, fontWeight: "600" },
+  empty: { borderWidth: 1, borderRadius: 14, padding: 20, gap: 8 },
+  emptyTitle: { fontSize: 17, fontWeight: "700" },
+  message: { fontSize: 14, lineHeight: 21 },
+  refresh: { minHeight: 44, justifyContent: "center", alignSelf: "flex-start" },
+  card: { borderWidth: 1, borderRadius: 14, overflow: "hidden" },
+  row: { minHeight: 84, padding: 14, flexDirection: "row", alignItems: "center", gap: 12 },
+  avatar: { width: 42, height: 42, borderRadius: 21, alignItems: "center", justifyContent: "center" },
+  avatarText: { color: "#fff", fontSize: 16, fontWeight: "700" },
+  details: { flex: 1, gap: 3 },
+  name: { fontSize: 16 },
+  number: { fontSize: 13 },
+  meta: { fontSize: 12 },
+  unread: { width: 9, height: 9, borderRadius: 5 },
+  expanded: { borderTopWidth: 1, padding: 14, gap: 10 },
+  mailbox: { fontSize: 12, fontWeight: "600" },
+  callback: { minHeight: 44, justifyContent: "center", alignSelf: "flex-start", paddingHorizontal: 8 },
+  delete: { minHeight: 44, justifyContent: "center", alignSelf: "flex-start" },
 });

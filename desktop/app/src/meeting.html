@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'none'; style-src 'self'; img-src 'self' data:; media-src blob:; connect-src wss: https:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'">
+<title>Phone11 meeting</title><link rel="stylesheet" href="meeting.css"></head>
+<body><main>
+  <header><div><span class="eyebrow">PHONE11 MEETING</span><h1 id="title">Ready to meet</h1></div><span id="status" role="status">Checking your meetings…</span></header>
+  <section id="prejoin" class="card">
+    <div class="preview">
+      <video id="prejoin-video" autoplay muted playsinline aria-label="Your camera preview" hidden></video>
+      <div id="preview-empty"><svg class="preview-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="6" width="12" height="12" rx="3"/><path d="m15 10 6-3v10l-6-3"/></svg><p id="preview-message">Camera is off. Select the camera option to preview before joining.</p></div>
+    </div>
+    <div class="prejoin-options"><label for="meeting-select">Meeting</label><select id="meeting-select" disabled><option value="">Loading…</option></select>
+      <button id="refresh-meetings" type="button" aria-describedby="meeting-list-status" disabled>Refresh meetings</button>
+      <p id="meeting-list-status" role="status" aria-live="polite"></p>
+      <section class="meet-now" aria-labelledby="meet-now-title">
+        <h2 id="meet-now-title">Meet now in a channel</h2>
+        <label for="channel-select">Channel</label><select id="channel-select" disabled><option>Loading…</option></select>
+        <fieldset id="invite-picker" disabled><legend>Invite members</legend><div id="invite-members"></div></fieldset>
+        <button id="start-channel-meeting" type="button" disabled>Meet now</button>
+        <p id="meet-now-message" role="status" aria-live="polite"></p>
+      </section>
+      <section class="meet-now" aria-labelledby="direct-meet-title">
+        <h2 id="direct-meet-title">Meet with a contact</h2>
+        <label for="direct-search">Find an older direct chat</label>
+        <div class="direct-search-row"><input id="direct-search" type="search" maxlength="100" placeholder="Contact name" autocomplete="off"><button id="search-direct" type="button">Search</button></div>
+        <label for="direct-select">Direct chat</label><select id="direct-select" disabled><option>Loading…</option></select>
+        <button id="more-direct" type="button" hidden>Load more contacts</button>
+        <button id="start-direct-meeting" type="button" disabled>Meet with contact</button>
+        <p id="direct-meet-message" role="status" aria-live="polite"></p>
+      </section>
+      <section class="audio-check" aria-labelledby="audio-check-title">
+        <h2 id="audio-check-title">Audio check</h2>
+        <p>Test your sound and microphone before joining. Microphone audio stays on this device.</p>
+        <div class="audio-check-actions"><button id="test-speaker" type="button" aria-pressed="false">Play test sound</button><button id="test-microphone" type="button" aria-pressed="false">Test microphone</button></div>
+        <div class="mic-meter" role="meter" aria-label="Microphone level" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="mic-level"></span></div>
+        <p id="audio-check-status" role="status" aria-live="polite">Audio checks are off</p>
+      </section>
+      <label class="switch"><input id="start-mic" type="checkbox"> Join with microphone on</label>
+      <label class="switch"><input id="start-camera" type="checkbox"> Join with camera on and preview now</label>
+      <p id="join-media-state" class="join-media-state" role="status" aria-live="polite">Microphone off at join · Camera off at join</p>
+      <button id="join" type="button" disabled>Join meeting</button><button id="cancel" type="button">Cancel</button><p id="prejoin-error" role="alert"></p></div>
+  </section>
+  <section id="room" hidden>
+    <section id="screen-picker" class="screen-picker" role="dialog" aria-labelledby="screen-picker-title" aria-describedby="screen-picker-help" tabindex="-1" hidden>
+      <h2 id="screen-picker-title">Share a screen or window</h2>
+      <p id="screen-picker-help">Select what everyone in this meeting can see. Screen audio is off.</p>
+      <div id="screen-choice-list"></div><button id="screen-cancel" type="button">Cancel</button>
+    </section>
+    <div class="meeting-layout-tools" role="group" aria-label="Video layout">
+      <button id="layout-gallery" type="button" aria-pressed="true">Gallery</button>
+      <button id="layout-speaker" type="button" aria-pressed="false">Speaker</button>
+    </div>
+    <div id="meeting-content" class="meeting-content">
+      <div id="stage" aria-label="Meeting video">
+        <section id="screen-shares" aria-label="Shared screens" hidden></section>
+        <div id="gallery-grid"></div>
+        <div id="speaker-view" hidden><div id="speaker-main"></div><div id="speaker-strip"></div></div>
+        <div id="empty-stage" hidden>Waiting for another participant…</div>
+      </div>
+      <aside id="participant-roster" aria-label="Participants">
+        <h2>Participants <span id="roster-count">1</span></h2>
+        <ul id="participant-list" aria-live="polite"></ul>
+      </aside>
+      <aside id="chat-panel" aria-labelledby="chat-title" hidden>
+        <div class="chat-heading"><h2 id="chat-title">Chat</h2><button id="close-chat" type="button" aria-label="Close meeting chat">Close</button></div>
+        <p id="chat-access">Everyone in this meeting</p>
+        <p id="chat-empty">No messages yet.</p>
+        <ol id="chat-messages" role="log" aria-label="Meeting messages" aria-live="polite" aria-relevant="additions" tabindex="0"></ol>
+        <div class="chat-compose"><label for="chat-text">Message</label><textarea id="chat-text" rows="3" maxlength="1000" aria-describedby="chat-help chat-status" placeholder="Message everyone" disabled></textarea>
+          <div class="chat-send-row"><span id="chat-help">Enter to send · Shift+Enter for a new line</span><button id="chat-send" type="button" disabled>Send</button></div>
+          <p id="chat-status" role="status" aria-live="polite"></p><p class="chat-retention">Live messages clear when you leave.</p>
+        </div>
+      </aside>
+      <aside id="access-panel" aria-labelledby="access-title" tabindex="-1" hidden>
+        <div class="chat-heading"><h2 id="access-title">Admitted meeting members</h2><button id="close-access" type="button" aria-label="Close meeting access controls">Close</button></div>
+        <p>These members have meeting access. The participants list separately shows live connections.</p>
+        <p id="access-status" role="status" aria-live="polite"></p>
+        <p id="access-empty" hidden>No other admitted members are available.</p>
+        <ul id="access-members" aria-live="polite"></ul>
+        <button id="refresh-access" type="button">Refresh access</button>
+      </aside>
+    </div>
+    <div id="remote-audio" hidden></div>
+    <div class="meeting-bottom"><div><strong id="participant-count">You</strong><span id="media-note">Connecting audio…</span></div><nav aria-label="Meeting controls">
+      <label class="meeting-output" for="audio-output">Speaker <select id="audio-output" aria-label="Meeting speaker" disabled><option value="default">System default</option></select></label>
+      <button id="enable-audio" type="button" hidden>Enable audio</button><button id="mic" type="button" disabled>Unmute</button><button id="camera" type="button" disabled>Start video</button><button id="share-screen" type="button" aria-pressed="false" aria-describedby="screen-status" hidden>Share screen</button><button id="chat" type="button" aria-pressed="false" aria-controls="chat-panel">Chat</button><button id="manage-access" type="button" aria-pressed="false" aria-controls="access-panel" hidden>Manage access</button><button id="leave" class="danger" type="button">Leave</button>
+    </nav></div><p id="screen-status" role="status" aria-live="polite"></p><p id="audio-output-status" role="status" aria-live="polite"></p>
+  </section>
+</main></body></html>

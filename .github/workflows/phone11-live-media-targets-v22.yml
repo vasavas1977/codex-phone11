@@ -1,0 +1,74 @@
+name: Phone11 Live Media Targets V22
+
+on:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - ".github/workflows/phone11-live-media-targets-v22.yml"
+  workflow_dispatch:
+    inputs:
+      ec2_host:
+        description: Live SIP/media EC2 host
+        required: true
+        default: 43.210.122.111
+
+permissions:
+  contents: read
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_USER: ubuntu
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+
+jobs:
+  media-targets:
+    name: Find exact live media test targets
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Locate EC2 and prepare temporary SSH key
+        id: ec2
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EC2_HOST="${{ github.event.inputs.ec2_host || '43.210.122.111' }}"
+          INSTANCE_JSON=$(aws ec2 describe-instances --filters "Name=ip-address,Values=$EC2_HOST" "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0]' --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "null" ]; then echo "ERROR: EC2 not found"; exit 31; fi
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_media_targets_v22_key -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key --instance-id "$INSTANCE_ID" --availability-zone "$AZ" --instance-os-user "$EC2_USER" --ssh-public-key "file://$HOME/.ssh/phone11_media_targets_v22_key.pub" >/dev/null
+          echo "ec2_host=$EC2_HOST" >> "$GITHUB_OUTPUT"
+
+      - name: Capture focused routing and media target evidence
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ssh -i ~/.ssh/phone11_media_targets_v22_key -o StrictHostKeyChecking=no -o ServerAliveInterval=15 -o ServerAliveCountMax=20 "$EC2_USER@${{ steps.ec2.outputs.ec2_host }}" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+
+          echo "===== Kamailio INVITE and FreeSWITCH route blocks ====="
+          CFG=/opt/phone11ai/cloudphone11/infra/configs/kamailio/kamailio.cfg
+          nl -ba "$CFG" | sed -n '277,405p' | sed -E 's#(postgres://)[^:@/]+:[^@]+@#\1<redacted>:<redacted>@#g'
+
+          echo "===== Kamailio reply routes ====="
+          nl -ba "$CFG" | sed -n '447,482p' | sed -E 's#(postgres://)[^:@/]+:[^@]+@#\1<redacted>:<redacted>@#g'
+
+          echo "===== FreeSWITCH dialplan files ====="
+          docker exec p11-freeswitch sh -lc 'find /etc/freeswitch/dialplan -maxdepth 3 -type f -name "*.xml" | sort | sed -n "1,160p"' || true
+
+          echo "===== Focused FreeSWITCH test-media dialplan hits ====="
+          docker exec p11-freeswitch sh -lc 'grep -RInE "destination_number|echo|park|playback|bridge|conference|moh|loopback|9196|9996|9664|5000|9999|020303988" /etc/freeswitch/dialplan 2>/dev/null | grep -Ei "destination_number|echo|park|playback|bridge|conference|moh|loopback|9196|9996|9664|5000|9999|020303988" | sed -n "1,180p"' || true
+
+          echo "===== Focused FreeSWITCH profile media settings ====="
+          docker exec p11-freeswitch sh -lc 'grep -RInE "ext-rtp-ip|rtp-ip|sip-ip|proxy-media|bypass-media|inbound-proxy-media|NDLB|aggressive-nat-detection|rtp-rewrite|rtp-autoflush|disable-transcoding|inbound-codec|outbound-codec" /etc/freeswitch/sip_profiles /etc/freeswitch/autoload_configs 2>/dev/null | sed -n "1,160p"' || true
+
+          echo "===== FreeSWITCH live profile summary ====="
+          docker exec p11-freeswitch sh -lc 'fs_cli -x "sofia status profile internal" 2>/dev/null | grep -E "Name|Domain Name|Auto-NAT|Ext-RTP-IP|RTP-IP|SIP-IP|URL|BIND-URL|CODECS|Dialplan|Context|RUNNING|TLS|Port|Auth" | sed -n "1,120p"' || true
+
+          echo "MEDIA_TARGETS_RESULT=pass"
+          REMOTE

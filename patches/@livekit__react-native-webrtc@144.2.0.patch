@@ -1,0 +1,587 @@
+diff --git a/android/src/main/java/com/oney/WebRTCModule/GetUserMediaImpl.java b/android/src/main/java/com/oney/WebRTCModule/GetUserMediaImpl.java
+--- a/android/src/main/java/com/oney/WebRTCModule/GetUserMediaImpl.java
++++ b/android/src/main/java/com/oney/WebRTCModule/GetUserMediaImpl.java
+@@ -57,17 +57,21 @@
+ 
+     private final WebRTCModule webRTCModule;
+ 
++    final Phone11ScreenCaptureBridge phone11Screen;
++
+     private Promise displayMediaPromise;
+     private Intent mediaProjectionPermissionResultData;
+ 
+     GetUserMediaImpl(WebRTCModule webRTCModule, ReactApplicationContext reactContext) {
+         this.webRTCModule = webRTCModule;
+         this.reactContext = reactContext;
++        this.phone11Screen = new Phone11ScreenCaptureBridge(webRTCModule, reactContext, this);
+ 
+         reactContext.addActivityEventListener(new BaseActivityEventListener() {
+             @Override
+             public void onActivityResult(Activity activity, int requestCode, int resultCode, Intent data) {
+                 super.onActivityResult(activity, requestCode, resultCode, data);
++                if (phone11Screen.activityResult(activity, requestCode, resultCode, data)) return;
+                 if (requestCode == PERMISSION_REQUEST_CODE) {
+                     if (resultCode != Activity.RESULT_OK) {
+                         displayMediaPromise.reject("DOMException", "NotAllowedError");
+@@ -255,7 +259,10 @@
+         }
+     }
+ 
++    void forgetPhone11Track(String id) { tracks.remove(id); }
++
+     void disposeTrack(String id) {
++        if (phone11Screen.owns(id)) { phone11Screen.stopOwnedTrack(); return; }
+         TrackPrivate track = tracks.remove(id);
+         if (track != null) {
+             track.dispose();
+diff --git a/android/src/main/java/com/oney/WebRTCModule/Phone11ScreenCaptureBridge.java b/android/src/main/java/com/oney/WebRTCModule/Phone11ScreenCaptureBridge.java
+new file mode 100644
+--- /dev/null
++++ b/android/src/main/java/com/oney/WebRTCModule/Phone11ScreenCaptureBridge.java
+@@ -0,0 +1,295 @@
++package com.oney.WebRTCModule;
++
++import android.app.Activity;
++import android.content.Context;
++import android.content.Intent;
++import android.content.pm.PackageManager;
++import android.media.projection.MediaProjection;
++import android.media.projection.MediaProjectionManager;
++import android.util.DisplayMetrics;
++import com.facebook.react.bridge.*;
++import java.util.HashSet;
++import java.util.Set;
++import java.util.Collections;
++import java.util.UUID;
++import java.util.concurrent.CompletableFuture;
++import livekit.org.webrtc.*;
++
++/** Additive Android-only API. Released getDisplayMedia/camera/iOS paths are unchanged. */
++final class Phone11ScreenCaptureBridge implements LifecycleEventListener {
++    static final String BUILD_METADATA = "ai.phone11.meeting.SCREEN_TRANSACTION";
++    private final WebRTCModule module;
++    private final ReactApplicationContext context;
++    private final GetUserMediaImpl media;
++    private static final Set<String> consumedOperations = Collections.synchronizedSet(new HashSet<>());
++    private static final Set<String> cancelledOperations = Collections.synchronizedSet(new HashSet<>());
++    private static final java.util.concurrent.atomic.AtomicInteger nextRequest = new java.util.concurrent.atomic.AtomicInteger(40000);
++    private static volatile Phone11ScreenCaptureBridge custody;
++    private static final Object OPERATIONS = new Object();
++    private volatile boolean invalidated;
++    private final java.util.concurrent.atomic.AtomicInteger hostGeneration = new java.util.concurrent.atomic.AtomicInteger();
++    private final Set<Integer> ownedRequests = Collections.synchronizedSet(new HashSet<>());
++
++    private volatile Phone11ScreenTransaction<WritableMap> active;
++    private volatile Resources resources;
++    private Activity consentActivity;
++    private int consentRequest = -1;
++    private Intent consentResult;
++    private volatile boolean awaitingChooser;
++
++    Phone11ScreenCaptureBridge(WebRTCModule module, ReactApplicationContext context, GetUserMediaImpl media) {
++        this.module = module; this.context = context; this.media = media;
++        context.addLifecycleEventListener(this);
++    }
++    boolean enabled() {
++        try {
++            android.content.pm.ApplicationInfo app = context.getPackageManager()
++                .getApplicationInfo(context.getPackageName(), PackageManager.GET_META_DATA);
++            return app.metaData != null && app.metaData.getBoolean(BUILD_METADATA, false);
++        } catch (PackageManager.NameNotFoundException error) { return false; }
++    }
++    void begin(String operation, String lifetime, Promise promise) {
++        final int host = hostGeneration.get();
++        ThreadUtils.runOnExecutor(() -> {
++            if (invalidated || host != hostGeneration.get() || !enabled() || operation == null || lifetime == null ||
++                !operation.matches("[A-Za-z0-9_-]{1,120}") || !lifetime.matches("[A-Za-z0-9_-]{1,120}") ||
++                active != null || cancelledOperations.contains(operation) || consumedOperations.size() >= 1000 || !consumedOperations.add(operation)) {
++                promise.reject("screen_unavailable", "Screen sharing is unavailable"); return;
++            }
++            Phone11ScreenCaptureBridge previous = custody;
++            if (previous != null && previous != this) {
++                previous.stopOwnedTrack();
++                promise.reject("screen_cleanup_pending", "Previous native capture cleanup must finish"); return;
++            }
++            Activity activity = context.getCurrentActivity();
++            if (activity == null || activity.isFinishing() || activity.isDestroyed() ||
++                context.getLifecycleState() != com.facebook.react.common.LifecycleState.RESUMED) {
++                promise.reject("screen_unavailable", "A current foreground Activity is required"); return;
++            }
++            if (nextRequest.get() > 65000) { promise.reject("screen_unavailable", "Consent request budget exhausted"); return; }
++            final Resources owned;
++            final Phone11ScreenTransaction<WritableMap> transaction;
++            final int request;
++            synchronized (OPERATIONS) {
++                // Cancel/invalidate can arrive while Activity lookup runs. Publication and
++                // retirement share this monitor; a no-slot cancel ACK fences later publication.
++                if (invalidated || host != hostGeneration.get() || cancelledOperations.contains(operation) || active != null) {
++                    promise.reject("screen_cancelled", "Screen operation retired before consent"); return;
++                }
++                owned = new Resources(activity);
++                transaction = new Phone11ScreenTransaction<>(operation, lifetime, ThreadUtils::runOnExecutor, owned);
++                owned.transaction = transaction;
++                active = transaction; custody = this; resources = owned; consentActivity = activity;
++                consentRequest = nextRequest.getAndIncrement(); ownedRequests.add(consentRequest);
++                request = consentRequest;
++                awaitingChooser = false;
++            }
++            transaction.result().whenComplete((data, error) -> {
++                if (error != null) {
++                    promise.reject("screen_cancelled", "Screen capture did not start");
++                    retire(transaction);
++                }
++                else promise.resolve(data);
++            });
++            UiThreadUtil.runOnUiThread(() -> {
++                try {
++                    transaction.requireCurrent();
++                    if (host != hostGeneration.get() || context.getLifecycleState() != com.facebook.react.common.LifecycleState.RESUMED ||
++                        context.getCurrentActivity() != activity || activity.isFinishing() || activity.isDestroyed())
++                        throw new IllegalStateException("Activity changed");
++                    MediaProjectionManager manager = (MediaProjectionManager) activity.getSystemService(Context.MEDIA_PROJECTION_SERVICE);
++                    if (manager == null) throw new IllegalStateException("Projection unavailable");
++                    Intent chooser = manager.createScreenCaptureIntent();
++                    awaitingChooser = true; // Only the actual owned OS Activity transition is exempt.
++                    activity.startActivityForResult(chooser, request);
++                } catch (RuntimeException error) { retire(transaction); }
++            });
++        });
++    }
++    boolean activityResult(Activity activity, int request, int result, Intent data) {
++        // Codes are never recycled during this process. A late result cannot bind to a new chooser.
++        if (!ownedRequests.contains(request)) return false;
++        ownedRequests.remove(request);
++        Phone11ScreenTransaction<WritableMap> transaction = active;
++        if (transaction == null || request != consentRequest || transaction.isRetired()) return true;
++        awaitingChooser = false;
++        if (activity != consentActivity || context.getCurrentActivity() != activity ||
++            activity.isFinishing() || activity.isDestroyed() || result != Activity.RESULT_OK || data == null) {
++            retire(transaction); return true;
++        }
++        consentResult = data; // Never leaves native memory, never reused after consumption.
++        if (context.getLifecycleState() == com.facebook.react.common.LifecycleState.RESUMED) acceptConsent(transaction);
++        return true;
++    }
++    private void acceptConsent(Phone11ScreenTransaction<WritableMap> transaction) {
++        ThreadUtils.runOnExecutor(() -> {
++            if (active != transaction || transaction.isRetired()) { consentResult = null; return; }
++            Activity activity = consentActivity;
++            Intent result = consentResult; consentResult = null;
++            if (activity == null || result == null || context.getCurrentActivity() != activity ||
++                activity.isFinishing() || activity.isDestroyed() ||
++                context.getLifecycleState() != com.facebook.react.common.LifecycleState.RESUMED) {
++                retire(transaction); return;
++            }
++            resources.permission = result;
++            transaction.grantConsent();
++        });
++    }
++    void cancel(String operation, Promise promise) {
++        final Phone11ScreenTransaction<WritableMap> transaction;
++        synchronized (OPERATIONS) {
++            if (operation == null || !operation.matches("[A-Za-z0-9_-]{1,120}") || (cancelledOperations.size() >= 1000 && !cancelledOperations.contains(operation))) {
++                promise.reject("screen_stale", "Invalid screen operation"); return;
++            }
++            cancelledOperations.add(operation);
++            transaction = active;
++            if (transaction == null) { promise.resolve(null); return; }
++            if (!transaction.operation.equals(operation)) { promise.reject("screen_stale", "Screen operation changed"); return; }
++            transaction.retire(); // Atomic with slot publication, before queued cleanup.
++            consentResult = null;
++        }
++        stop(transaction, promise);
++    }
++    private void retire(Phone11ScreenTransaction<WritableMap> transaction) {
++        transaction.retire();
++        if (active == transaction) {
++            consentResult = null;
++            Resources owned = resources;
++            if (owned != null) owned.notifyEnded();
++        }
++        stop(transaction, null);
++    }
++    private void stop(Phone11ScreenTransaction<WritableMap> transaction, Promise promise) {
++        transaction.stop().whenComplete((ignored, error) -> {
++            if (error == null) {
++                ThreadUtils.runOnExecutor(() -> {
++                    if (active == transaction) {
++                        active = null; resources = null; consentActivity = null; consentRequest = -1; awaitingChooser = false;
++                        if (custody == this) custody = null;
++                    }
++                    if (promise != null) promise.resolve(null);
++                });
++            } else if (promise != null) promise.reject("screen_stop_failed", "Screen cleanup must be retried");
++        });
++    }
++    void invalidate() {
++        synchronized (OPERATIONS) { invalidated = true; if (active != null) active.retire(); }
++        stopOwnedTrack(); context.removeLifecycleEventListener(this);
++    }
++    boolean owns(String trackId) { return resources != null && trackId.equals(resources.trackId); }
++    void stopOwnedTrack() { Phone11ScreenTransaction<WritableMap> transaction = active; if (transaction != null) retire(transaction); }
++    @Override public void onHostResume() {
++        Phone11ScreenTransaction<WritableMap> transaction = active;
++        if (transaction != null && consentResult != null) acceptConsent(transaction);
++    }
++    @Override public void onHostPause() {
++        final Phone11ScreenTransaction<WritableMap> transaction;
++        synchronized (OPERATIONS) {
++            if (awaitingChooser) return;
++            hostGeneration.incrementAndGet(); transaction = active;
++            if (transaction != null) transaction.retire();
++        }
++        if (transaction != null) retire(transaction);
++    }
++    @Override public void onHostDestroy() {
++        final Phone11ScreenTransaction<WritableMap> transaction;
++        synchronized (OPERATIONS) {
++            hostGeneration.incrementAndGet(); transaction = active;
++            if (transaction != null) transaction.retire();
++        }
++        if (transaction != null) retire(transaction);
++    }
++
++    private final class Resources implements Phone11ScreenTransaction.Resources<WritableMap> {
++        final Activity activity;
++        final String trackId = UUID.randomUUID().toString();
++        Phone11ScreenTransaction<WritableMap> transaction;
++        Intent permission;
++        Phone11ScreenProjectionService.Record service;
++        VideoCapturer capturer;
++        SurfaceTextureHelper texture;
++        VideoSource source;
++        VideoTrack track;
++        String streamId;
++        boolean captureStartAttempted, captureStopped, capturerDisposed, textureStopped, textureDisposed, sourceDisposed, trackDisposed;
++        private boolean ended;
++        synchronized void notifyEnded() {
++            if (track != null && !ended) { ended = true; new TrackCapturerEventsEmitter(module, trackId).onCapturerEnded(); }
++        }
++        Resources(Activity activity) { this.activity = activity; }
++        @Override public CompletableFuture<Void> startForeground() {
++            transaction.requireCurrent();
++            service = Phone11ScreenProjectionService.prepare(transaction.operation, transaction::isRetired);
++            service.destroyed.thenRun(() -> retire(transaction));
++            return Phone11ScreenProjectionService.launch(context, service);
++        }
++        @Override public WritableMap capture() {
++            transaction.requireCurrent();
++            if (context.getCurrentActivity() != activity || activity.isFinishing() || activity.isDestroyed() ||
++                context.getLifecycleState() != com.facebook.react.common.LifecycleState.RESUMED)
++                throw new IllegalStateException("Activity changed");
++            Intent oneUse = permission; permission = null;
++            if (oneUse == null) throw new IllegalStateException("Consent already consumed");
++            DisplayMetrics metrics = DisplayUtils.getDisplayMetrics(activity);
++            capturer = new ScreenCapturerAndroid(oneUse, new MediaProjection.Callback() {
++                @Override public void onStop() {
++                    retire(transaction);
++                }
++            });
++            texture = SurfaceTextureHelper.create("Phone11ScreenCapture", EglUtils.getRootEglBaseContext());
++            if (texture == null) throw new IllegalStateException("Capture surface unavailable");
++            source = module.mFactory.createVideoSource(true);
++            CapturerObserver observer = source.getCapturerObserver();
++            java.util.concurrent.atomic.AtomicBoolean started = new java.util.concurrent.atomic.AtomicBoolean();
++            capturer.initialize(texture, context, new CapturerObserver() {
++                @Override public void onCapturerStarted(boolean success) {
++                    observer.onCapturerStarted(success); started.set(success);
++                }
++                @Override public void onCapturerStopped() { observer.onCapturerStopped(); }
++                @Override public void onFrameCaptured(VideoFrame frame) { observer.onFrameCaptured(frame); }
++            });
++            track = module.mFactory.createVideoTrack(trackId, source);
++            if (track == null) throw new IllegalStateException("Screen track unavailable");
++            transaction.requireCurrent();
++            // Strict path: unlike AbstractVideoCaptureController.startCapture, exceptions propagate.
++            captureStartAttempted = true;
++            capturer.startCapture(metrics.widthPixels, metrics.heightPixels, 30);
++            if (!started.get()) throw new IllegalStateException("Capturer did not acknowledge startup");
++            transaction.requireCurrent();
++            WritableMap info = Arguments.createMap();
++            info.putString("id", trackId); info.putString("kind", "video");
++            info.putString("readyState", "live"); info.putBoolean("enabled", true); info.putBoolean("remote", false);
++            WritableMap settings = Arguments.createMap();
++            settings.putString("deviceId", "screen-capture"); settings.putInt("width", metrics.widthPixels);
++            settings.putInt("height", metrics.heightPixels); settings.putInt("frameRate", 30); info.putMap("settings", settings);
++            // Register only for RTP lookup; transaction resources retain disposal custody.
++            media.registerTrack(track, source, null, null);
++            MediaStream stream = module.mFactory.createLocalMediaStream(UUID.randomUUID().toString());
++            streamId = stream.getId(); module.localStreams.put(streamId, stream);
++            // MediaStream.dispose disposes ordinary attached video tracks. This transaction
++            // owns the track's one disposal; the pinned preserved-track API only detaches it.
++            if (!stream.addPreservedTrack(track)) throw new IllegalStateException("Screen stream refused video");
++            WritableMap data = Arguments.createMap(); data.putString("streamId", streamId); data.putMap("track", info);
++            return data;
++        }
++        @Override public void disposeCapture() throws Exception {
++            permission = null;
++            if (track != null && !trackDisposed) track.setEnabled(false);
++            if (capturer != null && captureStartAttempted && !captureStopped) { capturer.stopCapture(); captureStopped = true; }
++            if (capturer != null && !capturerDisposed) { capturer.dispose(); capturerDisposed = true; }
++            if (texture != null && !textureStopped) { texture.stopListening(); textureStopped = true; }
++            if (texture != null && !textureDisposed) { texture.dispose(); textureDisposed = true; }
++            if (streamId != null) {
++                MediaStream stream = module.localStreams.get(streamId);
++                if (stream != null) { stream.dispose(); module.localStreams.remove(streamId); }
++                streamId = null;
++            }
++            if (source != null && !sourceDisposed) { source.dispose(); sourceDisposed = true; }
++            if (track != null && !trackDisposed) { track.dispose(); trackDisposed = true; }
++            media.forgetPhone11Track(trackId);
++        }
++        @Override public CompletableFuture<Void> stopForeground() {
++            return service == null ? CompletableFuture.completedFuture(null) : Phone11ScreenProjectionService.stop(context, service);
++        }
++    }
++}
+diff --git a/android/src/main/java/com/oney/WebRTCModule/Phone11ScreenProjectionService.java b/android/src/main/java/com/oney/WebRTCModule/Phone11ScreenProjectionService.java
+new file mode 100644
+--- /dev/null
++++ b/android/src/main/java/com/oney/WebRTCModule/Phone11ScreenProjectionService.java
+@@ -0,0 +1,122 @@
++package com.oney.WebRTCModule;
++
++import android.app.Service;
++import android.content.ComponentName;
++import android.content.Context;
++import android.content.Intent;
++import android.content.pm.ServiceInfo;
++import android.os.Build;
++import android.os.Handler;
++import android.os.IBinder;
++import android.os.Looper;
++import java.util.concurrent.CompletableFuture;
++import java.util.function.BooleanSupplier;
++
++/** Separate from the released generic projection service; enabled only by owned build metadata. */
++public final class Phone11ScreenProjectionService extends Service {
++    private static final Handler MAIN = new Handler(Looper.getMainLooper());
++    private static Record active;
++    private Record owned;
++    static final class Record {
++        final String operation;
++        final BooleanSupplier retired;
++        final CompletableFuture<Void> started = new CompletableFuture<>();
++        final CompletableFuture<Void> destroyed = new CompletableFuture<>();
++        boolean requested;
++        Record(String operation, BooleanSupplier retired) { this.operation = operation; this.retired = retired; }
++    }
++    static synchronized Record prepare(String operation, BooleanSupplier retired) {
++        if (active != null) throw new IllegalStateException("Projection service cleanup pending");
++        Record record = new Record(operation, retired);
++        active = record;
++        return record;
++    }
++    static CompletableFuture<Void> launch(Context context, Record record) {
++        MAIN.post(() -> {
++            if (record.retired.getAsBoolean()) {
++                record.started.completeExceptionally(new IllegalStateException("Screen operation retired"));
++                return;
++            }
++            try {
++                MediaProjectionNotification.createNotificationChannel(context);
++                Intent intent = new Intent(context, Phone11ScreenProjectionService.class);
++                intent.putExtra("operation", record.operation);
++                // Submission may throw after contacting Android. Retain uncertain custody.
++                record.requested = true;
++                ComponentName name = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
++                    ? context.startForegroundService(intent) : context.startService(intent);
++                if (name == null) throw new IllegalStateException("Projection service refused");
++            } catch (RuntimeException error) { record.started.completeExceptionally(error); }
++        });
++        MAIN.postDelayed(() -> record.started.completeExceptionally(
++            new IllegalStateException("Projection foreground acknowledgment timed out")), 8000);
++        return record.started;
++    }
++    static CompletableFuture<Void> stop(Context context, Record record) {
++        CompletableFuture<Void> attempt = new CompletableFuture<>();
++        record.destroyed.whenComplete((ignored, error) -> {
++            if (error != null) attempt.completeExceptionally(error); else attempt.complete(null);
++        });
++        MAIN.post(() -> {
++            // startForeground acknowledgment already settled before this call.
++            // A request actually submitted to Android needs onDestroy, never a boolean ACK.
++            if (!record.requested) {
++                record.destroyed.complete(null);
++                synchronized (Phone11ScreenProjectionService.class) { if (active == record) active = null; }
++                return;
++            }
++            try {
++                context.stopService(new Intent(context, Phone11ScreenProjectionService.class));
++            } catch (RuntimeException error) {
++                // Keep the record retryable: do not poison the eventual onDestroy receipt.
++                attempt.completeExceptionally(error);
++            }
++        });
++        MAIN.postDelayed(() -> attempt.completeExceptionally(
++            new IllegalStateException("Projection destruction acknowledgment timed out")), 8000);
++        return attempt;
++    }
++    @Override public void onCreate() {
++        super.onCreate();
++        // Capture custody even if Android destroys a queued start before onStartCommand.
++        synchronized (Phone11ScreenProjectionService.class) { owned = active; }
++    }
++    @Override public IBinder onBind(Intent intent) { return null; }
++    @Override public int onStartCommand(Intent intent, int flags, int startId) {
++        Record record;
++        synchronized (Phone11ScreenProjectionService.class) { record = active; }
++        if (record == null || owned != record || intent == null || !record.operation.equals(intent.getStringExtra("operation"))) {
++            stopSelf(); return START_NOT_STICKY;
++        }
++        owned = record;
++        if (record.retired.getAsBoolean()) {
++            record.started.completeExceptionally(new IllegalStateException("Screen operation retired"));
++            stopSelf(); return START_NOT_STICKY;
++        }
++        try {
++            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
++                startForeground(MediaProjectionService.NOTIFICATION_ID,
++                    MediaProjectionNotification.buildMediaProjectionNotification(this),
++                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION);
++            else startForeground(MediaProjectionService.NOTIFICATION_ID,
++                MediaProjectionNotification.buildMediaProjectionNotification(this));
++            if (record.retired.getAsBoolean()) {
++                record.started.completeExceptionally(new IllegalStateException("Screen operation retired"));
++                stopSelf();
++            } else record.started.complete(null);
++        } catch (RuntimeException error) {
++            record.started.completeExceptionally(error);
++            stopSelf();
++        }
++        return START_NOT_STICKY;
++    }
++    @Override public void onDestroy() {
++        super.onDestroy();
++        Record record = owned;
++        if (record != null) {
++            record.started.completeExceptionally(new IllegalStateException("Projection service stopped"));
++            record.destroyed.complete(null);
++            synchronized (Phone11ScreenProjectionService.class) { if (active == record) active = null; }
++        }
++    }
++}
+diff --git a/android/src/main/java/com/oney/WebRTCModule/Phone11ScreenTransaction.java b/android/src/main/java/com/oney/WebRTCModule/Phone11ScreenTransaction.java
+new file mode 100644
+--- /dev/null
++++ b/android/src/main/java/com/oney/WebRTCModule/Phone11ScreenTransaction.java
+@@ -0,0 +1,81 @@
++package com.oney.WebRTCModule;
++
++import java.util.concurrent.CompletableFuture;
++import java.util.concurrent.Executor;
++
++/** Native custody for one explicit, one-use consent; no application authority store. */
++final class Phone11ScreenTransaction<T> {
++    interface Resources<T> {
++        CompletableFuture<Void> startForeground();
++        T capture() throws Exception;
++        void disposeCapture() throws Exception;
++        CompletableFuture<Void> stopForeground();
++    }
++    final String operation;
++    final String lifetime;
++    private final Executor executor;
++    private final Resources<T> resources;
++    private final CompletableFuture<Void> consent = new CompletableFuture<>();
++    private final CompletableFuture<T> result = new CompletableFuture<>();
++    private final CompletableFuture<T> pipeline;
++    private volatile boolean retired;
++    private CompletableFuture<Void> stopping;
++    private boolean stopped;
++
++    Phone11ScreenTransaction(String operation, String lifetime, Executor executor, Resources<T> resources) {
++        this.operation = operation;
++        this.lifetime = lifetime;
++        this.executor = executor;
++        this.resources = resources;
++        pipeline = consent.thenComposeAsync(ignored -> {
++            requireCurrent();
++            return resources.startForeground();
++        }, executor).thenApplyAsync(ignored -> {
++            requireCurrent(); // A queued service acknowledgment cannot revive consent.
++            try {
++                T track = resources.capture();
++                requireCurrent();
++                return track;
++            } catch (Exception error) { throw new java.util.concurrent.CompletionException(error); }
++        }, executor);
++        pipeline.whenComplete((track, error) -> {
++            if (error != null) result.completeExceptionally(error);
++            else if (retired) result.completeExceptionally(new IllegalStateException("Screen operation retired"));
++            else result.complete(track);
++        });
++    }
++    boolean isRetired() { return retired; }
++    CompletableFuture<T> result() { return result; }
++    void grantConsent() { if (!retired) consent.complete(null); }
++    void refuseConsent() { retire(); }
++    void requireCurrent() {
++        if (retired) throw new IllegalStateException("Screen operation retired");
++    }
++    // Called at bridge entry, before queuing cleanup or waiting for a chooser.
++    void retire() {
++        retired = true;
++        IllegalStateException error = new IllegalStateException("Screen operation retired");
++        result.completeExceptionally(error);
++        consent.completeExceptionally(error);
++    }
++    synchronized CompletableFuture<Void> stop() {
++        retire();
++        if (stopped) return CompletableFuture.completedFuture(null);
++        if (stopping != null) return stopping;
++        // A startup already submitted to Android remains owned until it settles.
++        // A canceled chooser settles immediately; late results cannot start it.
++        CompletableFuture<Void> task = pipeline.handleAsync((track, error) -> {
++            try { resources.disposeCapture(); }
++            catch (Exception failure) { throw new java.util.concurrent.CompletionException(failure); }
++            return null;
++        }, executor).thenComposeAsync(ignored -> resources.stopForeground(), executor);
++        stopping = task;
++        task.whenComplete((ignored, error) -> {
++            synchronized (this) {
++                if (error == null) stopped = true;
++                if (stopping == task) stopping = null;
++            }
++        });
++        return task;
++    }
++}
+diff --git a/android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java b/android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java
+--- a/android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java
++++ b/android/src/main/java/com/oney/WebRTCModule/WebRTCModule.java
+@@ -895,6 +895,22 @@
+         });
+     }
+ 
++    @Override public void invalidate() {
++        getUserMediaImpl.phone11Screen.invalidate();
++        super.invalidate();
++    }
++
++    @ReactMethod public void phone11ScreenSupported(Promise promise) { promise.resolve(getUserMediaImpl.phone11Screen.enabled()); }
++    @ReactMethod public void phone11ScreenBegin(String operation, String lifetime, Promise promise) {
++        getUserMediaImpl.phone11Screen.begin(operation, lifetime, promise);
++    }
++    @ReactMethod public void phone11ScreenCancel(String operation, Promise promise) {
++        getUserMediaImpl.phone11Screen.cancel(operation, promise);
++    }
++    @ReactMethod public void phone11ScreenStop(String operation, Promise promise) {
++        getUserMediaImpl.phone11Screen.cancel(operation, promise);
++    }
++
+     @ReactMethod
+     public void mediaStreamTrackRelease(String id) {
+         ThreadUtils.runOnExecutor(() -> {
+@@ -918,6 +934,11 @@
+             }
+ 
+             if (track.enabled() == enabled) {
++                return;
++            }
++            if (getUserMediaImpl.phone11Screen.owns(id)) {
++                // An operation is one-use. Disabling retires it; enabling cannot resume it.
++                if (!enabled) getUserMediaImpl.phone11Screen.stopOwnedTrack();
+                 return;
+             }
+             track.setEnabled(enabled);

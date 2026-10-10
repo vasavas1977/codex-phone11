@@ -1,0 +1,19 @@
+<!-- Not auto-included. Fixed pilot destination; never interpolate caller input. -->
+<include>
+  <context name="phone11_recording_anchor">
+    <extension name="phone11-recording-3001">
+      <condition field="destination_number" expression="^phone11-recording-3001$">
+        <action application="set" data="bypass_media=false"/>
+        <action application="set" data="bypass_media_after_bridge=false"/>
+        <action application="set" data="proxy_media=false"/>
+        <action application="set" data="hangup_after_bridge=true"/>
+        <action application="set" data="continue_on_fail=false"/>
+        <action application="set" data="call_timeout=60"/>
+        <action application="set" data="absolute_codec_string=PCMA"/>
+        <action application="unset" data="sip_h_X-Phone11-Wake-ID"/>
+        <action application="bridge" data="[sip_h_X-Phone11-Recording-Anchor=returned-v1]sofia/external/3001@10.0.1.69:5060"/>
+        <anti-action application="hangup" data="CALL_REJECTED"/>
+      </condition>
+    </extension>
+  </context>
+</include>

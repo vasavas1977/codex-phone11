@@ -1,421 +1,281 @@
-import { useEffect, useState } from "react";
-import {
-  View,
-  Text,
-  FlatList,
-  TouchableOpacity,
-  TextInput,
-  StyleSheet,
-  Platform,
-  Alert,
-  Switch,
-} from "react-native";
-import { useRouter } from "expo-router";
+import { useCallback, useRef } from "react";
+import { useAuth } from "@/hooks/use-auth";
+import { trpc } from "@/lib/trpc";
+import { getAuthSnapshot } from "@/lib/_core/auth";
+import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
+import { MeetingPrejoin } from "@/components/meetings/meeting-prejoin";
 import { ScreenContainer } from "@/components/screen-container";
-import { IconSymbol } from "@/components/ui/icon-symbol";
+import { Platform, Pressable, Text } from "react-native";
 import { useColors } from "@/hooks/use-colors";
-import { useConferenceStore } from "@/lib/conference/store";
-import type { Conference, ConferenceConfig } from "@/lib/conference/types";
-import * as Haptics from "expo-haptics";
+import type { AdmittedMeeting } from "@/lib/meetings/admitted-selection";
+import { admittedMeetingsWithTenantTitles, safeMeetingTitle } from "@/lib/meetings/admitted-selection";
+import { useChatStore } from "@/lib/chat/store";
+import { meetingAdmissionFailure } from "@/lib/meetings/admission-failure";
+import {
+  MeetingJoinFailure,
+  meetingJoinFailureStage,
+  type MeetingJoinStage,
+} from "@/lib/meetings/join-failure";
 
-export default function ConferenceListScreen() {
-  const router = useRouter();
-  const colors = useColors();
-  const { history, activeConference, createConference, joinConference, init } =
-    useConferenceStore();
-
-  const [showCreate, setShowCreate] = useState(false);
-  const [confName, setConfName] = useState("");
-  const [maxParticipants, setMaxParticipants] = useState("50");
-  const [muteOnEntry, setMuteOnEntry] = useState(false);
-  const [recordEnabled, setRecordEnabled] = useState(false);
-  const [waitForMod, setWaitForMod] = useState(false);
-
-  useEffect(() => {
-    init();
-  }, []);
-
-  const handleCreateConference = async () => {
-    if (!confName.trim()) {
-      Alert.alert("Error", "Please enter a conference name");
-      return;
-    }
-    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-
-    const config: Partial<ConferenceConfig> = {
-      maxParticipants: parseInt(maxParticipants) || 50,
-      muteOnEntry,
-      recordEnabled,
-      waitForModerator: waitForMod,
+function EnabledMeetingPrejoin({
+  user,
+  admittedMeetings,
+  initialMeetingCode,
+  onOpenInvitations,
+  onBack,
+}: {
+  user: { id: number; name?: string | null };
+  admittedMeetings: readonly AdmittedMeeting[];
+  initialMeetingCode?: string;
+  onOpenInvitations?: () => void;
+  onBack: () => void;
+}) {
+  const join = trpc.meetings.join.useMutation();
+  const routeActive = useRef(false);
+  const routeLifetime = useRef(0);
+  // Stack routes remain mounted on blur. A later refocus must not revive a
+  // pending admission or connection from the previous focus lifetime.
+  useFocusEffect(useCallback(() => {
+    routeLifetime.current += 1;
+    routeActive.current = true;
+    return () => {
+      routeActive.current = false;
+      routeLifetime.current += 1;
     };
-
-    await createConference(confName.trim(), config);
-    setShowCreate(false);
-    setConfName("");
-    router.push("/conference/room" as any);
+  }, []));
+  const requireActiveRoute = (lifetime: number) => {
+    if (!routeActive.current || routeLifetime.current !== lifetime)
+      throw new MeetingJoinFailure("post_connect_guard");
+    // Profile refreshes preserve this owner reference; a new sign-in does not,
+    // even when it belongs to the same numeric account.
+    if (getAuthSnapshot().user !== user) throw new MeetingJoinFailure("admission");
   };
-
-  const handleMeetNow = async () => {
-    if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-    await createConference(`Quick Meeting ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`);
-    router.push("/conference/room" as any);
+  const openConnectedMeeting = async (meeting: { leave(): Promise<void> }, lifetime: number) => {
+    if (!routeActive.current || routeLifetime.current !== lifetime || getAuthSnapshot().user !== user) {
+      // Stop only this attempt's session. Failed teardown remains owned by its
+      // lifecycle for retry; never clear a newer meeting from the registry.
+      await meeting.leave().catch(() => { throw new MeetingJoinFailure("room_cleanup"); });
+      throw new MeetingJoinFailure("post_connect_guard");
+    }
+    router.push("/conference/room");
   };
-
-  const formatDate = (ts: number) => {
-    const d = new Date(ts);
-    const now = new Date();
-    const isToday = d.toDateString() === now.toDateString();
-    if (isToday) return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    return d.toLocaleDateString([], { month: "short", day: "numeric" });
-  };
-
-  const formatDuration = (seconds: number) => {
-    if (seconds < 60) return `${seconds}s`;
-    const m = Math.floor(seconds / 60);
-    if (m < 60) return `${m}m`;
-    const h = Math.floor(m / 60);
-    return `${h}h ${m % 60}m`;
-  };
-
-  const renderConference = ({ item }: { item: Conference }) => {
-    const isActive = item.state === "active";
-
-    return (
-      <TouchableOpacity
-        style={[styles.confCard, { backgroundColor: colors.surface, borderColor: colors.border }]}
-        onPress={() => {
-          if (isActive) {
-            joinConference(item.id);
-            router.push("/conference/room" as any);
-          }
-        }}
-      >
-        <View style={styles.confCardLeft}>
-          <View
-            style={[
-              styles.confIcon,
-              { backgroundColor: isActive ? "#34C75920" : `${colors.primary}15` },
-            ]}
-          >
-            <IconSymbol
-              name="person.3.fill"
-              size={20}
-              color={isActive ? "#34C759" : colors.primary}
-            />
-          </View>
-        </View>
-
-        <View style={styles.confCardCenter}>
-          <View style={styles.confNameRow}>
-            <Text style={[styles.confName, { color: colors.foreground }]} numberOfLines={1}>
-              {item.name}
-            </Text>
-            {isActive && (
-              <View style={styles.liveBadge}>
-                <View style={styles.liveDot} />
-                <Text style={styles.liveText}>LIVE</Text>
-              </View>
-            )}
-          </View>
-          <Text style={[styles.confMeta, { color: colors.muted }]}>
-            {item.participants.length} participant{item.participants.length !== 1 ? "s" : ""}
-            {" • "}
-            {item.state === "ended"
-              ? formatDuration(item.duration)
-              : formatDate(item.createdAt)}
-          </Text>
-          {item.isRecording && (
-            <View style={styles.recordBadge}>
-              <View style={[styles.recordDotSmall, { backgroundColor: "#FF3B30" }]} />
-              <Text style={{ color: "#FF3B30", fontSize: 11, fontWeight: "600" }}>Recorded</Text>
-            </View>
-          )}
-        </View>
-
-        <View style={styles.confCardRight}>
-          <Text style={[styles.confTime, { color: colors.muted }]}>
-            {formatDate(item.createdAt)}
-          </Text>
-          {isActive && (
-            <TouchableOpacity
-              style={[styles.joinBtn, { backgroundColor: "#34C759" }]}
-              onPress={() => {
-                joinConference(item.id);
-                router.push("/conference/room" as any);
-              }}
-            >
-              <Text style={styles.joinBtnText}>Join</Text>
-            </TouchableOpacity>
-          )}
-        </View>
-      </TouchableOpacity>
-    );
-  };
-
   return (
-    <ScreenContainer>
-      <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()}>
-          <IconSymbol name="chevron.left" size={24} color={colors.primary} />
-        </TouchableOpacity>
-        <Text style={[styles.title, { color: colors.foreground }]}>Conference Bridge</Text>
-        <TouchableOpacity onPress={() => setShowCreate(true)}>
-          <IconSymbol name="plus" size={24} color={colors.primary} />
-        </TouchableOpacity>
-      </View>
-
-      {/* Meet Now Hero Button */}
-      <TouchableOpacity
-        style={[styles.meetNowHero, { backgroundColor: colors.primary }]}
-        onPress={handleMeetNow}
-      >
-        <View style={styles.meetNowContent}>
-          <View style={styles.meetNowIcon}>
-            <IconSymbol name="video.fill" size={28} color="#FFFFFF" />
-          </View>
-          <View style={styles.meetNowText}>
-            <Text style={styles.meetNowTitle}>Meet Now</Text>
-            <Text style={styles.meetNowSubtitle}>
-              Start an instant conference for up to 50 participants
-            </Text>
-          </View>
-        </View>
-        <IconSymbol name="chevron.right" size={20} color="#FFFFFF80" />
-      </TouchableOpacity>
-
-      {/* Active conference banner */}
-      {activeConference && (
-        <TouchableOpacity
-          style={[styles.activeBanner, { backgroundColor: "#34C75920", borderColor: "#34C759" }]}
-          onPress={() => router.push("/conference/room" as any)}
-        >
-          <View style={styles.activeBannerLeft}>
-            <View style={styles.activePulse} />
-            <Text style={[styles.activeBannerText, { color: "#34C759" }]}>
-              Active: {activeConference.name}
-            </Text>
-          </View>
-          <Text style={[styles.activeBannerJoin, { color: "#34C759" }]}>
-            Rejoin →
-          </Text>
-        </TouchableOpacity>
-      )}
-
-      {/* Conference History */}
-      <FlatList
-        data={history}
-        renderItem={renderConference}
-        keyExtractor={(item) => item.id}
-        contentContainerStyle={styles.list}
-        ListEmptyComponent={
-          <View style={styles.emptyState}>
-            <IconSymbol name="person.3.fill" size={48} color={colors.muted} />
-            <Text style={[styles.emptyTitle, { color: colors.foreground }]}>
-              No Conferences Yet
-            </Text>
-            <Text style={[styles.emptySubtext, { color: colors.muted }]}>
-              Tap "Meet Now" to start your first conference call
-            </Text>
-          </View>
+    <MeetingPrejoin
+      authenticatedDisplayName={user.name ?? ""}
+      admittedMeetings={admittedMeetings}
+      initialMeetingCode={initialMeetingCode}
+      onOpenInvitations={onOpenInvitations}
+      onJoin={async (preferences) => {
+        let stage: MeetingJoinStage = "bindings";
+        const joiningOwnerId = user.id;
+        const lifetime = routeLifetime.current;
+        try {
+          requireActiveRoute(lifetime);
+          if (Platform.OS === "web") {
+            stage = "admission";
+            const admission = await join.mutateAsync({ meetingId: preferences.meetingCode })
+              .catch(error => { throw meetingAdmissionFailure(error); });
+            requireActiveRoute(lifetime);
+            stage = "bindings";
+            const { WebMeetingLifecycle } = await import("@/lib/meetings/web-session");
+            requireActiveRoute(lifetime);
+            const meeting = await WebMeetingLifecycle.join(joiningOwnerId, preferences.meetingCode, admission, {
+              microphone: preferences.microphoneEnabled,
+              camera: preferences.cameraEnabled,
+            });
+            stage = "connected";
+            await openConnectedMeeting(meeting, lifetime);
+            return;
+          }
+          // Default-off builds never load a native meeting/SIP implementation
+          // until the authenticated server has made joining available.
+          const [{ useSipCallStore }, { NativeMeetingLifecycle }] =
+            await Promise.all([
+              import("@/lib/sip/call-store"),
+              import("@/lib/meetings/native-session"),
+            ]);
+          requireActiveRoute(lifetime);
+          stage = "audio_start";
+          const calls = useSipCallStore.getState();
+          const sipBusy =
+            Boolean(
+              calls.incomingCall && calls.incomingCall.status !== "disconnected",
+            ) ||
+            Object.values(calls.activeCalls).some(
+              (call) => call.status !== "disconnected",
+            );
+          if (sipBusy)
+            throw new MeetingJoinFailure("audio_start", { reason: "phone_call_active" });
+          stage = "admission";
+          const admission = await join.mutateAsync({
+            meetingId: preferences.meetingCode,
+          }).catch(error => { throw meetingAdmissionFailure(error); });
+          requireActiveRoute(lifetime);
+          stage = "native_setup";
+          const meeting = await NativeMeetingLifecycle.join(preferences.meetingCode, admission, {
+            microphone: preferences.microphoneEnabled,
+            camera: preferences.cameraEnabled,
+          });
+          stage = "connected";
+          await openConnectedMeeting(meeting, lifetime);
+        } catch (error) {
+          if (meetingJoinFailureStage(error)) throw error;
+          throw new MeetingJoinFailure(stage);
         }
-        ListHeaderComponent={
-          history.length > 0 ? (
-            <Text style={[styles.sectionTitle, { color: colors.muted }]}>RECENT CONFERENCES</Text>
-          ) : null
-        }
-      />
+      }}
+      onBack={() => {
+        routeActive.current = false;
+        routeLifetime.current += 1;
+        onBack();
+      }}
+    />
+  );
+}
 
-      {/* Create Conference Modal */}
-      {showCreate && (
-        <View style={styles.modalOverlay}>
-          <View style={[styles.modal, { backgroundColor: colors.surface }]}>
-            <View style={styles.modalHeader}>
-              <Text style={[styles.modalTitle, { color: colors.foreground }]}>
-                New Conference
-              </Text>
-              <TouchableOpacity onPress={() => setShowCreate(false)}>
-                <IconSymbol name="xmark" size={22} color={colors.muted} />
-              </TouchableOpacity>
-            </View>
-
-            <Text style={[styles.inputLabel, { color: colors.muted }]}>Conference Name</Text>
-            <TextInput
-              style={[styles.input, { backgroundColor: colors.background, color: colors.foreground, borderColor: colors.border }]}
-              value={confName}
-              onChangeText={setConfName}
-              placeholder="e.g. Sales Team Standup"
-              placeholderTextColor={colors.muted}
-              returnKeyType="done"
-            />
-
-            <Text style={[styles.inputLabel, { color: colors.muted }]}>Max Participants</Text>
-            <TextInput
-              style={[styles.input, { backgroundColor: colors.background, color: colors.foreground, borderColor: colors.border }]}
-              value={maxParticipants}
-              onChangeText={setMaxParticipants}
-              keyboardType="number-pad"
-              placeholder="50"
-              placeholderTextColor={colors.muted}
-              returnKeyType="done"
-            />
-
-            <View style={styles.toggleRow}>
-              <Text style={[styles.toggleLabel, { color: colors.foreground }]}>Mute on Entry</Text>
-              <Switch value={muteOnEntry} onValueChange={setMuteOnEntry} trackColor={{ true: colors.primary }} />
-            </View>
-
-            <View style={styles.toggleRow}>
-              <Text style={[styles.toggleLabel, { color: colors.foreground }]}>Auto-Record</Text>
-              <Switch value={recordEnabled} onValueChange={setRecordEnabled} trackColor={{ true: colors.primary }} />
-            </View>
-
-            <View style={styles.toggleRow}>
-              <Text style={[styles.toggleLabel, { color: colors.foreground }]}>Wait for Moderator</Text>
-              <Switch value={waitForMod} onValueChange={setWaitForMod} trackColor={{ true: colors.primary }} />
-            </View>
-
-            <TouchableOpacity
-              style={[styles.createBtn, { backgroundColor: colors.primary }]}
-              onPress={handleCreateConference}
-            >
-              <IconSymbol name="video.fill" size={18} color="#FFFFFF" />
-              <Text style={styles.createBtnText}>Create & Start Conference</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
+export default function ConferenceScreen() {
+  const colors = useColors();
+  const params = useLocalSearchParams<{ meetingId?: string; tenantId?: string; source?: string }>();
+  const requestedMeeting = typeof params.meetingId === "string" ? params.meetingId : "";
+  const { user } = useAuth({ autoFetch: false });
+  const chatOwnerId = useChatStore(state => state.userId);
+  const selectedWorkspaceId = useChatStore(state => state.workspace?.id);
+  const requestedTenantId = Number(params.tenantId);
+  const fromConversation = params.source === "channel" || params.source === "direct";
+  const selectedTenantId =
+    fromConversation &&
+    Number.isSafeInteger(requestedTenantId) && requestedTenantId > 0 &&
+    user?.id === chatOwnerId && selectedWorkspaceId === requestedTenantId
+      ? requestedTenantId
+      : null;
+  const capabilities = trpc.meetings.capabilities.useQuery(undefined, {
+    enabled: !!user,
+    retry: false,
+  });
+  const admittedMeetings = trpc.meetings.available.useQuery(undefined, {
+    enabled: !!user && capabilities.data?.available === true && !fromConversation,
+    retry: false,
+  });
+  const tenantMeetings = trpc.meetings.availableForTenant.useQuery(
+    { tenantId: selectedTenantId ?? 0 },
+    { enabled: !!user && capabilities.data?.available === true && selectedTenantId !== null, retry: false, staleTime: 0 },
+  );
+  // A conversation link names one exact room. The general availability list
+  // is intentionally capped, so it cannot be used as proof that this room is
+  // admitted (or as the picker for a direct/channel invitation).
+  const exactMeeting = trpc.meetings.availableMeetingForTenant.useQuery(
+    { tenantId: selectedTenantId ?? 0, meetingId: requestedMeeting },
+    { enabled: !!user && capabilities.data?.available === true && selectedTenantId !== null && !!requestedMeeting, retry: false,
+      staleTime: 0, gcTime: 0, refetchOnMount: "always" },
+  );
+  const scopedMeeting = user && getAuthSnapshot().user === user && selectedTenantId !== null &&
+    !exactMeeting.isFetching && !exactMeeting.error && exactMeeting.data?.meetingId === requestedMeeting &&
+    exactMeeting.data?.tenantId === selectedTenantId
+    ? {
+        meetingId: requestedMeeting,
+        title: safeMeetingTitle(tenantMeetings.data?.find(row => row.meetingId === requestedMeeting)?.title),
+      }
+    : null;
+  const displayedMeetings = fromConversation
+    ? scopedMeeting ? [scopedMeeting] : undefined
+    : admittedMeetings.data
+      ? admittedMeetingsWithTenantTitles(admittedMeetings.data, undefined, null)
+      : undefined;
+  const reason = !user
+    ? "Sign in to join your workspace meetings."
+    : fromConversation && selectedTenantId === null
+      ? "Return to Team Chat and open this meeting from the current workspace."
+    : capabilities.isLoading
+      ? "Checking meeting availability…"
+      : capabilities.error
+        ? "Could not check meeting availability. Return to Team and try again."
+        : !capabilities.data?.available
+          ? (capabilities.data?.reason ??
+            "Video meetings are being connected for your workspace. Joining is not available yet.")
+          : fromConversation && (exactMeeting.isLoading || exactMeeting.isFetching)
+            ? "Checking this meeting invitation…"
+            : fromConversation && exactMeeting.error
+              ? "Could not check this meeting invitation. Return to Team Chat and try again."
+              : fromConversation
+                ? scopedMeeting ? undefined : "This meeting invitation is no longer available."
+          : admittedMeetings.isLoading
+            ? "Loading your admitted meetings…"
+            : admittedMeetings.error
+              ? "Could not load your admitted meetings. Return to Team and try again."
+              : !admittedMeetings.data?.length
+                ? "There are no admitted meetings for this account."
+                : undefined;
+  return (
+    <ScreenContainer edges={["top", "bottom", "left", "right"]}>
+      {!fromConversation &&
+        user &&
+        getAuthSnapshot().user === user &&
+        chatOwnerId === user.id &&
+        selectedWorkspaceId && (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="New meeting"
+            accessibilityHint="Choose a team channel and participants to invite."
+            onPress={() => {
+              const auth = getAuthSnapshot();
+              const chat = useChatStore.getState();
+              if (
+                !auth.loading &&
+                auth.user === user &&
+                chat.userId === user.id &&
+                chat.workspace?.id === selectedWorkspaceId
+              )
+                router.push("/conference/create");
+            }}
+            style={{
+              minHeight: 48,
+              marginHorizontal: 20,
+              marginTop: 12,
+              justifyContent: "center",
+              alignItems: "center",
+              borderRadius: 12,
+              backgroundColor: colors.primary,
+            }}
+          >
+            <Text style={{ color: "#ffffff", fontSize: 17, fontWeight: "600" }}>
+              New meeting
+            </Text>
+          </Pressable>
+        )}
+      {user && !capabilities.error && (fromConversation || !admittedMeetings.error) && capabilities.data?.available && displayedMeetings?.length ? (
+        <EnabledMeetingPrejoin
+          key={`${user.id}:${requestedMeeting}:${displayedMeetings.map(item => item.meetingId).join(",")}`}
+          initialMeetingCode={requestedMeeting}
+          user={user}
+          admittedMeetings={displayedMeetings}
+          onOpenInvitations={!fromConversation ? () => {
+            if (getAuthSnapshot().user === user) router.push("/(tabs)/teamchat");
+          } : undefined}
+          onBack={() =>
+            router.canGoBack() ? router.back() : router.replace("/(tabs)")
+          }
+        />
+      ) : (
+        <MeetingPrejoin
+          key={user?.id ?? "signed-out"}
+          authenticatedDisplayName={user?.name ?? ""}
+          unavailableReason={reason}
+          onRetryAvailability={
+            user && !capabilities.isLoading
+              ? () => {
+                  void capabilities.refetch();
+                  if (fromConversation) void exactMeeting.refetch();
+                  else void admittedMeetings.refetch();
+                }
+              : undefined
+          }
+          checkingAvailability={
+            capabilities.isFetching || (fromConversation ? exactMeeting.isFetching : admittedMeetings.isFetching)
+          }
+          onBack={() =>
+            router.canGoBack() ? router.back() : router.replace("/(tabs)")
+          }
+        />
       )}
     </ScreenContainer>
   );
 }
-
-const styles = StyleSheet.create({
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-  },
-  title: { fontSize: 20, fontWeight: "700" },
-
-  // Meet Now Hero
-  meetNowHero: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginHorizontal: 16,
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 12,
-  },
-  meetNowContent: { flex: 1, flexDirection: "row", alignItems: "center", gap: 14 },
-  meetNowIcon: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
-    backgroundColor: "rgba(255,255,255,0.2)",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  meetNowText: { flex: 1 },
-  meetNowTitle: { color: "#FFFFFF", fontSize: 18, fontWeight: "700" },
-  meetNowSubtitle: { color: "rgba(255,255,255,0.8)", fontSize: 13, marginTop: 2 },
-
-  // Active banner
-  activeBanner: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginHorizontal: 16,
-    borderRadius: 12,
-    borderWidth: 1,
-    padding: 12,
-    marginBottom: 12,
-  },
-  activeBannerLeft: { flexDirection: "row", alignItems: "center", gap: 8 },
-  activePulse: { width: 8, height: 8, borderRadius: 4, backgroundColor: "#34C759" },
-  activeBannerText: { fontSize: 14, fontWeight: "600" },
-  activeBannerJoin: { fontSize: 14, fontWeight: "700" },
-
-  // List
-  list: { paddingHorizontal: 16, paddingBottom: 100 },
-  sectionTitle: { fontSize: 12, fontWeight: "600", letterSpacing: 0.5, marginBottom: 8, marginTop: 4 },
-
-  // Conference card
-  confCard: {
-    flexDirection: "row",
-    alignItems: "center",
-    borderRadius: 12,
-    borderWidth: 0.5,
-    padding: 14,
-    marginBottom: 8,
-  },
-  confCardLeft: { marginRight: 12 },
-  confIcon: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center" },
-  confCardCenter: { flex: 1 },
-  confNameRow: { flexDirection: "row", alignItems: "center", gap: 8 },
-  confName: { fontSize: 15, fontWeight: "600", flex: 1 },
-  liveBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    backgroundColor: "#34C75920",
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 8,
-  },
-  liveDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: "#34C759" },
-  liveText: { color: "#34C759", fontSize: 10, fontWeight: "700" },
-  confMeta: { fontSize: 13, marginTop: 2 },
-  recordBadge: { flexDirection: "row", alignItems: "center", gap: 4, marginTop: 4 },
-  recordDotSmall: { width: 6, height: 6, borderRadius: 3 },
-  confCardRight: { alignItems: "flex-end", gap: 6 },
-  confTime: { fontSize: 12 },
-  joinBtn: { paddingHorizontal: 14, paddingVertical: 6, borderRadius: 8 },
-  joinBtnText: { color: "#FFFFFF", fontSize: 13, fontWeight: "700" },
-
-  // Empty state
-  emptyState: { alignItems: "center", paddingTop: 60, gap: 8 },
-  emptyTitle: { fontSize: 18, fontWeight: "600" },
-  emptySubtext: { fontSize: 14, textAlign: "center", paddingHorizontal: 40 },
-
-  // Modal
-  modalOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0,0,0,0.5)",
-    justifyContent: "flex-end",
-  },
-  modal: {
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    padding: 20,
-    paddingBottom: Platform.OS === "ios" ? 40 : 24,
-  },
-  modalHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 16 },
-  modalTitle: { fontSize: 20, fontWeight: "700" },
-  inputLabel: { fontSize: 12, fontWeight: "600", letterSpacing: 0.5, marginBottom: 6, marginTop: 12 },
-  input: {
-    borderWidth: 1,
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontSize: 15,
-  },
-  toggleRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    paddingVertical: 10,
-    marginTop: 4,
-  },
-  toggleLabel: { fontSize: 15 },
-  createBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    borderRadius: 14,
-    paddingVertical: 14,
-    marginTop: 16,
-  },
-  createBtnText: { color: "#FFFFFF", fontSize: 16, fontWeight: "700" },
-});

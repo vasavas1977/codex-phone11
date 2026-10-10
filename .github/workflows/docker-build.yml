@@ -1,14 +1,6 @@
 name: Build & Push Docker Images
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'infra/docker/backend/**'
-      - 'server/**'
-      - 'app/**'
-      - 'package.json'
-      - 'pnpm-lock.yaml'
   workflow_dispatch:
     inputs:
       services:
@@ -17,7 +9,7 @@ on:
         default: 'backend'
 
 env:
-  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+  AWS_REGION: ${{ vars.AWS_REGION }}
 
 permissions:
   id-token: write
@@ -25,10 +17,13 @@ permissions:
 
 jobs:
   build-backend:
-    if: github.event_name == 'push' || github.event.inputs.services == 'backend' || github.event.inputs.services == 'all'
+    if: inputs.services == 'backend' || inputs.services == 'all'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Validate AWS region
+        run: test -n "$AWS_REGION" || { echo 'AWS_REGION variable is required'; exit 1; }
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -51,6 +46,5 @@ jobs:
           push: true
           tags: |
             ${{ steps.ecr.outputs.registry }}/cloudphone11/backend:${{ github.sha }}
-            ${{ steps.ecr.outputs.registry }}/cloudphone11/backend:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max

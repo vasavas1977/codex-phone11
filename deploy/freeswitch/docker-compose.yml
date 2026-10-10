@@ -36,6 +36,8 @@ services:
       - "16384-16484:16384-16484/udp"  # RTP media ports
     environment:
       SIP_DOMAIN: ${SIP_DOMAIN:-sip.yourcompany.com}
+      # Must match backend commissioning; leave off until the durable hook is proven.
+      PHONE11_VOICEMAIL_HOOK_READY: ${PHONE11_VOICEMAIL_HOOK_READY:-false}
       ESL_PASSWORD: ${ESL_PASSWORD:-ClueCon}
       BILLRUN_CDR_URL: ${BILLRUN_CDR_URL:-http://billrun-cdr:8082/cdr}
     volumes:

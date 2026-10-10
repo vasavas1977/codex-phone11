@@ -1,0 +1,216 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Platform, Pressable, Text, View } from "react-native";
+import { Image, type ImageSource } from "expo-image";
+import { getApiBaseUrl } from "@/constants/oauth";
+import { addAuthChangeListener, getAuthSnapshot, getSessionToken } from "@/lib/_core/auth";
+import { useColors } from "@/hooks/use-colors";
+import { useOpenProfileCard, validProfileCardTarget } from "./profile-card-context";
+
+const photoPath = /^\/api\/profile\/photo\/(\d+)\/(\d+)$/;
+const version = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export function profileInitials(name: string | null | undefined): string {
+  const initials = (name ?? "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part.slice(0, 1).toLocaleUpperCase())
+    .join("");
+  return initials || "P";
+}
+
+type VerifiedPhoto = { path: string; version: string };
+
+/** Only server-generated, tenant-bound relative descriptor paths may reach an image loader. */
+function verifiedPhoto(
+  photoUrl: string | null | undefined,
+  tenantId: number | null | undefined,
+  userId: number | null | undefined,
+  photoVersion: string | null | undefined,
+): VerifiedPhoto | null {
+  if (
+    typeof photoUrl !== "string" ||
+    !Number.isSafeInteger(tenantId) ||
+    !Number.isSafeInteger(userId) ||
+    (tenantId ?? 0) <= 0 ||
+    (userId ?? 0) <= 0 ||
+    !photoUrl.startsWith("/") ||
+    photoUrl.startsWith("//")
+  )
+    return null;
+  try {
+    const parsed = new URL(photoUrl, "https://phone11.invalid");
+    const match = photoPath.exec(parsed.pathname);
+    const descriptorVersion = parsed.searchParams.get("v");
+    if (
+      !match ||
+      Number(match[1]) !== tenantId ||
+      Number(match[2]) !== userId ||
+      !descriptorVersion ||
+      !version.test(descriptorVersion) ||
+      (photoVersion !== undefined && photoVersion !== null && photoVersion !== descriptorVersion)
+    )
+      return null;
+    return { path: `${parsed.pathname}?v=${encodeURIComponent(descriptorVersion)}`, version: descriptorVersion };
+  } catch {
+    return null;
+  }
+}
+
+function useAuthState() {
+  const [auth, setAuth] = useState(getAuthSnapshot);
+  useEffect(() => addAuthChangeListener(() => setAuth(getAuthSnapshot())), []);
+  return auth;
+}
+
+function useProfilePhotoSource({
+  photoUrl,
+  photoVersion,
+  tenantId,
+  userId,
+}: Pick<ProfileAvatarProps, "photoUrl" | "photoVersion" | "tenantId" | "userId">): ImageSource | null {
+  const auth = useAuthState();
+  const safePhoto = useMemo(
+    () => verifiedPhoto(photoUrl, tenantId, userId, photoVersion),
+    [photoUrl, photoVersion, tenantId, userId],
+  );
+  const [token, setToken] = useState<string | null | undefined>(() =>
+    Platform.OS === "web" ? null : undefined,
+  );
+  const owner = auth.user;
+
+  useEffect(() => {
+    let active = true;
+    setToken(undefined);
+    if (!safePhoto || !owner || auth.loading) return () => { active = false; };
+    if (Platform.OS === "web") {
+      setToken(null);
+      return () => { active = false; };
+    }
+    void getSessionToken()
+      .then((value) => {
+        if (active && getAuthSnapshot().user === owner) setToken(value);
+      })
+      .catch(() => {
+        if (active) setToken(null);
+      });
+    return () => { active = false; };
+  }, [auth.loading, owner, safePhoto]);
+
+  if (!safePhoto || !owner || auth.loading || (Platform.OS !== "web" && !token)) return null;
+  const base = getApiBaseUrl().replace(/\/$/, "");
+  return {
+    uri: `${base}${safePhoto.path}`,
+    ...(Platform.OS === "web" ? {} : { headers: { Authorization: `Bearer ${token}` } }),
+    // The descriptor is private and versioned. Keep source identity scoped even
+    // though rendered images intentionally do not persist in the image cache.
+    cacheKey: `profile-photo:${owner.id}:${tenantId}:${userId}:${safePhoto.version}`,
+  };
+}
+
+export type ProfileAvatarProps = {
+  name: string | null | undefined;
+  photoUrl?: string | null;
+  photoVersion?: string | null;
+  tenantId?: number | null;
+  userId?: number | null;
+  size: number;
+  rounded?: boolean;
+  accessibilityLabel?: string;
+  testID?: string;
+  /** Opt out when the image is already inside its own profile/photo editor. */
+  interactive?: boolean;
+};
+
+/** Tenant-scoped avatar with a privacy-safe authenticated image source and initials fallback. */
+export function ProfileAvatar(props: ProfileAvatarProps) {
+  const colors = useColors();
+  const openProfile = useOpenProfileCard();
+  const source = useProfilePhotoSource(props);
+  // A fresh request identity resets both success and failure immediately, even
+  // when an old image delivers its event after the descriptor has changed.
+  const photoRequest = useMemo(() => ({}), [source?.cacheKey]);
+  const activePhotoRequest = useRef(photoRequest);
+  activePhotoRequest.current = photoRequest;
+  const [photoResult, setPhotoResult] = useState<{
+    request: object;
+    status: "loaded" | "failed";
+  } | null>(null);
+  const failed = photoResult?.request === photoRequest && photoResult.status === "failed";
+  const displayName = props.name?.trim() || "Profile";
+  const radius = props.rounded ? Math.round(props.size * 0.3) : props.size / 2;
+  const hasPhoto = !!source && photoResult?.request === photoRequest && photoResult.status === "loaded";
+
+  const avatar = (
+    <View
+      testID={props.testID}
+      accessibilityLabel={props.accessibilityLabel ?? (hasPhoto ? `${displayName} profile photo` : `${displayName} initials`)}
+      style={{
+        width: props.size,
+        height: props.size,
+        borderRadius: radius,
+        overflow: "hidden",
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: colors.primary + "1F",
+      }}
+    >
+      {!hasPhoto && (
+        <Text style={{ color: colors.foreground, fontSize: Math.max(11, Math.round(props.size * 0.36)), fontWeight: "700" }}>
+          {profileInitials(props.name)}
+        </Text>
+      )}
+      {source && !failed && (
+        <Image
+          key={source.cacheKey}
+          source={source}
+          cachePolicy="none"
+          recyclingKey={source.cacheKey}
+          contentFit="cover"
+          onLoad={() => {
+            if (activePhotoRequest.current === photoRequest) setPhotoResult({ request: photoRequest, status: "loaded" });
+          }}
+          onError={() => {
+            if (activePhotoRequest.current === photoRequest) setPhotoResult({ request: photoRequest, status: "failed" });
+          }}
+          style={{ position: "absolute", width: props.size, height: props.size, borderRadius: radius, opacity: hasPhoto ? 1 : 0 }}
+        />
+      )}
+    </View>
+  );
+  if (props.interactive === false || !openProfile || !validProfileCardTarget(props.tenantId, props.userId)) return avatar;
+  return <Pressable accessibilityRole="button" accessibilityLabel={`View ${displayName} profile`}
+    accessibilityHint="Opens profile information" hitSlop={Math.max(0, (44 - props.size) / 2)}
+    onPress={(event) => {
+      event.stopPropagation();
+      openProfile({ tenantId: props.tenantId!, userId: props.userId!, name: props.name,
+        photoUrl: props.photoUrl, photoVersion: props.photoVersion });
+    }}>
+    {avatar}
+  </Pressable>;
+}
+
+/** Remove all cached protected photos when the account changes. */
+let lastOwnerId = getAuthSnapshot().user?.id ?? null;
+addAuthChangeListener(() => {
+  const nextOwnerId = getAuthSnapshot().user?.id ?? null;
+  if (nextOwnerId === lastOwnerId) return;
+  lastOwnerId = nextOwnerId;
+  void Promise.allSettled([Image.clearMemoryCache(), Image.clearDiskCache()]);
+});
+
+/** A screen calls this with its active workspace so switching workspaces drops private image cache. */
+export function useProfilePhotoCacheScope(tenantId: number | null | undefined) {
+  const auth = useAuthState();
+  const scope = auth.user && Number.isSafeInteger(tenantId) && (tenantId ?? 0) > 0
+    ? `${auth.user.id}:${tenantId}`
+    : null;
+  const [previous, setPrevious] = useState(scope);
+  useEffect(() => {
+    if (previous !== scope) {
+      setPrevious(scope);
+      void Promise.allSettled([Image.clearMemoryCache(), Image.clearDiskCache()]);
+    }
+  }, [previous, scope]);
+}

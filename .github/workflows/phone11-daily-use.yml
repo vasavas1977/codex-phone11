@@ -1,0 +1,1200 @@
+name: Phone11 daily-use checks
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "app.config.ts"
+      - "plugins/**"
+      - "infra/configs/kamailio/phone11-wake-candidate/**"
+      - "infra/configs/kamailio/phone11-recording-anchor-candidate/**"
+      - "infra/configs/freeswitch/phone11-recording-anchor-candidate/**"
+      - "infra/configs/kamailio/phone11-outbound-recording-candidate/**"
+      - "infra/configs/freeswitch/dialplan/public/02_kamailio_outbound.xml"
+      - "infra/configs/freeswitch/**"
+      - "infra/docker/freeswitch/**"
+      - "infra/compose/docker-compose.*.yml"
+      - "deploy/freeswitch/**"
+      - "ops/scripts/check-phone11-wake-kamailio.mjs"
+      - "ops/scripts/test-phone11-wake-kamailio.mjs"
+      - "app/**"
+      - "components/**"
+      - "hooks/**"
+      - "lib/**"
+      - "modules/**"
+      - "server/**"
+      - "desktop/**"
+      - "tests/**"
+      - "scripts/phone11-voicemail-helper-preflight.ts"
+      - "scripts/phone11-voicemail-producer.ts"
+      - "scripts/phone11-voicemail-relay.ts"
+      - "scripts/phone11-voicemail-runner.sh"
+      - "scripts/phone11-voicemail-bundle*.ts"
+      - "scripts/phone11-pbx-*.ts"
+      - "scripts/phone11-pbx-clone/**"
+      - "scripts/generate-phone11-native-license.py"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "patches/**"
+      - "vitest.config.ts"
+      - ".github/workflows/phone11-daily-use.yml"
+      - ".github/workflows/phone11-siprix-ios-build.yml"
+  push:
+    branches: [codex/phone11-daily-use-20260910]
+    paths:
+      - "app.config.ts"
+      - "plugins/**"
+      - "infra/configs/kamailio/phone11-wake-candidate/**"
+      - "infra/configs/kamailio/phone11-recording-anchor-candidate/**"
+      - "infra/configs/freeswitch/phone11-recording-anchor-candidate/**"
+      - "infra/configs/kamailio/phone11-outbound-recording-candidate/**"
+      - "infra/configs/freeswitch/dialplan/public/02_kamailio_outbound.xml"
+      - "infra/configs/freeswitch/**"
+      - "infra/docker/freeswitch/**"
+      - "infra/compose/docker-compose.*.yml"
+      - "deploy/freeswitch/**"
+      - "ops/scripts/check-phone11-wake-kamailio.mjs"
+      - "ops/scripts/test-phone11-wake-kamailio.mjs"
+      - "app/**"
+      - "components/**"
+      - "hooks/**"
+      - "lib/**"
+      - "modules/**"
+      - "server/**"
+      - "desktop/**"
+      - "tests/**"
+      - "scripts/phone11-voicemail-helper-preflight.ts"
+      - "scripts/phone11-voicemail-producer.ts"
+      - "scripts/phone11-voicemail-relay.ts"
+      - "scripts/phone11-voicemail-runner.sh"
+      - "scripts/phone11-voicemail-bundle*.ts"
+      - "scripts/phone11-pbx-*.ts"
+      - "scripts/phone11-pbx-clone/**"
+      - "scripts/generate-phone11-native-license.py"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "patches/**"
+      - "vitest.config.ts"
+      - ".github/workflows/phone11-daily-use.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  app-and-service-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Check private native license inputs with synthetic values
+        run: python3 tests/phone11-native-license-input.test.py
+      - name: Enable pinned package manager
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+      - name: Install locked source dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Require maintained braces patch through actual installed consumers
+        shell: bash
+        run: |
+          test "$(pnpm --version)" = "9.12.0"
+          test -f patches/braces@3.0.3.patch
+          test -f tests/phone11-braces-depth-mitigation.test.mjs
+          PHONE11_BRACES_REQUIRE_INSTALLED_PATCH=1 node --test tests/phone11-braces-depth-mitigation.test.mjs | tee "$RUNNER_TEMP/phone11-braces-mitigation.tap"
+          python3 - <<'PYBRACES'
+          import os, re
+          from pathlib import Path
+          tap = (Path(os.environ['RUNNER_TEMP']) / 'phone11-braces-mitigation.tap').read_text()
+          def total(label):
+              values = re.findall(r'^# ' + label + r' (\d+)$', tap, re.MULTILINE)
+              assert len(values) == 1, f'Missing or ambiguous TAP {label}'
+              return int(values[0])
+          count = total('tests')
+          assert count > 0 and total('pass') == count
+          assert not re.search(r'^not ok(?:\s|$)', tap, re.MULTILINE), 'TAP contains a failed case'
+          assert all(total(label) == 0 for label in ('fail', 'cancelled', 'skipped', 'todo'))
+          installed = re.findall(r'^ok \d+ - actual installed micromatch/chokidar resolutions contain this exact maintained patch$', tap, re.MULTILINE)
+          assert len(installed) == 1, 'Required installed-consumer case must execute exactly once'
+          print(f'Installed braces consumer regressions: {count} passed, zero skips')
+          PYBRACES
+      - name: Test phone readiness, actual call entry, controls, and directory
+        run: |
+          pnpm exec vitest run \
+            tests/phone11-registration-lifecycle.test.ts \
+            tests/phone11-call-entry.test.tsx \
+            tests/phone11-active-controls.test.tsx \
+            tests/phone11-incoming-controls.test.tsx \
+            tests/phone11-in-app-answer.test.tsx \
+            tests/phone11-current-call-banner.test.tsx \
+            tests/phone11-active-call-navigation.test.tsx \
+            tests/phone11-active-call-recording.test.tsx \
+            tests/phone11-diagnostics-persistence.test.ts \
+            tests/phone11-recents-ui.test.tsx \
+            tests/phone11-call-actions.test.tsx \
+            tests/phone11-call-action-state.test.ts \
+            tests/phone11-hidden-calls.test.tsx \
+            tests/phone11-call-history.test.ts \
+            tests/phone11-phone-number.test.ts \
+            tests/device-contacts.test.ts \
+            tests/device-contacts-hook.test.ts \
+            tests/phone11-directory.test.ts \
+            tests/phone11-directory-ui.test.tsx
+      - name: Require fresh PBX read authority after cache invalidation races
+        run: |
+          test -f tests/phone11-pbx-admin-read-revocation.test.ts
+          pnpm exec vitest run tests/phone11-pbx-admin-read-revocation.test.ts --reporter=json --outputFile=/tmp/phone11-pbx-read-authority.json
+          python3 - <<'PYREAD'
+          import json
+          from pathlib import Path
+          report = json.loads(Path('/tmp/phone11-pbx-read-authority.json').read_text())
+          matches = [suite for suite in report['testResults'] if Path(suite['name']).resolve() == Path('tests/phone11-pbx-admin-read-revocation.test.ts').resolve()]
+          assert len(matches) == 1 and matches[0]['assertionResults'], 'Required PBX read-authority suite must run'
+          assert all(case['status'] == 'passed' for case in matches[0]['assertionResults']), 'PBX read-authority cases must pass without skips'
+          PYREAD
+      - name: Require selected-workspace DID editor and capability regressions
+        run: |
+          test -f tests/phone11-did-workspace-editor.test.tsx
+          pnpm exec vitest run \
+            tests/phone11-did-workspace-editor.test.tsx \
+            tests/phone11-admin-workspace-admission.test.tsx \
+            tests/phone11-pbx-admin-read-revocation.test.ts \
+            --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/phone11-did-workspace-results.json"
+          python3 - <<'PYDIDWORKSPACE'
+          import json, os
+          from pathlib import Path
+          report = json.loads((Path(os.environ['RUNNER_TEMP']) / 'phone11-did-workspace-results.json').read_text())
+          required = ['tests/phone11-did-workspace-editor.test.tsx', 'tests/phone11-admin-workspace-admission.test.tsx', 'tests/phone11-pbx-admin-read-revocation.test.ts']
+          assert report.get('success') is True, 'Selected-workspace DID source checks must succeed'
+          for name in required:
+              matches = [suite for suite in report['testResults'] if Path(suite['name']).resolve() == Path(name).resolve()]
+              assert len(matches) == 1 and matches[0]['assertionResults'], 'Required DID workspace suite must run exactly once'
+              assert all(case['status'] == 'passed' for case in matches[0]['assertionResults']), 'DID workspace cases must pass without skips'
+          PYDIDWORKSPACE
+      - name: Require offline PBX clone adapter, import audit and selected entry regressions
+        run: |
+          test -f scripts/phone11-pbx-clone/real-pg-adapter.ts
+          test -f scripts/phone11-pbx-clone/audit-handler-imports.ts
+          test -f scripts/phone11-pbx-clone/selected-handler-entry.ts
+          test -f tests/phone11-pbx-clone-real-pg-adapter.test.ts
+          test -f tests/phone11-pbx-clone-import-audit.test.ts
+          test -f tests/phone11-pbx-clone-selected-handler-entry.test.ts
+          pnpm exec vitest run \
+            tests/phone11-pbx-clone-real-pg-adapter.test.ts \
+            tests/phone11-pbx-clone-import-audit.test.ts \
+            tests/phone11-pbx-clone-selected-handler-entry.test.ts \
+            --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/phone11-pbx-clone-source-results.json"
+          python3 - <<'PYCLONE'
+          import json, os
+          from pathlib import Path
+          report = json.loads((Path(os.environ['RUNNER_TEMP']) / 'phone11-pbx-clone-source-results.json').read_text())
+          required = ['tests/phone11-pbx-clone-real-pg-adapter.test.ts', 'tests/phone11-pbx-clone-import-audit.test.ts', 'tests/phone11-pbx-clone-selected-handler-entry.test.ts']
+          assert report.get('success') is True, 'Offline PBX clone source checks must succeed'
+          for name in required:
+              matches = [suite for suite in report['testResults'] if Path(suite['name']).resolve() == Path(name).resolve()]
+              assert len(matches) == 1 and matches[0]['assertionResults'], 'Required offline PBX clone suite must run exactly once'
+              assert all(case['status'] == 'passed' for case in matches[0]['assertionResults']), 'Offline PBX clone cases must pass without skips'
+          print('Offline PBX clone adapter, import audit and selected entry suites passed without skips; runtime execution remains unadmitted')
+          PYCLONE
+      - name: Require explicit-workspace IVR navigation and deletion regressions
+        run: |
+          for suite in tests/phone11-admin-home-navigation.test.tsx tests/phone11-admin-shell.test.tsx tests/phone11-ivr-admin-ui.test.ts tests/phone11-admin-delete-confirmation.test.tsx; do
+            test -f "$suite" || { echo "Required suite missing: $suite" >&2; exit 1; }
+          done
+          pnpm exec vitest run \
+            tests/phone11-admin-home-navigation.test.tsx \
+            tests/phone11-admin-shell.test.tsx \
+            tests/phone11-ivr-admin-ui.test.ts \
+            tests/phone11-admin-delete-confirmation.test.tsx \
+            --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/phone11-ivr-navigation-results.json"
+          python3 - <<'PYIVR'
+          import json, os
+          from pathlib import Path
+          report = json.loads((Path(os.environ['RUNNER_TEMP']) / 'phone11-ivr-navigation-results.json').read_text())
+          required = ['tests/phone11-admin-home-navigation.test.tsx', 'tests/phone11-admin-shell.test.tsx', 'tests/phone11-ivr-admin-ui.test.ts', 'tests/phone11-admin-delete-confirmation.test.tsx']
+          for name in required:
+              matches = [suite for suite in report['testResults'] if Path(suite['name']).resolve() == Path(name).resolve()]
+              assert len(matches) == 1 and matches[0]['assertionResults'], 'Required IVR suite must run'
+              assert all(case['status'] == 'passed' for case in matches[0]['assertionResults']), 'IVR cases must pass without skips'
+          print('Explicit-workspace IVR navigation and deletion suites passed without skips')
+          PYIVR
+      - name: Require isolated Android progress descriptor regressions
+        run: |
+          test -f tests/phone11-android-progress-diagnostics.test.mjs
+          node --test --test-reporter=tap tests/phone11-android-progress-diagnostics.test.mjs | tee "$RUNNER_TEMP/phone11-android-progress.tap"
+          python3 - <<'PYPROGRESS'
+          import os, re
+          from pathlib import Path
+          tap = (Path(os.environ['RUNNER_TEMP']) / 'phone11-android-progress.tap').read_text()
+          def total(label):
+              matches = re.findall(r'^# ' + label + r' (\d+)$', tap, re.MULTILINE)
+              assert len(matches) == 1, 'Required Android progress totals missing'
+              return int(matches[0])
+          count = total('tests')
+          assert count > 0 and total('pass') == count, 'Android progress suite must execute and pass'
+          assert all(total(label) == 0 for label in ('fail', 'cancelled', 'skipped', 'todo')), 'Android progress suite must not skip cases'
+          print(f'Isolated Android progress descriptor regressions: {count} passed, zero skips')
+          PYPROGRESS
+      - name: Test media, push, PBX authorization, and durable chat state
+        run: |
+          for suite in \
+            tests/phone11-admin-member-confirmation.test.tsx \
+            tests/phone11-admin-invitations-lifecycle.test.tsx \
+            tests/phone11-admin-members-ui.test.ts \
+            lib/meetings/prejoin-owner-session.test.tsx \
+            tests/phone11-conference-auth-race.test.tsx \
+            lib/meetings/media-ownership.test.ts \
+            lib/meetings/route-exit.test.ts \
+            tests/phone11-voicemail-readiness.test.ts \
+            tests/phone11-voicemail-producer-durability.test.ts \
+            tests/phone11-voicemail-relay.test.ts \
+            tests/phone11-transfer-lifecycle.test.tsx \
+            tests/phone11-voicemail-callback.test.tsx \
+            server/meetings/meeting-host-removal-router.test.ts \
+            server/meetings/meeting-host-removal-lifetime.test.ts \
+            server/meetings/meeting-host-control-snapshot.test.ts \
+            lib/meetings/member-removal.test.ts \
+            lib/meetings/member-removal-panel.test.tsx; do
+            test -f "$suite" || { echo "Required suite missing: $suite" >&2; exit 1; }
+          done
+          pnpm exec vitest run \
+            tests/phone11-media-security.test.ts \
+            tests/phone11-recording-gemini.test.ts \
+            tests/phone11-recording-worker.test.ts \
+            tests/phone11-recording-capture.test.ts \
+            tests/phone11-recording-esl.test.ts \
+            tests/phone11-recording-spool.test.ts \
+            tests/phone11-recording-ledger.test.ts \
+            tests/phone11-recording-service.test.ts \
+            tests/phone11-recording-channel-dump.test.ts \
+            tests/phone11-recording-correlation.test.ts \
+            tests/phone11-cloud-playback.test.ts \
+            tests/phone11-cloud-playback-focus.test.tsx \
+            tests/phone11-playback-controls.test.tsx \
+            tests/phone11-playback-output-picker.test.tsx \
+            tests/phone11-playback-output-picker-native.test.tsx \
+            tests/phone11-playback-controller.test.ts \
+            tests/phone11-playback-route.test.ts \
+            tests/phone11-summary-actions.test.ts \
+            tests/phone11-summary-actions-ui.test.tsx \
+            tests/phone11-summary-tools-auth.test.ts \
+            tests/phone11-summary-translation.test.ts \
+            tests/phone11-recording-personal-metadata.test.ts \
+            tests/phone11-recording-speaker-names.test.ts \
+            tests/phone11-speaker-names-editor.test.tsx \
+            tests/phone11-cloud-polling.test.ts \
+            tests/phone11-cloud-recording-ui.test.tsx \
+            tests/phone11-cloud-recording-auth.test.ts \
+            tests/phone11-storage-proxy.test.ts \
+            tests/phone11-push-security.test.ts \
+            tests/phone11-push-session.test.ts \
+            tests/phone11-voip-token.test.ts \
+            tests/phone11-voip-client.test.ts \
+            tests/phone11-apns.test.ts \
+            tests/phone11-push-delivery.test.ts \
+            tests/phone11-pbx-integration-security.test.ts \
+            tests/phone11-chat-state.test.ts \
+            tests/phone11-chat-controls.test.tsx \
+            tests/phone11-chat-mentions.test.ts \
+            tests/phone11-chat-mention-picker.test.tsx \
+            tests/phone11-chat-all-mentions.test.ts \
+            tests/phone11-profile-menu.test.tsx \
+            tests/phone11-profile-scope.test.tsx \
+            tests/phone11-admin-member-confirmation.test.tsx \
+            tests/phone11-admin-invitations-lifecycle.test.tsx \
+            tests/phone11-admin-members-ui.test.ts \
+            server/profile/service.test.ts \
+            lib/meetings/native-session.test.ts \
+            lib/meetings/room-construction-diagnostic.test.ts \
+            lib/meetings/browser-session.test.ts \
+            lib/meetings/prejoin-owner-session.test.tsx \
+            tests/phone11-conference-auth-race.test.tsx \
+            lib/meetings/media-ownership.test.ts \
+            lib/meetings/route-exit.test.ts \
+            tests/phone11-meeting-prejoin.test.tsx \
+            tests/phone11-graceful-shutdown.test.ts \
+            tests/phone11-chat-persistence.test.ts \
+            tests/phone11-chat-scope-ui.test.tsx \
+            tests/phone11-chat-transport.test.ts \
+            tests/phone11-chat-owner.test.ts \
+            tests/phone11-rich-presence.test.tsx \
+            tests/phone11-chat-typing.test.ts \
+            tests/phone11-chat-read-receipts.test.ts \
+            tests/phone11-chat-read-receipt-sheet.test.tsx \
+            tests/phone11-runtime-role.test.ts \
+            tests/phone11-api-candidate-startup.test.ts \
+            tests/phone11-chat-foreground.test.ts \
+            tests/phone11-legacy-unavailable.test.tsx \
+            tests/phone11-chat-notification-client.test.ts \
+            tests/phone11-enrollment-recovery.test.ts \
+            tests/phone11-chat-notification-component.test.ts \
+            tests/phone11-chat-notification-prompt.test.tsx \
+            tests/phone11-chat-notification-server.test.ts \
+            tests/phone11-chat-notification-settings.test.tsx \
+            tests/phone11-chat-notification-apns.test.ts \
+            tests/phone11-wake-client.test.ts \
+            tests/phone11-wake-refresh.test.ts \
+            tests/phone11-voip-enrollment-lifecycle.test.ts \
+            tests/phone11-wake-service.test.ts \
+            tests/phone11-wake-routes.test.ts
+          node --test tests/phone11-wake-plugin.test.mjs tests/phone11-wake-kamailio.test.mjs
+      - name: Test descriptor-pinned recording and voicemail playback
+        run: |
+          pnpm exec vitest run \
+            tests/phone11-media-security.test.ts \
+            tests/phone11-voicemail-storage.test.ts \
+            --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/phone11-playback-results.json"
+      - name: Test transfer and voicemail consumer lifecycle
+        run: |
+          pnpm exec vitest run \
+            tests/phone11-siprix-engine.test.ts \
+            tests/phone11-active-call-navigation.test.tsx \
+            tests/phone11-current-call-banner.test.tsx \
+            tests/phone11-transfer-lifecycle.test.tsx \
+            tests/phone11-transfer-screen.test.tsx \
+            tests/phone11-voicemail-callback.test.tsx \
+            --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/phone11-transfer-results.json"
+      # Host removal remains default-off. This job exercises the
+      # source contract only; the separate PG17 job exercises durable authority.
+      - name: Test host removal authority service and provider receipt contract
+        run: |
+          pnpm exec vitest run \
+            server/meetings/meeting-host-removal-router.test.ts \
+            server/meetings/meeting-host-removal-lifetime.test.ts \
+            server/meetings/meeting-host-control-snapshot.test.ts \
+            lib/meetings/member-removal.test.ts \
+            lib/meetings/member-removal-panel.test.tsx \
+            server/meetings/meeting-host-eviction-service.test.ts \
+            server/meetings/meeting-host-eviction-transport.test.ts \
+            server/meetings/plain-video-eviction-service.test.ts \
+            server/meetings/plain-video-eviction-repository.test.ts \
+            server/meetings/connect11-plain-video-facade.test.ts
+      - name: Test guarded voicemail routing and durable producer lifecycle
+        run: |
+          test -f tests/phone11-voicemail-bundle.test.ts
+          pnpm exec vitest run \
+            tests/phone11-voicemail-dialplan.test.ts \
+            tests/phone11-voicemail-dialplan-route.test.ts \
+            tests/phone11-voicemail-fallbacks.test.ts \
+            tests/phone11-voicemail-static-routing.test.ts \
+            tests/phone11-voicemail-helper-preflight.test.ts \
+            tests/phone11-ring-group-dialplan.test.ts \
+            tests/phone11-queue-dialplan.test.ts \
+            tests/phone11-voicemail-durability.test.ts \
+            tests/phone11-voicemail-readiness.test.ts \
+            tests/phone11-voicemail-producer.test.ts \
+            tests/phone11-voicemail-producer-durability.test.ts \
+            tests/phone11-voicemail-relay.test.ts \
+            tests/phone11-voicemail-lifecycle-rehearsal.test.ts \
+            tests/phone11-voicemail-bundle.test.ts \
+            --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/phone11-voicemail-results.json"
+      - name: Test browser sharing and Android Answer media recovery
+        run: |
+          for suite in lib/meetings/browser-screen-share.test.ts lib/meetings/web-session.test.ts lib/meetings/browser-session.test.ts lib/meetings/native-session-registry.test.ts lib/meetings/native-session.test.ts tests/phone11-web-meeting-auth-lifetime.test.ts tests/phone11-meeting-screen-share-ui.test.tsx tests/phone11-android-call-permission.test.ts tests/phone11-android-answer-media.test.ts tests/phone11-android-screen-plugin.test.ts tests/phone11-android-screen-transaction.test.ts; do
+            test -f "$suite" || { echo "Required suite missing: $suite" >&2; exit 1; }
+          done
+          pnpm exec vitest run \
+            lib/meetings/browser-screen-share.test.ts \
+            lib/meetings/web-session.test.ts \
+            lib/meetings/browser-session.test.ts \
+            lib/meetings/native-session-registry.test.ts \
+            lib/meetings/native-session.test.ts \
+            tests/phone11-web-meeting-auth-lifetime.test.ts \
+            tests/phone11-meeting-screen-share-ui.test.tsx \
+            tests/phone11-android-call-permission.test.ts \
+            tests/phone11-android-answer-media.test.ts \
+            tests/phone11-android-screen-plugin.test.ts \
+            tests/phone11-android-screen-transaction.test.ts \
+            --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/phone11-interactive-media-results.json"
+      - name: Execute installed Android screen custody and manifest regressions
+        shell: bash
+        run: |
+          test -f tests/phone11-android-screen-native.test.mjs
+          test -f tests/phone11-android-screen-manifest.test.mjs
+          PHONE11_ANDROID_SCREEN_REQUIRE_INSTALLED_PATCH=1 node --test tests/phone11-android-screen-native.test.mjs tests/phone11-android-screen-manifest.test.mjs | tee "$RUNNER_TEMP/phone11-screen-native.tap"
+          python3 - <<'PYSCREEN'
+          import os, re
+          from pathlib import Path
+          tap = (Path(os.environ['RUNNER_TEMP']) / 'phone11-screen-native.tap').read_text()
+          def total(label):
+              values = re.findall(r'^# ' + label + r' (\d+)$', tap, re.MULTILINE)
+              assert len(values) == 1, f'Missing or duplicate TAP summary: {label}'
+              return int(values[0])
+          count = total('tests')
+          assert count > 0 and total('pass') == count
+          assert not re.search(r'^not ok(?:\s|$)', tap, re.MULTILINE), 'TAP contains a failed case'
+          assert all(total(label) == 0 for label in ('fail', 'cancelled', 'skipped', 'todo'))
+          for label in (
+              'actual patched native custody core executes nine cancellation/ACK/failure/retry scenarios',
+              'OFF permits the existing unrelated released projection service',
+              'ON accepts exactly one private video-only service and literal gate',
+          ):
+              required = re.findall(r'^ok \d+ - ' + re.escape(label) + r'$', tap, re.MULTILINE)
+              assert len(required) == 1, f'Required native/manifest case must execute exactly once: {label}'
+          print(f'Installed Android screen custody: {count} cases passed, zero skips')
+          PYSCREEN
+      - name: Test meeting hosting, presence, calendar availability and voicemail ownership
+        run: |
+          for suite in tests/phone11-meet-action.test.tsx tests/phone11-admin-voicemail-confirmation.test.tsx tests/phone11-admin-meeting-host-actions.test.tsx tests/phone11-admin-extension-pagination.test.tsx tests/phone11-presence-poll-lifetime.test.ts tests/phone11-calendar-today-ui.test.tsx; do
+            test -f "$suite" || { echo "Required suite missing: $suite" >&2; exit 1; }
+          done
+          pnpm exec vitest run \
+            tests/phone11-meet-action.test.tsx \
+            tests/phone11-admin-voicemail-confirmation.test.tsx \
+            tests/phone11-admin-meeting-host-actions.test.tsx \
+            tests/phone11-admin-extension-pagination.test.tsx \
+            tests/phone11-presence-poll-lifetime.test.ts \
+            tests/phone11-calendar-today-ui.test.tsx \
+            --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/phone11-setup-confirmation-results.json"
+      - name: Require executed completion regressions with zero skips
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          required = {
+              "phone11-playback-results.json": ["tests/phone11-media-security.test.ts", "tests/phone11-voicemail-storage.test.ts"],
+              "phone11-setup-confirmation-results.json": ["tests/phone11-meet-action.test.tsx", "tests/phone11-admin-voicemail-confirmation.test.tsx", "tests/phone11-admin-meeting-host-actions.test.tsx", "tests/phone11-admin-extension-pagination.test.tsx", "tests/phone11-presence-poll-lifetime.test.ts", "tests/phone11-calendar-today-ui.test.tsx"],
+              "phone11-transfer-results.json": ["tests/phone11-siprix-engine.test.ts", "tests/phone11-active-call-navigation.test.tsx", "tests/phone11-current-call-banner.test.tsx", "tests/phone11-transfer-lifecycle.test.tsx", "tests/phone11-transfer-screen.test.tsx", "tests/phone11-voicemail-callback.test.tsx"],
+              "phone11-voicemail-results.json": ["tests/phone11-voicemail-producer-durability.test.ts", "tests/phone11-voicemail-producer.test.ts", "tests/phone11-voicemail-relay.test.ts", "tests/phone11-voicemail-lifecycle-rehearsal.test.ts", "tests/phone11-voicemail-helper-preflight.test.ts", "tests/phone11-voicemail-bundle.test.ts"],
+              "phone11-interactive-media-results.json": ["lib/meetings/browser-screen-share.test.ts", "lib/meetings/web-session.test.ts", "lib/meetings/browser-session.test.ts", "lib/meetings/native-session-registry.test.ts", "lib/meetings/native-session.test.ts", "tests/phone11-web-meeting-auth-lifetime.test.ts", "tests/phone11-meeting-screen-share-ui.test.tsx", "tests/phone11-android-call-permission.test.ts", "tests/phone11-android-answer-media.test.ts", "tests/phone11-android-screen-plugin.test.ts", "tests/phone11-android-screen-transaction.test.ts"],
+          }
+          for report_name, suites in required.items():
+              report = json.loads((Path(os.environ["RUNNER_TEMP"]) / report_name).read_text())
+              assert report["success"] is True, report_name
+              for suite in suites:
+                  matches = [result for result in report["testResults"] if Path(result["name"]).resolve() == Path(suite).resolve()]
+                  assert len(matches) == 1, f"Required suite missing or duplicated: {suite}"
+                  assertions = matches[0]["assertionResults"]
+                  assert assertions and all(case["status"] == "passed" for case in assertions), f"Required suite has unexecuted or failed cases: {suite}"
+                  print(f"{suite}: {len(assertions)} passed, zero skips")
+          PY
+      - name: Install Lua source test runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends lua5.4
+      - name: Test voicemail admission mode agreement and legacy route guards
+        run: |
+          lua5.4 tests/phone11-voicemail-hook.lua
+          lua5.4 tests/phone11-legacy-voicemail-hook.lua
+          lua5.4 tests/phone11-did-voicemail-hook.lua
+      - name: Parse disabled and enabled wake candidates with exact Kamailio version
+        run: node ops/scripts/check-phone11-wake-kamailio.mjs --image ghcr.io/kamailio/kamailio-ci@sha256:8eebac744905d360d04bd871ee46a3de0908aa30989649c00fd590914cb35fa0
+      - name: Test held INVITE, cancellation and timeout with isolated SIP endpoints
+        run: node ops/scripts/test-phone11-wake-kamailio.mjs
+      - name: Test isolated recording anchor routing and FreeSWITCH guards
+        run: |
+          docker build -t phone11-recording-anchor-test tests/fixtures/phone11-recording-anchor
+          docker run --rm --network none -v "$PWD:/work:ro" phone11-recording-anchor-test \
+            python3 tests/fixtures/phone11-recording-anchor/run.py
+          docker run --rm --network none -v "$PWD:/work:ro" phone11-recording-anchor-test \
+            python3 tests/fixtures/phone11-recording-anchor/xml-check.py
+          docker run --rm --network none -v "$PWD:/work:ro" phone11-recording-anchor-test \
+            python3 tests/fixtures/phone11-outbound-recording/run.py
+      - name: Verify outgoing recording metadata with actual FreeSWITCH and isolated SIP endpoints
+        run: |
+          docker pull safarov/freeswitch@sha256:b31c743f4c911a19687c61e3214968f2a24f93f9d3d667cc26284192e158ffc6
+          sudo env PHONE11_FREESWITCH_IMAGE=safarov/freeswitch@sha256:b31c743f4c911a19687c61e3214968f2a24f93f9d3d667cc26284192e158ffc6 \
+            bash tests/fixtures/phone11-outbound-recording-fs/run.sh
+      - name: Compile backend with esbuild
+        run: pnpm run build:backend
+      # Source tests and cross-platform JS compilation only. Native helper and
+      # signed distribution acceptance remain separate macOS/Windows gates.
+      - name: Test and compile the isolated desktop app
+        run: |
+          ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm --prefix desktop/app ci --no-audit --no-fund
+          node --import tsx --test desktop/tests/*.node.ts
+          npm --prefix desktop/app test
+          npm --prefix desktop/app run typecheck
+          pnpm exec tsc --noEmit --pretty false
+          PHONE11_BUILD_PLATFORM=darwin npm --prefix desktop/app run build
+
+      - name: Require desktop owned-voicemail deletion regressions without skips
+        shell: bash
+        run: |
+          test -f desktop/tests/voicemail-delete.node.ts
+          test -f desktop/app/test/voicemail-deletion.test.ts
+          test -f desktop/app/test/voicemail-delete-ipc.test.ts
+          test -f desktop/app/test/renderer-voicemail-delete.test.ts
+          node --import tsx --test --test-reporter=tap desktop/tests/voicemail-delete.node.ts | tee "$RUNNER_TEMP/phone11-desktop-voicemail-provider.tap"
+          (cd desktop/app && node --import tsx --test --test-reporter=tap test/voicemail-deletion.test.ts) | tee "$RUNNER_TEMP/phone11-desktop-voicemail-retirement.tap"
+          (cd desktop/app && node --import tsx --test --test-reporter=tap test/voicemail-delete-ipc.test.ts) | tee "$RUNNER_TEMP/phone11-desktop-voicemail-ipc.tap"
+          (cd desktop/app && node --import tsx --test --test-reporter=tap test/renderer-voicemail-delete.test.ts) | tee "$RUNNER_TEMP/phone11-desktop-voicemail-renderer.tap"
+          python3 - <<'PYDESKTOPDELETE'
+          import os, re
+          from pathlib import Path
+          for filename in ('phone11-desktop-voicemail-provider.tap', 'phone11-desktop-voicemail-retirement.tap', 'phone11-desktop-voicemail-ipc.tap', 'phone11-desktop-voicemail-renderer.tap'):
+              tap = (Path(os.environ['RUNNER_TEMP']) / filename).read_text()
+              counts = {}
+              for name in ('tests', 'pass', 'fail', 'cancelled', 'skipped', 'todo'):
+                  values = re.findall(r'^# ' + name + r' (\d+)$', tap, re.M)
+                  assert len(values) == 1, f'Missing or duplicate TAP summary: {filename} {name}'
+                  counts[name] = int(values[0])
+              assert counts['tests'] > 0 and counts['pass'] == counts['tests'], counts
+              assert all(counts[name] == 0 for name in ('fail', 'cancelled', 'skipped', 'todo')), counts
+              assert not re.search(r'^not ok(?: |$)', tap, re.M), 'Failed desktop voicemail deletion case'
+          PYDESKTOPDELETE
+
+      - name: Require desktop helper provenance regressions without skips
+        shell: bash
+        run: |
+          test -f desktop/app/test/helper-source-receipt.test.ts
+          (cd desktop/app && node --import tsx --test --test-reporter=tap test/helper-source-receipt.test.ts) | tee "$RUNNER_TEMP/phone11-helper-provenance.tap"
+          python3 - <<'PYPROVENANCE'
+          import os, re
+          from pathlib import Path
+          tap = (Path(os.environ["RUNNER_TEMP"]) / "phone11-helper-provenance.tap").read_text()
+          counts = {}
+          for name in ("tests", "pass", "fail", "cancelled", "skipped", "todo"):
+              values = re.findall(r"^# " + name + r" (\d+)$", tap, re.M)
+              assert len(values) == 1, f"Missing or duplicate TAP summary: {name}"
+              counts[name] = int(values[0])
+          assert counts["tests"] > 0 and counts["pass"] == counts["tests"], counts
+          assert all(counts[name] == 0 for name in ("fail", "cancelled", "skipped", "todo")), counts
+          assert not re.search(r"^not ok(?: |$)", tap, re.M), "Failed provenance case"
+          print(f"Helper provenance: {counts['pass']} passed, zero skips")
+          PYPROVENANCE
+
+  routing-authority-postgres-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17-bookworm
+        env:
+          POSTGRES_USER: p11_routing_auth_fixture
+          POSTGRES_PASSWORD: p11-routing-fixture-ci-only
+          POSTGRES_DB: phone11_routing_auth_test
+        ports:
+          - "127.0.0.1:55443:5432"
+        options: >-
+          --health-cmd "pg_isready -U p11_routing_auth_fixture -d phone11_routing_auth_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Synthetic dedicated job service. No deployment URL or ambient PG fallback.
+      PHONE11_ROUTING_AUTH_REQUIRE_POSTGRES: "1"
+      PHONE11_ROUTING_AUTH_TEST_DATABASE_URL: postgres://p11_routing_auth_runtime:p11-routing-runtime-ci-only@127.0.0.1:55443/phone11_routing_auth_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Enable pinned package manager
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+      - name: Install locked source dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Admit and initialize only the disposable routing authority service
+        env:
+          PG_CONTAINER_ID: ${{ job.services.postgres.id }}
+        run: |
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import { execFileSync } from 'node:child_process';
+          import { readFileSync } from 'node:fs';
+          import pg from 'pg';
+          const id = process.env.PG_CONTAINER_ID;
+          assert.match(id ?? '', /^[a-f0-9]{64}$/);
+          for (const key of ['PGHOST','PGPORT','PGDATABASE','PGUSER','PGPASSWORD','PGSSLMODE','PGSERVICE','PGSERVICEFILE']) {
+            assert.equal(process.env[key], undefined, 'Unexpected PostgreSQL fallback: ' + key);
+          }
+          assert.equal(process.env.PHONE11_ROUTING_AUTH_REQUIRE_POSTGRES, '1');
+          const [container] = JSON.parse(execFileSync('docker', ['inspect', id], { encoding: 'utf8' }));
+          assert.equal(container.Id, id);
+          assert.equal(container.State.Running, true);
+          assert.equal(container.Config.Image, 'postgres:17-bookworm');
+          const env = new Map(container.Config.Env.map(value => {
+            const at = value.indexOf('='); return [value.slice(0, at), value.slice(at + 1)];
+          }));
+          assert.equal(env.get('POSTGRES_USER'), 'p11_routing_auth_fixture');
+          assert.equal(env.get('POSTGRES_DB'), 'phone11_routing_auth_test');
+          assert.equal(env.get('POSTGRES_PASSWORD'), 'p11-routing-fixture-ci-only');
+          assert.deepEqual(container.NetworkSettings.Ports['5432/tcp'], [{ HostIp: '127.0.0.1', HostPort: '55443' }]);
+          const url = new URL(process.env.PHONE11_ROUTING_AUTH_TEST_DATABASE_URL);
+          assert.equal(url.protocol, 'postgres:');
+          assert.equal(url.hostname, '127.0.0.1');
+          assert.equal(url.port, '55443');
+          assert.equal(url.pathname, '/phone11_routing_auth_test');
+          assert.equal(url.username, 'p11_routing_auth_runtime');
+          assert.equal(url.password, 'p11-routing-runtime-ci-only');
+          assert.equal(url.search, '');
+          assert.equal(url.hash, '');
+          const client = new pg.Client({
+            host: '127.0.0.1', port: 55443, database: 'phone11_routing_auth_test',
+            user: 'p11_routing_auth_fixture', password: 'p11-routing-fixture-ci-only',
+            ssl: false, connectionTimeoutMillis: 3000, query_timeout: 10000,
+          });
+          try {
+            await client.connect();
+            const { rows: [identity] } = await client.query(
+              "SELECT current_database() db,current_user role,current_setting('server_version_num') version");
+            assert.equal(identity.db, 'phone11_routing_auth_test');
+            assert.equal(identity.role, 'p11_routing_auth_fixture');
+            assert.ok(Number(identity.version) >= 170000 && Number(identity.version) < 180000);
+            await client.query(`
+              CREATE SCHEMA p11_routing_auth_test;
+              SET search_path=p11_routing_auth_test,pg_catalog;
+              CREATE TABLE tenants(id integer PRIMARY KEY,status text NOT NULL);
+              CREATE TABLE tenant_memberships(
+                user_id integer,tenant_id integer REFERENCES tenants(id),role text,status text,
+                created_at timestamptz,PRIMARY KEY(user_id,tenant_id));
+              CREATE TABLE extensions(
+                id integer PRIMARY KEY,tenant_id integer NOT NULL REFERENCES tenants(id),deleted_at timestamptz);
+              SET phone11.expected_database='phone11_routing_auth_test';
+              SET phone11.expected_schema='p11_routing_auth_test';
+            `);
+            // The migration owns BEGIN/COMMIT; this connection has no caller transaction.
+            await client.query(readFileSync('server/pbx/advanced-routing-migration.sql', 'utf8'));
+            await client.query(`
+              CREATE ROLE p11_routing_auth_runtime LOGIN PASSWORD 'p11-routing-runtime-ci-only'
+                NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
+              GRANT CONNECT ON DATABASE phone11_routing_auth_test TO p11_routing_auth_runtime;
+              GRANT USAGE ON SCHEMA p11_routing_auth_test TO p11_routing_auth_runtime;
+              GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA p11_routing_auth_test TO p11_routing_auth_runtime;
+              GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA p11_routing_auth_test TO p11_routing_auth_runtime;
+            `);
+          } finally {
+            await client.end();
+          }
+          JS
+      - name: Require actual routing write and read authority checks
+        # Both suites reset this fixture; keep separate invocations sequential.
+        run: |
+          pnpm exec vitest run tests/phone11-routing-write-authority.test.ts
+          pnpm exec vitest run tests/phone11-routing-read-authority.test.ts
+
+
+  legacy-provisioning-authority-postgres-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17-bookworm
+        env:
+          POSTGRES_USER: p11_legacy_prov_owner
+          POSTGRES_PASSWORD: p11-legacy-disposable-only-c9
+          POSTGRES_DB: phone11_legacy_prov_test
+        ports:
+          - "127.0.0.1:55444:5432"
+        options: >-
+          --health-cmd "pg_isready -U p11_legacy_prov_owner -d phone11_legacy_prov_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Dedicated synthetic fixture; the runtime role has no database/schema CREATE.
+      PHONE11_LEGACY_PROVISIONING_REQUIRE_POSTGRES: "1"
+      PHONE11_LEGACY_PROVISIONING_TEST_DATABASE_URL: postgres://p11_legacy_prov_runtime:p11-legacy-runtime-disposable-only-c9@127.0.0.1:55444/phone11_legacy_prov_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Enable pinned package manager
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+      - name: Install locked source dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Admit and prepare only the disposable legacy provisioning service
+        env:
+          PG_CONTAINER_ID: ${{ job.services.postgres.id }}
+        run: |
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import { execFileSync } from 'node:child_process';
+          import pg from 'pg';
+          const id = process.env.PG_CONTAINER_ID;
+          assert.match(id ?? '', /^[a-f0-9]{64}$/);
+          for (const key of ['PGHOST','PGPORT','PGDATABASE','PGUSER','PGPASSWORD','PGSSLMODE','PGSERVICE','PGSERVICEFILE']) {
+            assert.equal(process.env[key], undefined, 'Unexpected PostgreSQL fallback: ' + key);
+          }
+          assert.equal(process.env.PHONE11_LEGACY_PROVISIONING_REQUIRE_POSTGRES, '1');
+          const [container] = JSON.parse(execFileSync('docker', ['inspect', id], { encoding: 'utf8' }));
+          assert.equal(container.Id, id);
+          assert.equal(container.State.Running, true);
+          assert.equal(container.Config.Image, 'postgres:17-bookworm');
+          const env = new Map(container.Config.Env.map(value => {
+            const at = value.indexOf('='); return [value.slice(0, at), value.slice(at + 1)];
+          }));
+          assert.equal(env.get('POSTGRES_USER'), 'p11_legacy_prov_owner');
+          assert.equal(env.get('POSTGRES_DB'), 'phone11_legacy_prov_test');
+          assert.equal(env.get('POSTGRES_PASSWORD'), 'p11-legacy-disposable-only-c9');
+          assert.deepEqual(container.NetworkSettings.Ports['5432/tcp'], [{ HostIp: '127.0.0.1', HostPort: '55444' }]);
+          const url = new URL(process.env.PHONE11_LEGACY_PROVISIONING_TEST_DATABASE_URL);
+          assert.equal(url.protocol, 'postgres:');
+          assert.equal(url.hostname, '127.0.0.1');
+          assert.equal(url.port, '55444');
+          assert.equal(url.pathname, '/phone11_legacy_prov_test');
+          assert.equal(url.username, 'p11_legacy_prov_runtime');
+          assert.equal(url.password, 'p11-legacy-runtime-disposable-only-c9');
+          assert.equal(url.search, '');
+          assert.equal(url.hash, '');
+          const client = new pg.Client({
+            host: '127.0.0.1', port: 55444, database: 'phone11_legacy_prov_test',
+            user: 'p11_legacy_prov_owner', password: 'p11-legacy-disposable-only-c9',
+            ssl: false, connectionTimeoutMillis: 3000, query_timeout: 10000,
+          });
+          try {
+            await client.connect();
+            const { rows: [identity] } = await client.query(
+              "SELECT current_database() db,current_user role,current_setting('server_version_num') version");
+            assert.equal(identity.db, 'phone11_legacy_prov_test');
+            assert.equal(identity.role, 'p11_legacy_prov_owner');
+            assert.ok(Number(identity.version) >= 170000 && Number(identity.version) < 180000);
+            const schemas = ['p11_legacy_prov_test','p11_legacy_prov_missing','p11_legacy_prov_partial'];
+            const existing = await client.query('SELECT nspname FROM pg_namespace WHERE nspname=ANY($1::text[])', [schemas]);
+            assert.equal(existing.rowCount, 0, 'Fixture schemas must be absent before setup');
+            const runtime = await client.query('SELECT rolname FROM pg_roles WHERE rolname=$1', ['p11_legacy_prov_runtime']);
+            assert.equal(runtime.rowCount, 0, 'Runtime role must be absent before setup');
+            // All DDL belongs to this admitted synthetic fixture owner.
+            await client.query(`
+              BEGIN;
+              CREATE ROLE p11_legacy_prov_runtime LOGIN PASSWORD 'p11-legacy-runtime-disposable-only-c9' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
+              REVOKE CREATE ON DATABASE phone11_legacy_prov_test FROM PUBLIC;
+              REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+              CREATE SCHEMA p11_legacy_prov_test;
+              CREATE SCHEMA p11_legacy_prov_missing;
+              CREATE SCHEMA p11_legacy_prov_partial;
+              SET LOCAL search_path=p11_legacy_prov_test;
+              CREATE TABLE fixture_identity(pin text NOT NULL);
+              INSERT INTO fixture_identity VALUES ('c9f3c2-legacy-provisioning-disposable-v1');
+              CREATE TABLE tenants(id integer PRIMARY KEY,name text,plan text,status text);
+              CREATE TABLE organizations(id integer PRIMARY KEY,name text,plan text);
+              CREATE TABLE tenant_memberships(user_id integer,tenant_id integer,status text,role text,PRIMARY KEY(user_id,tenant_id));
+              INSERT INTO tenants VALUES (7,'Fixture7','business','active'),(8,'Fixture8','business','active');
+              INSERT INTO organizations SELECT id,name,plan FROM tenants;
+              INSERT INTO tenant_memberships VALUES (9,7,'active','admin'),(10,7,'active','owner'),(33,7,'active','member'),(11,8,'active','admin'),(44,8,'active','member');
+              CREATE TABLE subscriber(id serial PRIMARY KEY,username text NOT NULL,domain text NOT NULL,password text,ha1 text,ha1b text,UNIQUE(username,domain));
+              CREATE TABLE extensions(id serial PRIMARY KEY,org_id integer,tenant_id integer NOT NULL,user_id integer,extension_number text,display_name text,type text,sip_username text,sip_domain text,sip_password text,caller_id_name text,caller_id_number text,transport text,status text,deleted_at timestamptz,updated_at timestamptz);
+              CREATE TABLE sip_accounts(id serial PRIMARY KEY,tenant_id integer NOT NULL,org_id integer,extension_id integer,user_id integer,sip_username text CHECK(sip_username<>'4102'),sip_domain text,ha1 text,ha1b text,secret_ciphertext bytea,secret_iv bytea,secret_tag bytea,dek_id text,transport_preference text,status text,deleted_at timestamptz,updated_at timestamptz);
+              CREATE TABLE user_extensions(user_id integer,extension_id integer,is_primary boolean,UNIQUE(user_id,extension_id));
+              CREATE TABLE did_numbers(id serial PRIMARY KEY,org_id integer,tenant_id integer,number text,description text,destination_type text,destination_value text,status text);
+              CREATE TABLE p11_legacy_prov_missing.tenants AS TABLE tenants;
+              CREATE TABLE p11_legacy_prov_missing.tenant_memberships AS TABLE tenant_memberships;
+              CREATE TABLE p11_legacy_prov_partial.tenants AS TABLE tenants;
+              CREATE TABLE p11_legacy_prov_partial.tenant_memberships AS TABLE tenant_memberships;
+              CREATE TABLE p11_legacy_prov_partial.did_numbers(id serial PRIMARY KEY,org_id integer,tenant_id integer,number text,description text,destination_type text,status text);
+              GRANT USAGE ON SCHEMA p11_legacy_prov_test,p11_legacy_prov_missing,p11_legacy_prov_partial TO p11_legacy_prov_runtime;
+              GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA p11_legacy_prov_test,p11_legacy_prov_missing,p11_legacy_prov_partial TO p11_legacy_prov_runtime;
+              GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA p11_legacy_prov_test,p11_legacy_prov_partial TO p11_legacy_prov_runtime;
+              COMMIT;
+            `);
+          } finally {
+            await client.end();
+          }
+          JS
+      - name: Require actual no-DDL authenticated provisioning and rollback checks
+        run: |
+          pnpm exec vitest run tests/phone11-legacy-provisioning-write-authority.test.ts
+          pnpm exec vitest run tests/phone11-legacy-provisioning-authority-postgres.test.ts
+          pnpm exec vitest run tests/phone11-legacy-provisioning-read-no-ddl.test.ts
+          pnpm exec vitest run tests/phone11-legacy-provisioning-reads-postgres.test.ts
+
+
+  host-eviction-postgres-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17-bookworm
+        env:
+          POSTGRES_USER: runner
+          POSTGRES_PASSWORD: phone11_host_eviction_ci
+          POSTGRES_DB: phone11_host_eviction_candidate
+          PGPORT: "55441"
+        # The suite accepts only this Unix socket. No host TCP port is published.
+        volumes:
+          - /tmp/phone11-host-eviction-candidate-pg/socket:/var/run/postgresql
+        options: >-
+          --health-cmd "pg_isready -h /var/run/postgresql -p 55441 -U runner -d phone11_host_eviction_candidate"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Synthetic role in the job's disposable service; no deployment URL fallback.
+      PHONE11_TEST_DISPOSABLE_PG: "YES"
+      PHONE11_TEST_PG_SOCKET: /tmp/phone11-host-eviction-candidate-pg/socket
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Enable pinned package manager
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+      - name: Install locked source dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Require the disposable host authority PostgreSQL 17 identity
+        env:
+          PG_CONTAINER_ID: ${{ job.services.postgres.id }}
+        run: |
+          test ! -L /tmp/phone11-host-eviction-candidate-pg
+          test ! -L "$PHONE11_TEST_PG_SOCKET"
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import { execFileSync } from 'node:child_process';
+          import { lstatSync } from 'node:fs';
+          import { setTimeout } from 'node:timers/promises';
+          import pg from 'pg';
+          assert.equal(process.env.USER, 'runner');
+          assert.equal(process.env.PHONE11_TEST_DISPOSABLE_PG, 'YES');
+          assert.equal(process.env.PHONE11_TEST_PG_SOCKET, '/tmp/phone11-host-eviction-candidate-pg/socket');
+          assert.match(process.env.PG_CONTAINER_ID ?? '', /^[a-f0-9]{64}$/);
+          for (const key of ['PGHOST', 'PGPORT', 'PGDATABASE', 'PGUSER', 'PGPASSWORD', 'PGSSLMODE', 'PGSERVICE', 'PGSERVICEFILE']) {
+            assert.equal(process.env[key], undefined, `Unexpected PostgreSQL connection fallback: ${key}`);
+          }
+          const pool = new pg.Pool({
+            host: process.env.PHONE11_TEST_PG_SOCKET,
+            port: 55441,
+            database: 'phone11_host_eviction_candidate',
+            user: process.env.USER,
+            password: 'phone11_host_eviction_ci',
+            ssl: false,
+            connectionTimeoutMillis: 1000,
+            query_timeout: 3000,
+          });
+          try {
+            let identity;
+            for (let attempt = 1; attempt <= 30; attempt++) {
+              try {
+                // initdb's temporary server can satisfy pg_isready. Require the
+                // official image's final PID 1 before probing the actual database.
+                const pid1 = execFileSync('docker', ['exec', process.env.PG_CONTAINER_ID, 'cat', '/proc/1/comm'],
+                  { encoding: 'utf8', timeout: 3000 }).trim();
+                assert.equal(pid1, 'postgres');
+                assert.ok(lstatSync(`${process.env.PHONE11_TEST_PG_SOCKET}/.s.PGSQL.55441`).isSocket());
+                const result = await pool.query(`SELECT current_database() AS db,
+                  current_user AS role, inet_server_addr() IS NULL AS socket_only,
+                  current_setting('server_version_num')::integer AS version`);
+                identity = result.rows[0];
+                break;
+              } catch (error) {
+                if (attempt === 30) throw new Error('Disposable PostgreSQL 17 was not SQL-ready after 30 checks', { cause: error });
+                await setTimeout(1000);
+              }
+            }
+            assert.equal(identity.db, 'phone11_host_eviction_candidate');
+            assert.equal(identity.role, 'runner');
+            assert.equal(identity.socket_only, true);
+            assert.ok(identity.version >= 170000 && identity.version < 180000);
+            console.log('Disposable host authority PostgreSQL 17 identity verified');
+          } finally {
+            await pool.end();
+          }
+          JS
+      - name: Test durable host authority, denial, replay and lease invalidation on PostgreSQL 17
+        run: pnpm exec vitest run server/meetings/meeting-host-eviction.pg.test.ts
+
+  cloud-recording-postgres-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Enable pinned package manager
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+      - name: Install locked source dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Install isolated database test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql
+      - name: Test recording policies, ownership, job leases and retention
+        run: node scripts/test-phone11-cloud-recordings.mjs
+      - name: Require four real-component voicemail integration passes without skips
+        run: node scripts/test-phone11-voicemail-integration.mjs
+
+  pbx-and-history-postgres-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: phone11_management_test
+          POSTGRES_PASSWORD: phone11_management_test
+          POSTGRES_DB: phone11_management_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U phone11_management_test -d phone11_management_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Synthetic, job-local databases. Never a production credential or URL.
+      PHONE11_MANAGEMENT_TEST_DATABASE_URL: postgresql://phone11_management_test:phone11_management_test@127.0.0.1:5432/phone11_management_test
+      PHONE11_PBX_TEST_DATABASE_URL: postgresql://phone11_management_test:phone11_management_test@127.0.0.1:5432/phone11_pbx_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Enable pinned package manager
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+      - name: Install locked source dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Require both dedicated local databases
+        run: |
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          for (const [key, name] of [
+            ['PHONE11_MANAGEMENT_TEST_DATABASE_URL', 'phone11_management_test'],
+            ['PHONE11_PBX_TEST_DATABASE_URL', 'phone11_pbx_test'],
+          ]) {
+            assert.ok(process.env[key], 'PostgreSQL tests must not silently skip');
+            const url = new URL(process.env[key]);
+            assert.equal(url.protocol, 'postgresql:');
+            assert.equal(url.hostname, '127.0.0.1');
+            assert.equal(url.port, '5432');
+            assert.equal(url.pathname, '/' + name);
+            assert.equal(url.username, 'phone11_management_test');
+            assert.equal(url.search, '');
+            assert.equal(url.hash, '');
+          }
+          JS
+      - name: Create the separate PBX fixture database
+        env:
+          PG_CONTAINER_ID: ${{ job.services.postgres.id }}
+        run: docker exec "$PG_CONTAINER_ID" psql -U phone11_management_test -d phone11_management_test -v ON_ERROR_STOP=1 -c 'CREATE DATABASE phone11_pbx_test'
+      - name: Test call-time ownership, paging and PBX migration catalog guards
+        run: >-
+          pnpm exec vitest run
+          tests/phone11-personal-call-history-postgres.test.ts
+          tests/phone11-self-service-usage-postgres.test.ts
+          tests/phone11-extension-tenant-prerequisites-postgres.test.ts
+          tests/phone11-extension-tenant-legacy-default-prerequisites-postgres.test.ts
+          tests/phone11-provisioning-extension-schema.test.ts
+          tests/phone11-pbx-readiness-address-postgres.test.ts
+          tests/phone11-pbx-advanced-migration.test.ts
+          tests/phone11-pbx-schema-preflight.test.ts
+          tests/phone11-time-condition-postgres.test.ts
+          --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/phone11-pbx-base-prerequisite-results.json"
+      - name: Require executed PBX base-prerequisite PostgreSQL regressions
+        run: |
+          python3 - <<'PYPBX'
+          import json, os
+          from pathlib import Path
+          report = json.loads((Path(os.environ["RUNNER_TEMP"]) / "phone11-pbx-base-prerequisite-results.json").read_text())
+          assert report["success"] is True
+          for name in ("tests/phone11-pbx-advanced-migration.test.ts", "tests/phone11-pbx-schema-preflight.test.ts", "tests/phone11-provisioning-extension-schema.test.ts", "tests/phone11-pbx-readiness-address-postgres.test.ts"):
+              assert Path(name).is_file(), name
+              matches = [suite for suite in report["testResults"] if Path(suite["name"]).resolve() == Path(name).resolve()]
+              assert len(matches) == 1, name
+              cases = matches[0]["assertionResults"]
+              assert cases and all(case["status"] == "passed" for case in cases), name
+              print(f"{name}: {len(cases)} passed, zero skips")
+          PYPBX
+
+  chat-postgres-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: phone11_chat_test
+          POSTGRES_PASSWORD: phone11_chat_test
+          POSTGRES_DB: phone11_chat_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U phone11_chat_test -d phone11_chat_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Ephemeral loopback service credentials, never a deployment secret or tenant DB.
+      PHONE11_CHAT_TEST_DATABASE_URL: postgresql://phone11_chat_test:phone11_chat_test@127.0.0.1:5432/phone11_chat_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Enable pinned package manager
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+      - name: Install locked source dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Require the dedicated local test database
+        run: |
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          const value = process.env.PHONE11_CHAT_TEST_DATABASE_URL;
+          assert.ok(value, 'PostgreSQL integration tests must not silently skip');
+          const url = new URL(value);
+          assert.equal(url.protocol, 'postgresql:');
+          assert.equal(url.hostname, '127.0.0.1');
+          assert.equal(url.port, '5432');
+          assert.equal(url.pathname, '/phone11_chat_test');
+          assert.equal(url.username, 'phone11_chat_test');
+          assert.equal(url.search, '');
+          assert.equal(url.hash, '');
+          JS
+      - name: Test real PostgreSQL persistence and tenant isolation
+        run: pnpm exec vitest run tests/phone11-chat-postgres.test.ts
+
+  push-postgres-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: phone11_push_test
+          POSTGRES_PASSWORD: phone11_push_test
+          POSTGRES_DB: phone11_push_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U phone11_push_test -d phone11_push_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # A separate ephemeral service: never reuse the chat fixture or production DB.
+      PHONE11_PUSH_TEST_DATABASE_URL: postgresql://phone11_push_test:phone11_push_test@127.0.0.1:5432/phone11_push_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Enable pinned package manager
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+      - name: Install locked source dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Require the dedicated local push test database
+        run: |
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          const value = process.env.PHONE11_PUSH_TEST_DATABASE_URL;
+          assert.ok(value, 'Push PostgreSQL tests must not silently skip');
+          const url = new URL(value);
+          assert.equal(url.protocol, 'postgresql:');
+          assert.equal(url.hostname, '127.0.0.1');
+          assert.equal(url.port, '5432');
+          assert.equal(url.pathname, '/phone11_push_test');
+          assert.equal(url.username, 'phone11_push_test');
+          assert.equal(url.search, '');
+          assert.equal(url.hash, '');
+          JS
+      - name: Test durable device ownership, session revocation, and token replacement
+        run: pnpm exec vitest run tests/phone11-push-postgres.test.ts tests/phone11-push-auth-schema.test.ts tests/phone11-wake-postgres.test.ts
+
+  chat-notification-postgres-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: phone11_chat_notification_test
+          POSTGRES_PASSWORD: phone11_chat_notification_test
+          POSTGRES_DB: phone11_chat_notification_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U phone11_chat_notification_test -d phone11_chat_notification_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Ephemeral loopback service credentials, never a deployment secret or tenant DB.
+      PHONE11_CHAT_NOTIFICATION_TEST_DATABASE_URL: postgresql://phone11_chat_notification_test:phone11_chat_notification_test@127.0.0.1:5432/phone11_chat_notification_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Enable pinned package manager
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+      - name: Install locked source dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Require the dedicated local test database
+        run: |
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          const value = process.env.PHONE11_CHAT_NOTIFICATION_TEST_DATABASE_URL;
+          assert.ok(value, 'PostgreSQL integration tests must not silently skip');
+          const url = new URL(value);
+          assert.equal(url.protocol, 'postgresql:');
+          assert.equal(url.hostname, '127.0.0.1');
+          assert.equal(url.port, '5432');
+          assert.equal(url.pathname, '/phone11_chat_notification_test');
+          assert.equal(url.username, 'phone11_chat_notification_test');
+          assert.equal(url.search, '');
+          assert.equal(url.hash, '');
+          JS
+      - name: Test notification outbox, current recipients and session revocation
+        run: pnpm exec vitest run tests/phone11-chat-notification-postgres.test.ts
+
+  profile-postgres-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: phone11_profile_test
+          POSTGRES_PASSWORD: phone11_profile_test
+          POSTGRES_DB: phone11_profile_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U phone11_profile_test -d phone11_profile_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Ephemeral loopback service credentials, never a deployment secret or tenant DB.
+      PHONE11_PROFILE_TEST_DATABASE_URL: postgresql://phone11_profile_test:phone11_profile_test@127.0.0.1:5432/phone11_profile_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Enable pinned package manager
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+      - name: Install locked source dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Require the dedicated local test database
+        run: |
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          const value = process.env.PHONE11_PROFILE_TEST_DATABASE_URL;
+          assert.ok(value, 'PostgreSQL integration tests must not silently skip');
+          const url = new URL(value);
+          assert.equal(url.protocol, 'postgresql:');
+          assert.equal(url.hostname, '127.0.0.1');
+          assert.equal(url.port, '5432');
+          assert.equal(url.pathname, '/phone11_profile_test');
+          assert.equal(url.username, 'phone11_profile_test');
+          assert.equal(url.search, '');
+          assert.equal(url.hash, '');
+          JS
+      - name: Test profile tenant isolation, expiry and write revocation
+        run: pnpm exec vitest run tests/phone11-profile-postgres.test.ts

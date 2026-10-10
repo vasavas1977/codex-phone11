@@ -1,0 +1,4 @@
+# Package receipts compare the consumed native inputs with their Git blobs.
+CMakeLists.txt text eol=lf
+phone11_siprix_helper.cpp text eol=lf
+test_bootstrap.py text eol=lf

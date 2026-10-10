@@ -4,9 +4,10 @@ vi.mock("../server/pbx/tenant-middleware", () => ({
   resolveTenantContext: vi.fn(async (userId: number) => ({
     tenantId: userId === 10 ? 8 : 7,
     role: "admin",
-    memberships: [],
+    memberships: [{ tenantId: userId === 10 ? 8 : 7, role: "admin" }],
   })),
   hasRole: vi.fn(() => true),
+  requireLiveTenantAdminMembership: vi.fn(async () => "admin"),
   validateTenantOwnership: vi.fn(async () => true),
 }));
 vi.mock("../server/pbx/audit", () => ({ writeAuditLog: vi.fn(), queryAuditLogs: vi.fn() }));
@@ -67,10 +68,12 @@ describe.skipIf(process.env.PHONE11_SIP_PG_TEST !== "1")("PBX SIP consistency on
         status TEXT, deleted_at TIMESTAMPTZ, updated_at TIMESTAMPTZ
       );
       CREATE TABLE user_extensions (
-        user_id INTEGER NOT NULL, extension_id INTEGER NOT NULL, is_primary BOOLEAN NOT NULL
+        user_id INTEGER NOT NULL, extension_id INTEGER NOT NULL, is_primary BOOLEAN NOT NULL,
+        UNIQUE (user_id, extension_id)
       );
       CREATE TABLE tenant_memberships (
-        user_id INTEGER NOT NULL, tenant_id INTEGER NOT NULL, status TEXT NOT NULL
+        user_id INTEGER NOT NULL, tenant_id INTEGER NOT NULL, status TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'member'
       );
       CREATE TABLE organizations (
         id INTEGER PRIMARY KEY, name TEXT, plan TEXT
@@ -81,7 +84,9 @@ describe.skipIf(process.env.PHONE11_SIP_PG_TEST !== "1")("PBX SIP consistency on
       INSERT INTO organizations VALUES (7, 'Workspace 7', 'business'), (8, 'Workspace 8', 'business');
       INSERT INTO tenants VALUES (7, 'Workspace 7', 'business', 'active'),
         (8, 'Workspace 8', 'business', 'active');
-      INSERT INTO tenant_memberships VALUES (33, 7, 'active'), (55, 7, 'active'), (44, 8, 'active');
+      INSERT INTO tenant_memberships(user_id, tenant_id, status, role) VALUES
+        (9, 7, 'active', 'admin'), (10, 8, 'active', 'admin'),
+        (33, 7, 'active', 'member'), (55, 7, 'active', 'member'), (44, 8, 'active', 'member');
       CREATE FUNCTION reject_4102() RETURNS trigger LANGUAGE plpgsql AS $$
       BEGIN
         IF NEW.sip_username = '4102' THEN RAISE EXCEPTION 'fixture account failure'; END IF;
@@ -110,7 +115,8 @@ describe.skipIf(process.env.PHONE11_SIP_PG_TEST !== "1")("PBX SIP consistency on
     `);
     expect(rows.rows).toHaveLength(1);
     const row = rows.rows[0];
-    expect(row.password).toBe(created.sipCredentials.password);
+    expect(created.sipCredentials).toMatchObject({ username: "4101", domain: "sip.phone11.ai" });
+    expect(JSON.stringify(created)).not.toContain(row.password);
     expect(row.subscriber_ha1).toBe(computeHA1("4101", "sip.phone11.ai", row.password));
     expect(row.subscriber_ha1b).toBe(computeHA1B("4101", "sip.phone11.ai", "sip.phone11.ai", row.password));
     expect(row.account_ha1).toBe(row.subscriber_ha1);
@@ -140,7 +146,8 @@ describe.skipIf(process.env.PHONE11_SIP_PG_TEST !== "1")("PBX SIP consistency on
       WHERE sub.username = '4101'
     `);
     expect(after.rows[0].password).not.toBe(before.rows[0].password);
-    expect(after.rows[0].password).toBe(result.sipCredentials.password);
+    expect(result.sipCredentials).toEqual({ username: "4101", domain: "sip.phone11.ai" });
+    expect(JSON.stringify(result)).not.toContain(after.rows[0].password);
     expect(after.rows[0].subscriber_ha1).toBe(after.rows[0].account_ha1);
     expect(decryptSecret(after.rows[0].secret_ciphertext, after.rows[0].secret_iv, after.rows[0].secret_tag))
       .toBe(after.rows[0].password);
@@ -199,13 +206,11 @@ describe.skipIf(process.env.PHONE11_SIP_PG_TEST !== "1")("PBX SIP consistency on
       configured: true, sip: { username: "4201", domain, password: assignedPassword },
     });
 
-    await db.query("INSERT INTO tenant_memberships VALUES (77, 1, 'active')");
+    await db.query("INSERT INTO tenant_memberships(user_id, tenant_id, status) VALUES (77, 1, 'active')");
     const priorOwnerOpenId = process.env.OWNER_OPEN_ID;
     process.env.OWNER_OPEN_ID = "legacy-owner-open-id";
     try {
-      await expect(getPhoneConfig(77, "legacy-owner-open-id")).resolves.toMatchObject({
-        configured: true, sip: { username: "1020", domain, password: ownerPassword },
-      });
+      await expect(getPhoneConfig(77, "legacy-owner-open-id", 1)).resolves.toEqual({ configured: false });
     } finally {
       if (priorOwnerOpenId === undefined) delete process.env.OWNER_OPEN_ID;
       else process.env.OWNER_OPEN_ID = priorOwnerOpenId;

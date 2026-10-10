@@ -1,0 +1,1479 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { SiprixCall, SiprixEvent, SiprixSnapshot } from "../modules/phone11-siprix";
+
+const runtime = vi.hoisted(() => ({
+  platform: { OS: "ios" }, modules: {} as Record<string, unknown>,
+  user: { id: 17 } as { id: number } | null,
+  authListeners: new Set<() => void>(),
+  listeners: new Set<(event: SiprixEvent) => void>(),
+  diagnostics: vi.fn(),
+  wakeBinding: vi.fn(), storage: new Map<string,string>(), writeHistory: vi.fn(),
+  osHangup: vi.fn(async (_id: string) => {}),
+  osHandlers: new Map<string, (event: any) => unknown>(),
+  osKeep: { setup: vi.fn(async () => {}), startCall: vi.fn((_uuid: string, _handle: string) => {}),
+    reportConnectedOutgoingCallWithUUID: vi.fn(), reportEndCallWithUUID: vi.fn(), endAllCalls: vi.fn(), removeEventListener: vi.fn() },
+  callManager: {
+    initialize: vi.fn(async () => {}), displayIncomingCall: vi.fn(), reportOutgoingCall: vi.fn(),
+    reportCallConnected: vi.fn(), reportCallEnded: vi.fn(), adoptIncomingCall: vi.fn(),
+  },
+}));
+vi.mock("react-native", () => ({
+  UIManager: { getViewManagerConfig: () => ({}) },
+  Alert: { alert: vi.fn() }, AppState: { currentState: "active", addEventListener: () => ({ remove: vi.fn() }) },
+  Platform: runtime.platform, NativeModules: runtime.modules,
+  NativeEventEmitter: class {
+    addListener(name: string, listener: (event: SiprixEvent) => void) {
+      expect(name).toBe("Phone11SiprixEvent");
+      runtime.listeners.add(listener);
+      return { remove: () => runtime.listeners.delete(listener) };
+    }
+  },
+}));
+vi.mock("expo-secure-store", () => ({}));
+vi.mock("@react-native-async-storage/async-storage", () => ({ default: { getItem: async (key: string) => runtime.storage.get(key) ?? null, setItem: runtime.writeHistory } }));
+vi.mock("../lib/_core/auth", () => ({
+  getAuthSnapshot: () => ({ user: runtime.user }),
+  addAuthChangeListener: (listener: () => void) => {
+    runtime.authListeners.add(listener);
+    return () => runtime.authListeners.delete(listener);
+  },
+}));
+vi.mock("../lib/sip/diagnostics-store", () => ({
+  formatSipError: String,
+  useSipDiagnosticsStore: { getState: () => ({ addEvent: runtime.diagnostics }) },
+}));
+vi.mock("../lib/push/client", () => ({ getWakeAdoptionBinding: runtime.wakeBinding }));
+vi.mock("../lib/sip/native-call", () => ({ nativeCallManager: runtime.callManager }));
+vi.mock("../lib/sip/engine", () => ({ sipEngine: { hangupCall: runtime.osHangup } }));
+
+import { createRegistrationLifecycle } from "../lib/sip/registration-lifecycle";
+import { SiprixEngine } from "../lib/sip/siprix-engine";
+import { useSipAccountStore, type SipAccount } from "../lib/sip/account-store";
+import { useSipCallStore } from "../lib/sip/call-store";
+
+const account: SipAccount = {
+  id: "test", ownerUserId: 17, username: "1001", password: "not-live-secret",
+  domain: "sip.example.test", displayName: "Test", transport: "TLS", port: 5061,
+  srtp: true, stun: "stun.example.test", enabled: true,
+};
+
+const newCall = (values: Partial<SiprixCall> = {}): SiprixCall => ({
+  id: "11", callId: "11", accountId: "1", direction: "outgoing", state: "dialing",
+  remoteUri: "sip:2002@sip.example.test", hasVideo: false, muted: false, held: false,
+  holdState: 0, ...values,
+});
+const emptySnapshot = (): SiprixSnapshot => ({
+  initialized: false, generation: 0, sequence: 0, sdkVersion: "1.0.40", accounts: [],
+  calls: [], audioSessionActive: false, speaker: false, trialNotified: false,
+});
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(done => { resolve = done; });
+  return { promise, resolve };
+}
+
+let snapshot: SiprixSnapshot;
+let transferIdentity = 0;
+const bridge = {
+  readCompletedWakeCalls: vi.fn(async () => [] as import("../modules/phone11-siprix").CompletedWakeCall[]),
+  ackCompletedWakeCalls: vi.fn(async (_binding: unknown, _ids: string[]) => {}),
+  bindForegroundWakeContext: vi.fn(async () => {}),
+  adoptIncomingWake: vi.fn(async () => structuredClone(snapshot)),
+  restoreIncomingWakeDelegate: vi.fn(async () => {}),
+  getSnapshot: vi.fn(async () => structuredClone(snapshot)),
+  initialize: vi.fn(async () => {
+    snapshot.initialized = true;
+    snapshot.generation++;
+    return structuredClone(snapshot);
+  }),
+  createAccount: vi.fn(async (_config: unknown) => {
+    const result = { id: "1", accountId: "1", registrationState: "unregistered" as const };
+    snapshot.accounts = [result];
+    return result;
+  }),
+  registerAccount: vi.fn(async (id: string, _expires: number) => {
+    // Mirrors the real native bridge snapshot, covered by native-runtime.m.
+    snapshot.accounts = snapshot.accounts.map(account => account.accountId === id
+      ? { id: account.id, accountId: id, registrationState: "registering" } : account);
+  }),
+  makeCall: vi.fn(async (_id: string, _destination: string) => newCall()),
+  answerCall: vi.fn(async (_id: string) => {}),
+  hangupCall: vi.fn(async (_id: string) => {}),
+  setMute: vi.fn(async (_id: string, _muted: boolean) => {}),
+  setHold: vi.fn(async (_id: string, _held: boolean) => {}),
+  setSpeaker: vi.fn(async (_speaker: boolean) => {}),
+  createTransferRequestId: vi.fn(async () => `00000000-0000-4000-8000-${String(++transferIdentity).padStart(12, "0")}`),
+  transferCall: vi.fn(async (_id: string, _target: string, _requestId: string) => {}),
+  beginConsultation: vi.fn(async (_id: string, _target: string, _request: string) => {}),
+  continueConsultation: vi.fn(async (_id: string, _request: string) => {}),
+  cancelConsultation: vi.fn(async (_id: string, _request: string) => {}),
+  completeConsultation: vi.fn(async (_id: string, _request: string, _transfer: string) => {}),
+  sendDtmf: vi.fn(async (_id: string, _digits: string) => {}),
+  handleNativeAudioSession: vi.fn(async (_active: boolean) => {}),
+  destroy: vi.fn(async () => {
+    snapshot = { ...emptySnapshot(), generation: snapshot.generation, sequence: snapshot.sequence };
+  }),
+};
+let engine: SiprixEngine;
+
+function emit(data: Omit<SiprixEvent, "generation" | "sequence"> | Record<string, unknown>) {
+  const event = { ...data, generation: snapshot.generation, sequence: ++snapshot.sequence } as SiprixEvent;
+  runtime.listeners.forEach(listener => listener(event));
+  return event;
+}
+function registered() {
+  emit({ type: "registration", account: { id: "1", accountId: "1", registrationState: "registered", regState: 0 } });
+}
+async function ready() { await engine.initialize(); registered(); }
+
+beforeEach(() => {
+    vi.clearAllMocks();
+    runtime.storage.clear(); runtime.writeHistory.mockReset().mockImplementation(async (key: string, value: string) => { runtime.storage.set(key,value); });
+    bridge.transferCall.mockReset().mockResolvedValue(undefined);
+    bridge.beginConsultation.mockReset().mockResolvedValue(undefined);
+    bridge.continueConsultation.mockReset().mockResolvedValue(undefined);
+    bridge.cancelConsultation.mockReset().mockResolvedValue(undefined);
+    bridge.completeConsultation.mockReset().mockResolvedValue(undefined);
+    bridge.readCompletedWakeCalls.mockReset().mockResolvedValue([]); bridge.ackCompletedWakeCalls.mockReset().mockResolvedValue(undefined);
+    runtime.wakeBinding.mockReset().mockResolvedValue(null);
+    snapshot = emptySnapshot();
+    runtime.platform.OS = "ios";
+    runtime.modules.Phone11Siprix = bridge;
+    runtime.user = { id: 17 };
+    runtime.listeners.clear();
+    runtime.authListeners.clear();
+    useSipAccountStore.setState({ account: { ...account }, registrationState: "unregistered", registrationError: null });
+    useSipCallStore.setState({ activeCalls: {}, incomingCall: null });
+    engine = new SiprixEngine();
+  });
+afterEach(async () => { await engine.destroy(); vi.unstubAllEnvs(); });
+
+describe("Siprix native adapter", () => {
+  const foregroundTrial = () => {
+    runtime.platform.OS = "android";
+    vi.stubEnv("EXPO_PUBLIC_SIP_ENGINE", "siprix");
+    vi.stubEnv("EXPO_PUBLIC_PHONE11_ANDROID_FOREGROUND_TRIAL", "1");
+    return { foregroundAudioTrial: true, sdkVersion: "1.1.0", sdkBuild: "20260905_1222", trialCallLimitSeconds: 60,
+      backgroundCalling: false, closedAppCalling: false, wake: false, transfer: false, video: false };
+  };
+  it("starts the explicit Android foreground trial only after the exact native capability, retaining callback registration truth", async () => {
+    const capabilities = vi.fn(async () => foregroundTrial());
+    foregroundTrial(); runtime.modules.Phone11Siprix = { ...bridge, getForegroundCapabilities: capabilities };
+    await engine.initialize();
+    expect(capabilities).toHaveBeenCalledOnce();
+    expect(bridge.initialize).toHaveBeenCalledWith({});
+    expect(bridge.createAccount).toHaveBeenCalledOnce();
+    expect(useSipAccountStore.getState().registrationState).toBe("registering");
+    registered(); expect(useSipAccountStore.getState().registrationState).toBe("registered");
+    await engine.makeCall("2002"); expect(bridge.makeCall).toHaveBeenCalledOnce();
+    expect(runtime.wakeBinding).not.toHaveBeenCalled();
+  });
+  it.each(["missing", "wrong-version", "wrong-build", "wrong-limit", "background-claim", "native-gate-rejected"])("rejects Android trial capability %s before SDK/account work", async condition => {
+    const value = foregroundTrial();
+    if (condition === "wrong-version") value.sdkVersion = "1.0.40";
+    if (condition === "wrong-build") value.sdkBuild = "different";
+    if (condition === "wrong-limit") value.trialCallLimitSeconds = 0;
+    if (condition === "background-claim") value.backgroundCalling = true;
+    runtime.modules.Phone11Siprix = { ...bridge, ...(condition === "missing" ? {} : {
+      getForegroundCapabilities: async () => { if (condition === "native-gate-rejected") throw { code: "E_ANDROID_SOURCE_GATE" }; return value; },
+    }) };
+    await expect(engine.initialize()).rejects.toThrow("Android foreground trial capability");
+    expect(bridge.initialize).not.toHaveBeenCalled(); expect(bridge.createAccount).not.toHaveBeenCalled();
+    expect(bridge.registerAccount).not.toHaveBeenCalled(); expect(runtime.listeners.size).toBe(0);
+  });
+  it.each(["public-only", "native-only", "unknown-native", "missing-method", "direct-transfer-claim"])("rejects unmatched Android consultation candidate %s before SDK work", async condition => {
+    const value: Record<string, unknown> = { ...foregroundTrial(), consultationSourceCandidate: true };
+    vi.stubEnv("EXPO_PUBLIC_PHONE11_ANDROID_CONSULTATION_SOURCE", condition === "native-only" ? "0" : "1");
+    if (condition === "public-only") value.consultationSourceCandidate = false;
+    if (condition === "unknown-native") value.consultationSourceCandidate = "true";
+    if (condition === "direct-transfer-claim") value.transfer = true;
+    runtime.modules.Phone11Siprix = { ...bridge, ...(condition === "missing-method" ? { completeConsultation: undefined } : {}), getForegroundCapabilities: async () => value };
+    await expect(engine.initialize()).rejects.toThrow("Android foreground trial capability");
+    expect(bridge.initialize).not.toHaveBeenCalled(); expect(bridge.createAccount).not.toHaveBeenCalled();
+  });
+  it("ignores an unsupported warm snapshot in the legacy Android foreground trial", async () => {
+    const value = foregroundTrial(); snapshot.warmTransferAvailable = true;
+    runtime.modules.Phone11Siprix = { ...bridge, getForegroundCapabilities: async () => value };
+    await ready(); expect(engine.supportsWarmTransfer()).toBe(false);
+  });
+  it("admits the separately gated Android consultation through the shared single OS-call contract", async () => {
+    const value = { ...foregroundTrial(), consultationSourceCandidate: true };
+    vi.stubEnv("EXPO_PUBLIC_PHONE11_ANDROID_CONSULTATION_SOURCE", "1");
+    snapshot.warmTransferAvailable = true;
+    runtime.modules.Phone11Siprix = { ...bridge, transferCall: undefined, getForegroundCapabilities: async () => value };
+    await ready(); expect(engine.supportsWarmTransfer()).toBe(true); expect(engine.supportsBlindTransfer()).toBe(false);
+    await engine.makeCall("2002"); emit({ type: "callConnected", call: newCall({ state: "connected", historyId: "original" }) });
+    await engine.beginConsultation("11", "3003"); expect(bridge.beginConsultation).toHaveBeenCalledOnce();
+    const request = bridge.beginConsultation.mock.calls[0][2];
+    const original = newCall({ state: "held", holdState: 1, held: true, historyId: "original", consultationAttempted: true, consultationRequestId: request, consultationPhase: "held_ready" });
+    emit({ type: "callHeld", call: original }); await Promise.resolve(); await Promise.resolve();
+    expect(bridge.continueConsultation).toHaveBeenCalledWith("11", request);
+    emit({ type: "consultationChanged", call: { ...original, consultationPhase: "calling", consultationCallId: "12" } });
+    emit({ type: "consultationChanged", call: newCall({ id: "12", callId: "12", historyId: "consult", consultationParentId: "11", consultationRequestId: request, muted: true }) });
+    emit({ type: "callConnected", call: newCall({ id: "12", callId: "12", state: "connected", historyId: "consult", consultationParentId: "11", consultationRequestId: request, muted: true }) });
+    expect(runtime.callManager.reportOutgoingCall).toHaveBeenCalledTimes(1);
+    expect(runtime.callManager.reportCallConnected).toHaveBeenCalledTimes(1);
+    expect(bridge.handleNativeAudioSession).not.toHaveBeenCalled();
+    expect(Object.keys(useSipCallStore.getState().activeCalls).sort()).toEqual(["11", "12"]);
+    await engine.cancelConsultation("11", request); expect(bridge.cancelConsultation).toHaveBeenCalledWith("11", request);
+  });
+  it("cannot activate Android using a public flag without the Siprix engine build selection", async () => {
+    foregroundTrial(); vi.stubEnv("EXPO_PUBLIC_SIP_ENGINE", "pjsip");
+    await expect(engine.initialize()).rejects.toThrow("no PJSIP fallback");
+    expect(bridge.getSnapshot).not.toHaveBeenCalled(); expect(bridge.initialize).not.toHaveBeenCalled();
+  });
+  it("ignores a late Android capability result after account/logout changes", async () => {
+    foregroundTrial(); const result = deferred<Record<string, unknown>>();
+    runtime.modules.Phone11Siprix = { ...bridge, getForegroundCapabilities: () => result.promise };
+    const work = engine.initialize(); await Promise.resolve(); await Promise.resolve();
+    runtime.user = null; useSipAccountStore.setState({ account: null, registrationState: "unregistered" });
+    result.resolve(foregroundTrial()); await work;
+    expect(bridge.initialize).not.toHaveBeenCalled(); expect(bridge.createAccount).not.toHaveBeenCalled();
+    expect(useSipAccountStore.getState().registrationState).toBe("unregistered");
+  });
+  it("negotiates video only after runtime support and camera permission, then consumes real video events", async () => {
+    vi.stubEnv("EXPO_PUBLIC_SIP_ENGINE", "siprix");
+    const camera = vi.fn(async () => true);
+    const makeVideoCall = vi.fn(async () => newCall());
+    runtime.modules.Phone11Siprix = { ...bridge,
+      getVideoCapabilities: async () => ({ oneToOne: true, cameraMute: true, cameraSwitch: true, nativeView: true }),
+      requestCameraPermission: camera, makeVideoCall, prepareVideoAnswer: vi.fn(), cancelVideoAnswer: vi.fn(),
+      setCameraMuted: vi.fn(), switchCamera: vi.fn(),
+    };
+    await ready();
+    await engine.makeCall("2002", true);
+    expect(camera).toHaveBeenCalledOnce();
+    expect(makeVideoCall).toHaveBeenCalledWith("1", "sip:2002@sip.example.test");
+    expect(bridge.makeCall).not.toHaveBeenCalled();
+    expect(useSipCallStore.getState().activeCalls["11"].isVideo).toBe(false);
+    emit({ type: "callConnected", call: { ...newCall({ state: "connected" }), hasVideo: true, cameraMuted: false } });
+    expect(useSipCallStore.getState().activeCalls["11"].isVideo).toBe(true);
+    emit({ type: "callVideoChanged", call: { ...newCall({ state: "connected" }), hasVideo: true, cameraMuted: true } });
+    expect(useSipCallStore.getState().activeCalls["11"].cameraMuted).toBe(true);
+    emit({ type: "callTerminated", call: newCall({ state: "terminated" }) });
+    expect(useSipCallStore.getState().activeCalls["11"]).toBeUndefined();
+  });
+
+  it("keeps hangup available while a native camera operation is pending", async () => {
+    vi.stubEnv("EXPO_PUBLIC_SIP_ENGINE", "siprix");
+    const camera = deferred<void>();
+    const setCameraMuted = vi.fn(() => camera.promise);
+    runtime.modules.Phone11Siprix = { ...bridge,
+      getVideoCapabilities: async () => ({ oneToOne: true, cameraMute: true, cameraSwitch: true, nativeView: true }),
+      requestCameraPermission: async () => true, makeVideoCall: async () => newCall(),
+      prepareVideoAnswer: vi.fn(), cancelVideoAnswer: vi.fn(), setCameraMuted, switchCamera: vi.fn(),
+    };
+    await ready(); await engine.makeCall("2002", true);
+    emit({ type: "callConnected", call: { ...newCall({ state: "connected" }), hasVideo: true, cameraMuted: false } });
+    const pending = engine.setCameraMuted("11", true);
+    await vi.waitFor(() => expect(setCameraMuted).toHaveBeenCalled());
+    await engine.hangupCall("11");
+    expect(bridge.hangupCall).toHaveBeenCalledWith("11");
+    camera.resolve(); await pending;
+  });
+
+  it("does not dial over an incoming call received during camera permission", async () => {
+    vi.stubEnv("EXPO_PUBLIC_SIP_ENGINE", "siprix");
+    const permission = deferred<boolean>();
+    const requestCameraPermission = vi.fn(() => permission.promise);
+    const makeVideoCall = vi.fn();
+    runtime.modules.Phone11Siprix = { ...bridge,
+      getVideoCapabilities: async () => ({ oneToOne: true, cameraMute: true, cameraSwitch: true, nativeView: true }),
+      requestCameraPermission, makeVideoCall, prepareVideoAnswer: vi.fn(), cancelVideoAnswer: vi.fn(),
+      setCameraMuted: vi.fn(), switchCamera: vi.fn(),
+    };
+    await ready();
+    const pending = engine.makeCall("2002", true);
+    await vi.waitFor(() => expect(requestCameraPermission).toHaveBeenCalled());
+    emit({ type: "callIncoming", call: newCall({ direction: "incoming", state: "ringing" }) });
+    permission.resolve(true);
+    await expect(pending).rejects.toThrow();
+    expect(makeVideoCall).not.toHaveBeenCalled();
+    expect(useSipCallStore.getState().incomingCall?.id).toBe("11");
+  });
+
+  it("does not start a call after camera permission is denied", async () => {
+    vi.stubEnv("EXPO_PUBLIC_SIP_ENGINE", "siprix");
+    const makeVideoCall = vi.fn();
+    runtime.modules.Phone11Siprix = { ...bridge,
+      getVideoCapabilities: async () => ({ oneToOne: true, cameraMute: true, cameraSwitch: true, nativeView: true }),
+      requestCameraPermission: async () => false, makeVideoCall, prepareVideoAnswer: vi.fn(), cancelVideoAnswer: vi.fn(),
+      setCameraMuted: vi.fn(), switchCamera: vi.fn(),
+    };
+    await ready();
+    await expect(engine.makeCall("2002", true)).rejects.toThrow();
+    expect(makeVideoCall).not.toHaveBeenCalled();
+    expect(bridge.makeCall).not.toHaveBeenCalled();
+  });
+
+
+  it.each(["callback", "stalled"])("gives the real initialized native snapshot its registration grace (%s)", async (outcome) => {
+    vi.useFakeTimers();
+    const restart = vi.fn(() => engine.restart());
+    const lifecycle = createRegistrationLifecycle({
+      snapshot: () => ({
+        userId: runtime.user?.id, authLoading: false,
+        account: useSipAccountStore.getState().account,
+        registrationState: useSipAccountStore.getState().registrationState,
+        hasLiveCall: !!useSipCallStore.getState().incomingCall ||
+          Object.keys(useSipCallStore.getState().activeCalls).length > 0,
+      }),
+      loadAccount: async () => {}, initialize: () => engine.initialize(), restart,
+      onError: () => { throw new Error("Unexpected lifecycle failure"); },
+    }, true);
+    const unsubscribe = useSipAccountStore.subscribe(() => lifecycle.changed());
+    try {
+      lifecycle.start();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(bridge.registerAccount).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(restart).not.toHaveBeenCalled();
+      expect(bridge.destroy).not.toHaveBeenCalled();
+      expect(useSipAccountStore.getState().registrationState).toBe("registering");
+      if (outcome === "callback") {
+        await vi.advanceTimersByTimeAsync(5_000);
+        registered();
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(useSipAccountStore.getState().registrationState).toBe("registered");
+        expect(restart).not.toHaveBeenCalled();
+      } else {
+        await vi.advanceTimersByTimeAsync(24_999);
+        expect(restart).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        expect(restart).toHaveBeenCalledOnce();
+        expect(bridge.initialize).toHaveBeenCalledTimes(2);
+      }
+    } finally {
+      lifecycle.stop(); unsubscribe(); vi.useRealTimers();
+    }
+  });
+
+  it("explicitly registers after account creation and only accepts native regState success", async () => {
+    await engine.initialize();
+    expect(bridge.createAccount).toHaveBeenCalledWith({
+      sipServer: account.domain, sipExtension: account.username, sipPassword: account.password,
+      sipAuthId: account.username, displName: account.displayName,
+      transport: "TLS", port: 5061, secureMedia: 1, stunServer: account.stun,
+    });
+    expect(bridge.registerAccount).toHaveBeenCalledWith("1", 300);
+    expect(useSipAccountStore.getState().registrationState).not.toBe("registered");
+    emit({ type: "registration", account: { id: "1", accountId: "1", registrationState: "registered" } });
+    expect(useSipAccountStore.getState().registrationState).not.toBe("registered");
+    registered();
+    expect(useSipAccountStore.getState().registrationState).toBe("registered");
+    await engine.initialize();
+    expect(bridge.initialize).toHaveBeenCalledOnce();
+  });
+
+  it("omits empty optional account keys rather than sending null across the RN bridge", async () => {
+    useSipAccountStore.setState({ account: { ...account, proxy: "", stun: "" } });
+    await engine.initialize();
+    const config = bridge.createAccount.mock.calls[0][0];
+    expect(config).not.toHaveProperty("sipProxy");
+    expect(config).not.toHaveProperty("stunServer");
+  });
+
+  it("records native SDK version and numeric SIP status without raw response text", async () => {
+    await engine.initialize();
+    expect(runtime.diagnostics).toHaveBeenCalledWith(expect.objectContaining({
+      message: "Siprix native engine initialized", context: expect.objectContaining({ sdkVersion: "1.0.40" }),
+    }));
+    emit({ type: "registration", account: { id: "1", accountId: "1", registrationState: "failed", regState: 1, sipStatusCode: 403 } });
+    expect(runtime.diagnostics).toHaveBeenCalledWith(expect.objectContaining({
+      message: "Siprix registration failed", context: expect.objectContaining({ regState: 1, sipStatusCode: 403 }),
+    }));
+    expect(JSON.stringify(runtime.diagnostics.mock.calls)).not.toContain(account.password);
+  });
+
+  it("recovers confirmation emitted before account Promise resolution from the native snapshot", async () => {
+    bridge.registerAccount.mockImplementationOnce(async () => {
+      snapshot.accounts = [{ id: "1", accountId: "1", registrationState: "registered", regState: 0 }];
+      snapshot.sequence++;
+    });
+    await engine.initialize();
+    expect(useSipAccountStore.getState().registrationState).toBe("registered");
+  });
+
+  it("awaits CallKeep readiness before exposing a registered account to incoming calls", async () => {
+    const pending = deferred<void>();
+    runtime.callManager.initialize.mockReturnValueOnce(pending.promise);
+    const start = engine.initialize();
+    await vi.waitFor(() => expect(runtime.callManager.initialize).toHaveBeenCalledOnce());
+    expect(bridge.createAccount).not.toHaveBeenCalled();
+    pending.resolve();
+    await start;
+    expect(bridge.createAccount).toHaveBeenCalledOnce();
+  });
+
+  it("does not register when CallKeep setup rejects", async () => {
+    runtime.callManager.initialize.mockRejectedValueOnce(new Error("CallKeep unavailable"));
+    await expect(engine.initialize()).rejects.toThrow("initialization");
+    expect(bridge.createAccount).not.toHaveBeenCalled();
+    expect(bridge.destroy).toHaveBeenCalledOnce();
+  });
+
+  it("does not place calls before native registration confirmation", async () => {
+    await engine.initialize();
+    await expect(engine.makeCall("2002")).rejects.toThrow("not registered");
+    expect(bridge.makeCall).not.toHaveBeenCalled();
+  });
+
+  it("maps native failure, removal, progress, and network loss without optimistic recovery", async () => {
+    await ready();
+    for (const [state, regState] of [["failed", 1], ["unregistered", 2], ["registering", 3]] as const) {
+      emit({ type: "registration", account: { id: "1", accountId: "1", registrationState: state, regState } });
+      expect(useSipAccountStore.getState().registrationState).toBe(state);
+    }
+    emit({ type: "network", networkState: 0 });
+    expect(useSipAccountStore.getState().registrationState).toBe("network_error");
+    emit({ type: "network", networkState: 1 });
+    expect(useSipAccountStore.getState().registrationState).toBe("network_error");
+  });
+
+  it("does not let a post-loss snapshot revive an older native registration success", async () => {
+    bridge.registerAccount.mockImplementationOnce(async () => {
+      snapshot.accounts = [{ id: "1", accountId: "1", registrationState: "registered", regState: 0 }];
+      registered();
+      emit({ type: "network", networkState: 0 });
+    });
+    await engine.initialize();
+    expect(useSipAccountStore.getState().registrationState).toBe("network_error");
+    registered();
+    expect(useSipAccountStore.getState().registrationState).toBe("registered");
+  });
+
+  it.each(["android", "web"])("rejects selected Siprix on %s without loading another engine", async platform => {
+    runtime.platform.OS = platform;
+    await expect(engine.initialize()).rejects.toThrow("no PJSIP fallback");
+    expect(bridge.initialize).not.toHaveBeenCalled();
+  });
+
+  it("rejects a missing native module clearly", async () => {
+    delete runtime.modules.Phone11Siprix;
+    await expect(engine.initialize()).rejects.toThrow("native module is missing");
+    expect(useSipAccountStore.getState().registrationState).toBe("failed");
+  });
+
+  it("does not create a native session for another user's credentials", async () => {
+    runtime.user = { id: 29 };
+    await engine.initialize();
+    expect(bridge.initialize).not.toHaveBeenCalled();
+    expect(useSipAccountStore.getState().registrationState).toBe("unregistered");
+  });
+
+  it("discards a previous JS owner's native session before registering new credentials", async () => {
+    snapshot.initialized = true;
+    snapshot.accounts = [{ id: "old", accountId: "old", registrationState: "registered", regState: 0 }];
+    await engine.initialize();
+    expect(bridge.destroy).toHaveBeenCalledOnce();
+    expect(bridge.destroy.mock.invocationCallOrder[0]).toBeLessThan(bridge.initialize.mock.invocationCallOrder[0]);
+    expect(useSipAccountStore.getState().registrationState).not.toBe("registered");
+  });
+
+  it("ignores wrong account, stale generation, duplicate and out-of-order callbacks", async () => {
+    await ready();
+    const listener = [...runtime.listeners][0];
+    const failure = { type: "registration", account: { id: "1", accountId: "1", registrationState: "failed", regState: 1 } };
+    listener({ ...failure, generation: snapshot.generation - 1, sequence: 900 } as SiprixEvent);
+    listener({ ...failure, generation: snapshot.generation, sequence: snapshot.sequence } as SiprixEvent);
+    emit({ ...failure, account: { ...failure.account, accountId: "different" } });
+    expect(useSipAccountStore.getState().registrationState).toBe("registered");
+  });
+
+  it("blocks native completion and callbacks after logout during account creation", async () => {
+    const pending = deferred<Awaited<ReturnType<typeof bridge.createAccount>>>();
+    bridge.createAccount.mockReturnValueOnce(pending.promise);
+    const start = engine.initialize();
+    await vi.waitFor(() => expect(bridge.createAccount).toHaveBeenCalledOnce());
+    const listener = [...runtime.listeners][0];
+    runtime.user = null;
+    runtime.authListeners.forEach(listener => listener());
+    listener({ type: "registration", generation: snapshot.generation, sequence: 20,
+      account: { id: "1", accountId: "1", registrationState: "registered", regState: 0 } });
+    pending.resolve({ id: "1", accountId: "1", registrationState: "unregistered" });
+    await start;
+    await engine.destroy();
+    expect(bridge.registerAccount).not.toHaveBeenCalled();
+    expect(useSipAccountStore.getState().registrationState).toBe("unregistered");
+    expect(runtime.listeners.size).toBe(0);
+  });
+
+  it("invalidates same-user credential replacement and does not reuse the old registration", async () => {
+    await ready();
+    useSipAccountStore.setState({ account: { ...account, password: "another-test-secret" } });
+    await expect(engine.makeCall("2002")).rejects.toThrow("session");
+    await engine.initialize();
+    expect(bridge.initialize).toHaveBeenCalledTimes(2);
+    expect(bridge.createAccount.mock.calls[1][0]).toMatchObject({ sipPassword: "another-test-secret" });
+  });
+
+  it("keeps registration and calls when diagnostics hydrates identical credentials into a new object", async () => {
+    await ready();
+    await engine.makeCall("2002");
+    const hydrated = JSON.parse(JSON.stringify(useSipAccountStore.getState().account));
+    useSipAccountStore.setState({ account: hydrated });
+    await engine.initialize();
+    expect(bridge.destroy).not.toHaveBeenCalled();
+    expect(bridge.initialize).toHaveBeenCalledOnce();
+    expect(useSipAccountStore.getState().registrationState).toBe("registered");
+    expect(useSipCallStore.getState().activeCalls["11"]).toBeDefined();
+  });
+
+  it.each([
+    { domain: "new.example.test" }, { proxy: "proxy.example.test" }, { transport: "TCP" as const },
+    { port: 5060 }, { srtp: false }, { stun: "new-stun.example.test" }, { enabled: false },
+    { username: "1002" }, { tenantId: 9 }, { id: "new" }, { displayName: "New name" }, { ownerUserId: 29 },
+  ])("invalidates a changed account field %o", async change => {
+    await ready();
+    useSipAccountStore.setState({ account: { ...account, ...change } });
+    await expect(engine.makeCall("2002")).rejects.toThrow("session");
+    expect(bridge.destroy).toHaveBeenCalledOnce();
+  });
+
+  it("retains failed native cleanup for retry and blocks new accounts", async () => {
+    await ready();
+    bridge.destroy.mockRejectedValueOnce(new Error("native busy"));
+    await expect(engine.destroy()).rejects.toThrow("cleanup");
+    expect(useSipAccountStore.getState().registrationState).toBe("failed");
+    bridge.destroy.mockRejectedValueOnce(new Error("still busy"));
+    await expect(engine.initialize()).rejects.toThrow("cleanup");
+    expect(bridge.createAccount).toHaveBeenCalledOnce();
+    await engine.initialize();
+    expect(bridge.createAccount).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not restart a session canceled by a later destroy", async () => {
+    await ready();
+    const pending = deferred<void>();
+    bridge.destroy.mockReturnValueOnce(pending.promise);
+    const restart = engine.restart();
+    await vi.waitFor(() => expect(bridge.destroy).toHaveBeenCalledOnce());
+    const stop = engine.destroy();
+    pending.resolve();
+    await Promise.all([restart, stop]);
+    expect(bridge.initialize).toHaveBeenCalledOnce();
+    expect(useSipAccountStore.getState().registrationState).toBe("unregistered");
+  });
+
+  it("creates outgoing calls and confirms/holds/ends only from SDK events", async () => {
+    await ready();
+    expect(await engine.makeCall("2002")).toBe("11");
+    expect(bridge.makeCall).toHaveBeenCalledWith("1", "sip:2002@sip.example.test");
+    expect(useSipCallStore.getState().activeCalls["11"].status).toBe("calling");
+    emit({ type: "callConnected", call: newCall({ state: "connected" }) });
+    expect(useSipCallStore.getState().activeCalls["11"].status).toBe("active");
+    await engine.setHold("11", true);
+    expect(useSipCallStore.getState().activeCalls["11"].status).toBe("active");
+    emit({ type: "callHeld", call: newCall({ state: "held", held: true, holdState: 2 }) });
+    expect(useSipCallStore.getState().activeCalls["11"].status).toBe("held");
+    await engine.hangupCall("11");
+    expect(useSipCallStore.getState().activeCalls["11"]).toBeDefined();
+    emit({ type: "callTerminated", call: newCall({ state: "terminated" }) });
+    expect(useSipCallStore.getState().activeCalls).toEqual({});
+  });
+
+  it("keeps inbound ringing until native connected and deduplicates incoming callbacks", async () => {
+    await ready();
+    const incoming = newCall({ direction: "incoming", state: "ringing" });
+    emit({ type: "callIncoming", call: incoming });
+    emit({ type: "callIncoming", call: incoming });
+    expect(useSipCallStore.getState().incomingCall?.remoteNumber).toBe("2002");
+    await engine.answerCall("11");
+    expect(useSipCallStore.getState().incomingCall?.status).toBe("incoming");
+    expect(runtime.callManager.reportCallConnected).not.toHaveBeenCalled();
+    expect(runtime.callManager.displayIncomingCall).toHaveBeenCalledOnce();
+    emit({ type: "callConnected", call: { ...incoming, state: "connected" } });
+    expect(useSipCallStore.getState().incomingCall).toBeNull();
+    expect(useSipCallStore.getState().activeCalls["11"].direction).toBe("inbound");
+    expect(useSipCallStore.getState().activeCalls["11"].connectTime).toBeInstanceOf(Date);
+    expect(runtime.callManager.reportCallConnected).toHaveBeenCalledWith("11");
+  });
+
+  it.each([
+    ["sip:phone11-test@internal.example.test", "phone11-test"],
+    ["sips:+66812345678@internal.example.test;transport=tls", "+66812345678"],
+    ['"Support desk" <sip:3001@internal.example.test>', "3001"],
+    ["3001", "3001"],
+  ])("shows a clean incoming system handle while preserving the native URI (%s)", async (remoteUri, label) => {
+    await ready();
+    const incoming = newCall({ direction: "incoming", state: "ringing", remoteUri });
+    emit({ type: "callIncoming", call: incoming }); emit({ type: "callIncoming", call: incoming });
+    expect(runtime.callManager.displayIncomingCall).toHaveBeenCalledOnce();
+    expect(runtime.callManager.displayIncomingCall).toHaveBeenCalledWith("11", label);
+    const native = useSipCallStore.getState().getCall("11");
+    expect(native.getRemoteUri()).toBe(remoteUri); expect(native.getInfo().remoteUri).toBe(remoteUri);
+    expect(useSipCallStore.getState().incomingCall?.history?.number).toBe(label);
+    expect(bridge.makeCall).not.toHaveBeenCalled();
+    await engine.answerCall("11"); expect(bridge.answerCall).toHaveBeenCalledWith("11");
+  });
+
+  it("normalizes only the outgoing system handle and deduplicates early callbacks", async () => {
+    await ready();
+    const remoteUri = "sips:+66812345678@internal.example.test;transport=tls";
+    const outgoing = newCall({ remoteUri });
+    bridge.makeCall.mockImplementationOnce(async () => {
+      emit({ type: "callProceeding", call: { ...outgoing, state: "proceeding" } }); return outgoing;
+    });
+    expect(await engine.makeCall(remoteUri)).toBe("11");
+    expect(bridge.makeCall).toHaveBeenCalledWith("1", remoteUri);
+    expect(runtime.callManager.reportOutgoingCall).toHaveBeenCalledOnce();
+    expect(runtime.callManager.reportOutgoingCall).toHaveBeenCalledWith("11", "+66812345678");
+    expect(useSipCallStore.getState().activeCalls["11"]._nativeCall.getRemoteUri()).toBe(remoteUri);
+    expect(useSipCallStore.getState().activeCalls["11"].history?.number).toBe("+66812345678");
+  });
+
+  it("records only sequenced current-session audio activation booleans without claiming call connection", async () => {
+    await ready(); emit({ type: "callIncoming", call: newCall({ direction: "incoming", state: "ringing" }) });
+    const active = emit({ type: "audioSession", audioSessionActive: true, speaker: false });
+    runtime.listeners.forEach(listener => listener(active)); // Same sequence is ignored.
+    runtime.listeners.forEach(listener => listener({ ...active, sequence: active.sequence + 1, generation: active.generation + 1 }));
+    emit({ type: "audioSession", audioSessionActive: "private-device-detail" });
+    emit({ type: "audioSession", audioSessionActive: false, speaker: false });
+    runtime.user = { id: 29 }; emit({ type: "audioSession", audioSessionActive: true, speaker: false });
+    const diagnostics = runtime.diagnostics.mock.calls.map(([entry]) => entry).filter(entry => entry.message === "Siprix native audio session changed");
+    expect(diagnostics).toEqual([
+      { level: "info", category: "media", message: "Siprix native audio session changed", context: { active: true } },
+      { level: "info", category: "media", message: "Siprix native audio session changed", context: { active: false } },
+    ]);
+    expect(runtime.callManager.reportCallConnected).not.toHaveBeenCalled();
+    expect(useSipCallStore.getState().incomingCall?.status).toBe("incoming");
+  });
+
+  it("distinguishes a requested Answer from SDK acceptance and actual connection", async () => {
+    await ready();
+    emit({ type: "callIncoming", call: newCall({ direction: "incoming", state: "ringing" }) });
+    const accepted = deferred<void>();
+    bridge.answerCall.mockImplementationOnce(() => accepted.promise);
+    const answer = engine.answerCall("11");
+    expect(runtime.diagnostics).toHaveBeenCalledWith(expect.objectContaining({ message: "Siprix answer requested" }));
+    expect(runtime.diagnostics).not.toHaveBeenCalledWith(expect.objectContaining({ message: "Siprix answer command accepted" }));
+    accepted.resolve();
+    await answer;
+    expect(runtime.diagnostics).toHaveBeenCalledWith(expect.objectContaining({ message: "Siprix answer command accepted", context: { callId: "11" } }));
+    expect(useSipCallStore.getState().incomingCall?.status).toBe("incoming");
+    expect(runtime.callManager.reportCallConnected).not.toHaveBeenCalled();
+  });
+
+  it("does not record Answer acceptance or raw SDK text after rejection", async () => {
+    await ready();
+    emit({ type: "callIncoming", call: newCall({ direction: "incoming", state: "ringing" }) });
+    bridge.answerCall.mockRejectedValueOnce(new Error(account.password));
+    await expect(engine.answerCall("11")).rejects.toThrow("Siprix answer failed");
+    expect(runtime.diagnostics).not.toHaveBeenCalledWith(expect.objectContaining({ message: "Siprix answer command accepted" }));
+    expect(JSON.stringify(runtime.diagnostics.mock.calls)).not.toContain(account.password);
+    expect(useSipCallStore.getState().incomingCall?.status).toBe("incoming");
+  });
+
+  it("enforces single-call mode for concurrent commands and second incoming calls", async () => {
+    await ready();
+    const results = await Promise.allSettled([engine.makeCall("2002"), engine.makeCall("2003")]);
+    expect(results.map(result => result.status)).toEqual(["fulfilled", "rejected"]);
+    expect(bridge.makeCall).toHaveBeenCalledOnce();
+    emit({ type: "callIncoming", call: newCall({ id: "12", callId: "12", direction: "incoming", state: "ringing" }) });
+    expect(bridge.hangupCall).toHaveBeenCalledWith("12");
+    expect(useSipCallStore.getState().incomingCall).toBeNull();
+  });
+
+  it("never resurrects an outgoing call terminated before its native Promise resolves", async () => {
+    await ready();
+    bridge.makeCall.mockImplementationOnce(async () => {
+      emit({ type: "callTerminated", call: newCall({ state: "terminated" }) });
+      return newCall();
+    });
+    expect(await engine.makeCall("2002")).toBeNull();
+    emit({ type: "callConnected", call: newCall({ state: "connected" }) });
+    expect(useSipCallStore.getState().activeCalls).toEqual({});
+  });
+
+  it("does not downgrade early-connected calls when the invite Promise returns", async () => {
+    await ready();
+    bridge.makeCall.mockImplementationOnce(async () => {
+      emit({ type: "callConnected", call: newCall({ state: "connected" }) });
+      return newCall();
+    });
+    await engine.makeCall("2002");
+    emit({ type: "callProceeding", call: newCall({ state: "proceeding" }) });
+    expect(useSipCallStore.getState().activeCalls["11"].status).toBe("active");
+    expect(runtime.callManager.reportOutgoingCall).toHaveBeenCalledOnce();
+    expect(runtime.callManager.reportCallConnected).toHaveBeenCalledOnce();
+    expect(runtime.callManager.reportOutgoingCall.mock.invocationCallOrder[0])
+      .toBeLessThan(runtime.callManager.reportCallConnected.mock.invocationCallOrder[0]);
+  });
+
+  it("reports native remote termination and cleanup to CallKit only once", async () => {
+    await ready();
+    await engine.makeCall("2002");
+    emit({ type: "callTerminated", call: newCall({ state: "terminated" }) });
+    emit({ type: "callTerminated", call: newCall({ state: "terminated" }) });
+    await engine.destroy();
+    expect(runtime.callManager.reportCallEnded).toHaveBeenCalledOnce();
+    expect(runtime.callManager.reportCallEnded).toHaveBeenCalledWith("11");
+  });
+
+  it("does not report CallKit connected from a held or mute callback", async () => {
+    await ready();
+    await engine.makeCall("2002");
+    emit({ type: "callHeld", call: newCall({ state: "held", held: true, holdState: 1 }) });
+    emit({ type: "callMuted", call: newCall({ state: "connected", muted: true }) });
+    expect(runtime.callManager.reportCallConnected).not.toHaveBeenCalled();
+    emit({ type: "callConnected", call: newCall({ state: "connected" }) });
+    expect(runtime.callManager.reportCallConnected).toHaveBeenCalledOnce();
+  });
+
+  it("rejects video, attended transfer, and transfer before connection", async () => {
+    await ready();
+    await expect(engine.makeCall("2002", true)).rejects.toThrow("outbound call failed");
+    await engine.makeCall("2002");
+    await expect(engine.answerCall("11", true)).rejects.toThrow("video");
+    await expect(engine.transferCall("11", "2003")).rejects.toThrow("transfer");
+    await expect(useSipCallStore.getState().getCall("11").xferReplaces({})).rejects.toThrow("attended transfer");
+    expect(bridge.answerCall).not.toHaveBeenCalled();
+  });
+
+  it("rejects unknown states/events without manufacturing an active call", async () => {
+    await ready();
+    emit({ type: "callConnected", call: newCall({ state: "unexpected" as SiprixCall["state"] }) });
+    emit({ type: "futureEvent", call: newCall({ state: "connected" }) });
+    expect(useSipCallStore.getState().activeCalls).toEqual({});
+  });
+
+  it("forwards controls and native errors without retaining raw error text in diagnostics", async () => {
+    await ready();
+    await engine.makeCall("2002");
+    await engine.setMute("11", true);
+    expect(bridge.setMute).toHaveBeenCalledWith("11", true);
+    expect(runtime.diagnostics).toHaveBeenCalledWith(expect.objectContaining({
+      message: "Siprix microphone mute command accepted", context: { callId: "11", muted: true, stage: "accepted" },
+    }));
+    await engine.setSpeaker("11", true);
+    expect(bridge.setSpeaker).toHaveBeenCalledWith(true);
+    expect(useSipCallStore.getState().activeCalls["11"].isSpeaker).toBe(true);
+    await engine.sendDtmf("11", "12#a");
+    expect(bridge.sendDtmf).toHaveBeenCalledWith("11", "12#A");
+    await expect(engine.sendDtmf("11", "bad data")).rejects.toThrow("Invalid DTMF");
+    bridge.setMute.mockRejectedValueOnce(Object.assign(new Error(account.password), { code: "E_SIPRIX_-123" }));
+    await expect(engine.setMute("11", false)).rejects.toThrow("E_SIPRIX_-123");
+    expect(runtime.diagnostics).not.toHaveBeenCalledWith(expect.objectContaining({
+      message: "Siprix microphone mute command accepted", context: { callId: "11", muted: false, stage: "accepted" },
+    }));
+    expect(JSON.stringify(runtime.diagnostics.mock.calls)).not.toContain(account.password);
+  });
+
+  it("records an unavailable-session mute rejection without invoking the SDK", async () => {
+    await expect(engine.setMute("11", true)).rejects.toThrow("authenticated phone session");
+    expect(bridge.setMute).not.toHaveBeenCalled();
+    expect(runtime.diagnostics.mock.calls.map(([event]) => event.context?.stage)).toEqual(["requested", "precondition_rejected"]);
+    expect(runtime.diagnostics).toHaveBeenLastCalledWith(expect.objectContaining({
+      context: { callId: "11", muted: true, stage: "precondition_rejected", reason: "session_unavailable" },
+    }));
+  });
+
+  it("records stale and malformed call rejections without SDK actions or private text", async () => {
+    await ready();
+    await engine.makeCall("2002");
+    emit({ type: "callTerminated", call: newCall({ state: "terminated" }) });
+    runtime.diagnostics.mockClear();
+    await expect(engine.setMute("11", true)).rejects.toThrow("no longer available");
+    await expect(engine.setMute(account.password, false)).rejects.toThrow("no longer available");
+    expect(bridge.setMute).not.toHaveBeenCalled();
+    expect(runtime.diagnostics).toHaveBeenCalledWith(expect.objectContaining({
+      context: { callId: "11", muted: true, stage: "precondition_rejected", reason: "call_unavailable" },
+    }));
+    expect(JSON.stringify(runtime.diagnostics.mock.calls)).not.toContain(account.password);
+    expect(runtime.diagnostics.mock.calls.some(([event]) => event.context?.stage === "accepted")).toBe(false);
+  });
+
+  it("records a queued mute invalidated by session revision before invoking the SDK", async () => {
+    await ready();
+    await engine.makeCall("2002");
+    runtime.diagnostics.mockClear();
+    const mute = engine.setMute("11", true);
+    const stopped = engine.destroy();
+    await expect(mute).rejects.toThrow("session changed");
+    await stopped;
+    expect(bridge.setMute).not.toHaveBeenCalled();
+    expect(runtime.diagnostics).toHaveBeenCalledWith(expect.objectContaining({
+      context: { callId: "11", muted: true, stage: "precondition_rejected", reason: "revision_changed" },
+    }));
+  });
+
+  it("distinguishes SDK failure and late session change from accepted mute", async () => {
+    await ready();
+    await engine.makeCall("2002");
+    bridge.setMute.mockRejectedValueOnce(new Error(account.password));
+    await expect(engine.setMute("11", true)).rejects.toThrow("mute failed");
+    expect(runtime.diagnostics).toHaveBeenCalledWith(expect.objectContaining({
+      context: { callId: "11", muted: true, stage: "sdk_failed", reason: "sdk_rejected" },
+    }));
+    const pending = deferred<void>();
+    bridge.setMute.mockReturnValueOnce(pending.promise);
+    const mute = engine.setMute("11", true);
+    await vi.waitFor(() => expect(bridge.setMute).toHaveBeenCalledTimes(2));
+    const stopped = engine.destroy();
+    pending.resolve();
+    await expect(mute).rejects.toThrow("mute failed");
+    await stopped;
+    expect(runtime.diagnostics).toHaveBeenCalledWith(expect.objectContaining({
+      context: { callId: "11", muted: true, stage: "session_changed", reason: "session_changed_after_sdk" },
+    }));
+    expect(runtime.diagnostics.mock.calls.some(([event]) => event.context?.stage === "accepted")).toBe(false);
+    expect(JSON.stringify(runtime.diagnostics.mock.calls)).not.toContain(account.password);
+  });
+
+  it("only opens audio on CallKit activation and serializes deactivation/reactivation", async () => {
+    await ready();
+    await engine.makeCall("2002");
+    emit({ type: "callConnected", call: newCall({ state: "connected" }) });
+    expect(bridge.handleNativeAudioSession).not.toHaveBeenCalled();
+    await engine.handleNativeAudioSession(true);
+    await engine.handleNativeAudioSession(true);
+    expect(bridge.handleNativeAudioSession.mock.calls).toEqual([[true]]);
+    const pending = deferred<void>();
+    bridge.handleNativeAudioSession.mockReturnValueOnce(pending.promise);
+    const off = engine.handleNativeAudioSession(false);
+    const on = engine.handleNativeAudioSession(true);
+    await vi.waitFor(() => expect(bridge.handleNativeAudioSession).toHaveBeenCalledTimes(2));
+    pending.resolve();
+    await Promise.all([off, on]);
+    expect(bridge.handleNativeAudioSession.mock.calls).toEqual([[true], [false], [true]]);
+  });
+
+  it("retries failed audio activation and drops an activation queued before destroy", async () => {
+    await ready();
+    bridge.handleNativeAudioSession.mockRejectedValueOnce(new Error("audio unavailable"));
+    await expect(engine.handleNativeAudioSession(true)).rejects.toThrow("audio session");
+    await engine.handleNativeAudioSession(true);
+    expect(bridge.handleNativeAudioSession).toHaveBeenCalledTimes(2);
+    const audio = engine.handleNativeAudioSession(false);
+    const cleanup = engine.destroy();
+    await Promise.all([audio, cleanup]);
+    expect(bridge.handleNativeAudioSession).toHaveBeenCalledTimes(2);
+  });
+});
+
+
+describe("validated native wake adoption", () => {
+  const binding = { bindingId: "binding", ownerUserId: 17, tenantId: 2, deviceId: "device", sessionBinding: "session", expiresAt: Date.now()+600000 };
+  const uuid = "11111111-1111-4111-8111-111111111111";
+  function pendingWake(state: "ringing" | "connected" = "ringing") {
+    useSipAccountStore.setState({ account: { ...account, tenantId: 2 } });
+    snapshot = { ...emptySnapshot(), initialized: true, generation: 7, sequence: 5,
+      nativeWake: { ...binding, v: 1, callUUID: uuid, expiresAt: Date.now()+30000, grantExpiresAt: binding.expiresAt },
+      accounts: [{ id: "1", accountId: "1", registrationState: "registered", regState: 0 }],
+      calls: [newCall({ direction: "incoming", state, wakeCallUUID: uuid, wakeSystemAnswered: state === "connected" })] };
+    runtime.wakeBinding.mockResolvedValue(binding);
+  }
+  it.each(["ringing", "connected"] as const)("adopts a %s native wake without destroying, registering, or reporting another system call", async state => {
+    pendingWake(state);
+    await engine.initialize();
+    expect(bridge.destroy).not.toHaveBeenCalled(); expect(bridge.initialize).not.toHaveBeenCalled();
+    expect(bridge.createAccount).not.toHaveBeenCalled(); expect(bridge.registerAccount).not.toHaveBeenCalled();
+    expect(bridge.adoptIncomingWake).toHaveBeenCalledWith(binding, expect.objectContaining({ sipExtension: account.username }));
+    expect(bridge.restoreIncomingWakeDelegate).toHaveBeenCalledOnce();
+    expect(runtime.callManager.adoptIncomingCall).toHaveBeenCalledWith("11", uuid, state === "connected");
+    expect(runtime.callManager.displayIncomingCall).not.toHaveBeenCalled();
+    expect(useSipAccountStore.getState().registrationState).toBe("registered");
+  });
+  it.each(["unverified", "session", "tenant"])("refuses %s wake without tearing down its native owner", async reason => {
+    pendingWake();
+    runtime.wakeBinding.mockResolvedValue(reason === "unverified" ? null : { ...binding, ...(reason === "session" ? { sessionBinding: "replacement" } : { tenantId: 9 }) });
+    await expect(engine.initialize()).rejects.toThrow("initialization failed");
+    expect(bridge.adoptIncomingWake).not.toHaveBeenCalled(); expect(bridge.destroy).not.toHaveBeenCalled();
+    expect(runtime.callManager.adoptIncomingCall).not.toHaveBeenCalled();
+  });
+  it("does not adopt after same-user re-login during server verification", async () => {
+    pendingWake(); const wait=deferred<typeof binding>(); runtime.wakeBinding.mockReturnValue(wait.promise);
+    const task=engine.initialize(); await vi.waitFor(() => expect(runtime.wakeBinding).toHaveBeenCalled());
+    runtime.user={ id:17 }; wait.resolve(binding); await task;
+    expect(bridge.adoptIncomingWake).not.toHaveBeenCalled(); expect(bridge.destroy).not.toHaveBeenCalled();
+  });
+  it.each(["ringing", "connected", "dialing"] as const)("preserves a %s call found during recovery inspection", async (state) => {
+    await ready();
+    snapshot.calls = [newCall({ state, direction: state === "ringing" ? "incoming" : "outgoing" })];
+    snapshot.sequence++;
+    await engine.restart();
+    expect(bridge.destroy).not.toHaveBeenCalled();
+    expect(useSipCallStore.getState().activeCalls["11"] ?? useSipCallStore.getState().incomingCall).toBeTruthy();
+  });
+  it("preserves a newer call event while an older idle snapshot is pending", async () => {
+    await ready();
+    const old = structuredClone(snapshot);
+    const wait = deferred<SiprixSnapshot>(); bridge.getSnapshot.mockReturnValueOnce(wait.promise);
+    const task = engine.restart();
+    emit({ type: "callIncoming", call: newCall({ state: "ringing", direction: "incoming" }) });
+    wait.resolve(old); await task;
+    expect(bridge.destroy).not.toHaveBeenCalled();
+    expect(useSipCallStore.getState().incomingCall?.id).toBe("11");
+  });
+  it("keeps a verified wake alive on foreground restart", async () => {
+    pendingWake(); await engine.initialize();
+    await engine.restart();
+    expect(bridge.destroy).not.toHaveBeenCalled(); expect(bridge.initialize).not.toHaveBeenCalled();
+    expect(runtime.callManager.adoptIncomingCall).toHaveBeenCalledOnce();
+  });
+  it("binds only the current authenticated account and tenant for a future warm wake", async () => {
+    useSipAccountStore.setState({ account: { ...account, tenantId: 2 } }); await ready();
+    await engine.bindWakeOwner(binding);
+    expect(bridge.bindForegroundWakeContext).toHaveBeenCalledWith(binding, expect.objectContaining({ sipServer: account.domain }));
+    await expect(engine.bindWakeOwner({ ...binding, tenantId: 9 })).rejects.toThrow("does not match");
+    expect(bridge.bindForegroundWakeContext).toHaveBeenCalledOnce();
+  });
+  it("clears an adopted session after native wake cleanup fails without retaining a live call", async () => {
+    pendingWake(); await engine.initialize();
+    emit({ type: "error", operation: "wakeCleanup", code: -1 });
+    await vi.waitFor(() => expect(bridge.destroy).toHaveBeenCalledOnce());
+    expect(useSipCallStore.getState().incomingCall).toBeNull();
+    expect(useSipAccountStore.getState().registrationState).toBe("failed");
+  });
+
+  it("does not resurrect registration when destroy wins during wake restart inspection", async () => {
+    pendingWake(); await engine.initialize();
+    const wait=deferred<SiprixSnapshot>(); bridge.getSnapshot.mockReturnValueOnce(wait.promise);
+    const restart=engine.restart(); await engine.destroy();
+    wait.resolve({ ...emptySnapshot() }); await restart;
+    expect(bridge.destroy).toHaveBeenCalledOnce();
+    expect(bridge.initialize).not.toHaveBeenCalled(); expect(bridge.adoptIncomingWake).toHaveBeenCalledOnce();
+  });
+
+  it("restores a current cached wake owner after native account restart", async () => {
+    useSipAccountStore.setState({ account: { ...account, tenantId: 2 } });
+    runtime.wakeBinding.mockResolvedValue(binding);
+    await ready(); await engine.restart();
+    expect(bridge.bindForegroundWakeContext).toHaveBeenCalledTimes(2);
+    expect(bridge.bindForegroundWakeContext).toHaveBeenLastCalledWith(binding, expect.objectContaining({ sipServer: account.domain }));
+    expect(bridge.destroy).toHaveBeenCalledOnce();
+  });
+  it.each(["owner", "tenant", "expired", "unverified"])("does not bind a %s wake identity on a fresh account", async reason => {
+    useSipAccountStore.setState({ account: { ...account, tenantId: 2 } });
+    runtime.wakeBinding.mockResolvedValue(reason === "unverified" ? null : {
+      ...binding, ...(reason === "owner" ? { ownerUserId: 99 } : reason === "tenant" ? { tenantId: 99 } : { expiresAt: Date.now()-1 }),
+    });
+    await ready();
+    expect(bridge.bindForegroundWakeContext).not.toHaveBeenCalled();
+    expect(bridge.destroy).not.toHaveBeenCalled();
+    expect(useSipAccountStore.getState().registrationState).toBe("registered");
+  });
+  it("does not bind a resolved owner after the authentication session changes", async () => {
+    useSipAccountStore.setState({ account: { ...account, tenantId: 2 } });
+    const wait = deferred<typeof binding>(); runtime.wakeBinding.mockReturnValue(wait.promise);
+    const task = engine.initialize();
+    await vi.waitFor(() => expect(runtime.wakeBinding).toHaveBeenCalledOnce());
+    runtime.user = { id: 17 }; // A new login object, even for the same owner.
+    runtime.authListeners.forEach(listener => listener());
+    wait.resolve(binding); await task;
+    expect(bridge.bindForegroundWakeContext).not.toHaveBeenCalled();
+  });
+  it("preserves an incoming call when warm-owner rebinding fails", async () => {
+    useSipAccountStore.setState({ account: { ...account, tenantId: 2 } });
+    const wait = deferred<typeof binding>(); runtime.wakeBinding.mockReturnValue(wait.promise);
+    const task = engine.initialize();
+    await vi.waitFor(() => expect(runtime.wakeBinding).toHaveBeenCalledOnce());
+    emit({ type: "callIncoming", call: newCall({ state: "ringing", direction: "incoming" }) });
+    bridge.bindForegroundWakeContext.mockRejectedValueOnce(new Error("native owner guard rejected"));
+    wait.resolve(binding); await task;
+    expect(useSipCallStore.getState().incomingCall?.id).toBe("11");
+    expect(bridge.destroy).not.toHaveBeenCalled();
+  });
+
+  it("does not bind after phone account configuration changes during verification", async () => {
+    useSipAccountStore.setState({ account: { ...account, tenantId: 2 } });
+    const wait = deferred<typeof binding>(); runtime.wakeBinding.mockReturnValue(wait.promise);
+    const task = engine.initialize();
+    await vi.waitFor(() => expect(runtime.wakeBinding).toHaveBeenCalledOnce());
+    useSipAccountStore.setState({ account: { ...account, tenantId: 2, domain: "replacement.example.test" } });
+    wait.resolve(binding); await task;
+    expect(bridge.bindForegroundWakeContext).not.toHaveBeenCalled();
+  });
+  it("cleans the old runtime when login changes during native owner binding", async () => {
+    useSipAccountStore.setState({ account: { ...account, tenantId: 2 } });
+    runtime.wakeBinding.mockResolvedValue(binding);
+    const wait = deferred<void>(); bridge.bindForegroundWakeContext.mockReturnValueOnce(wait.promise);
+    const task = engine.initialize();
+    await vi.waitFor(() => expect(bridge.bindForegroundWakeContext).toHaveBeenCalledOnce());
+    runtime.user = { id: 99 }; runtime.authListeners.forEach(listener => listener());
+    wait.resolve(); await task;
+    expect(bridge.destroy).toHaveBeenCalledOnce();
+    expect(runtime.diagnostics).not.toHaveBeenCalledWith(expect.objectContaining({ message: "Siprix foreground wake owner restored" }));
+  });
+
+  it("records only a fixed diagnostic when wake verification is unavailable", async () => {
+    runtime.wakeBinding.mockResolvedValue(null);await ready();
+    expect(runtime.diagnostics).toHaveBeenCalledWith({ level:"warning",category:"engine",message:"Siprix wake owner verification unavailable" });
+    expect(bridge.destroy).not.toHaveBeenCalled();
+  });
+
+});
+
+describe("native-only completed call reconciliation", () => {
+  const binding = { bindingId: "binding", ownerUserId: 17, tenantId: 2, deviceId: "device", sessionBinding: "session", expiresAt: Date.now()+600000 };
+  const row = { id: "native-wake:11111111-1111-4111-8111-111111111111", ownerUserId: 17, tenantId: 2, number: "2002", direction: "inbound" as const, startedAt: 1000, answeredAt: 2000, endedAt: 5000, updatedAt: 5000 };
+  it("imports a completed cold call from an empty runtime and acks only after disk persistence", async () => {
+    useSipAccountStore.setState({ account: { ...account, tenantId: 2 } }); runtime.wakeBinding.mockResolvedValue(binding);
+    bridge.readCompletedWakeCalls.mockResolvedValue([row]);
+    bridge.ackCompletedWakeCalls.mockImplementation(async () => { expect(JSON.parse(runtime.storage.get("phone11_call_history_v1_user_17")!)).toEqual([expect.objectContaining({ id: row.id, endedAt: 5000 })]); });
+    await engine.initialize();
+    await vi.waitFor(() => expect(bridge.ackCompletedWakeCalls).toHaveBeenCalledWith(binding,[row.id]));
+    expect(useSipCallStore.getState().incomingCall).toBeNull();
+  });
+  it("uses the same prospective ID for a JS-observed wake and terminal import", async () => {
+    useSipAccountStore.setState({ account: { ...account, tenantId: 2 } }); runtime.wakeBinding.mockResolvedValue(binding);
+    await ready();
+    emit({ type: "callIncoming", call: newCall({ direction: "incoming", state: "ringing", wakeCallUUID: row.id.slice(12), historyId: row.id, startedAt: row.startedAt }) });
+    emit({ type: "callConnected", call: newCall({ direction: "incoming", state: "connected", wakeCallUUID: row.id.slice(12), historyId: row.id, startedAt: row.startedAt, answeredAt: row.answeredAt }) });
+    emit({ type: "callTerminated", call: newCall({ direction: "incoming", state: "terminated" }) });
+    bridge.readCompletedWakeCalls.mockResolvedValue([row]); await engine.initialize();
+    await vi.waitFor(() => expect(bridge.ackCompletedWakeCalls).toHaveBeenCalled());
+    const saved=JSON.parse(runtime.storage.get("phone11_call_history_v1_user_17")!);
+    expect(saved).toHaveLength(1); expect(saved[0]).toMatchObject({ id: row.id, startedAt: row.startedAt, answeredAt: row.answeredAt, endedAt: row.endedAt });
+  });
+  it("does not ack on failed disk writes", async () => {
+    useSipAccountStore.setState({ account: { ...account, tenantId: 2 } }); runtime.wakeBinding.mockResolvedValue(binding);
+    bridge.readCompletedWakeCalls.mockResolvedValue([row]); runtime.writeHistory.mockRejectedValue(new Error("unavailable"));
+    await engine.initialize(); await vi.waitFor(() => expect(runtime.writeHistory).toHaveBeenCalled());
+    expect(bridge.ackCompletedWakeCalls).not.toHaveBeenCalled();
+  });
+  it("does not import or ack data after auth changes during native read", async () => {
+    useSipAccountStore.setState({ account: { ...account, tenantId: 2 } }); runtime.wakeBinding.mockResolvedValue(binding);
+    const read=deferred<typeof row[]>(); bridge.readCompletedWakeCalls.mockReturnValue(read.promise);
+    await engine.initialize(); await vi.waitFor(() => expect(bridge.readCompletedWakeCalls).toHaveBeenCalled());
+    runtime.user={id:99}; read.resolve([row]); await new Promise(resolve => setTimeout(resolve,0));
+    expect(bridge.ackCompletedWakeCalls).not.toHaveBeenCalled(); expect(runtime.storage.has("phone11_call_history_v1_user_17")).toBe(false);
+  });
+});
+
+
+describe("Siprix blind transfer outcomes", () => {
+  async function connected() {
+    await ready(); await engine.makeCall("2002");
+    emit({ type: "callConnected", call: newCall({ state: "connected" }) });
+  }
+  const result = (code: number) => emit({ type: "callTransferred", call: newCall({ state: "connected", transferRequestId: bridge.transferCall.mock.calls.at(-1)?.[2], transferPending: false, transferStatusCode: code }) });
+  it("waits for SDK outcome and never hangs up on command acceptance", async () => {
+    await connected(); let completed = false;
+    const transfer = engine.transferCall("11", "3003").then(() => { completed = true; });
+    await vi.waitFor(() => expect(bridge.transferCall).toHaveBeenCalledWith("11", "3003", expect.any(String)));
+    expect(completed).toBe(false);
+    await engine.setMute("11", true);
+    expect(bridge.setMute).toHaveBeenCalledWith("11", true);
+    result(0); await transfer;
+    expect(bridge.hangupCall).not.toHaveBeenCalled();
+    expect(useSipCallStore.getState().activeCalls["11"]).toBeDefined();
+  });
+  it("retains original call on SDK transfer failure", async () => {
+    await connected(); const transfer = engine.transferCall("11", "3003");
+    const assertion = expect(transfer).rejects.toThrow("original call");
+    await vi.waitFor(() => expect(bridge.transferCall).toHaveBeenCalled());
+    result(486); await assertion;
+    expect(bridge.hangupCall).not.toHaveBeenCalled();
+    expect(useSipCallStore.getState().activeCalls["11"]).toBeDefined();
+  });
+  it("rejects invalid destinations and duplicate requests", async () => {
+    await connected();
+    await expect(engine.transferCall("11", "sip:3003@other.test")).rejects.toThrow("extension");
+    const transfer = engine.transferCall("11", "+663003");
+    await expect(engine.transferCall("11", "4004")).rejects.toThrow("already");
+    await vi.waitFor(() => expect(bridge.transferCall).toHaveBeenCalledTimes(1));
+    result(0); await transfer;
+  });
+  it("does not report call termination as transfer success", async () => {
+    await connected(); const transfer = engine.transferCall("11", "3003");
+    const assertion = expect(transfer).rejects.toThrow("ended before");
+    await vi.waitFor(() => expect(bridge.transferCall).toHaveBeenCalled());
+    emit({ type: "callTerminated", call: newCall({ state: "terminated" }) });
+    await assertion;
+  });
+  it("ignores stale and different-account outcomes", async () => {
+    await connected(); let completed = false;
+    const transfer = engine.transferCall("11", "3003").then(() => { completed = true; });
+    await vi.waitFor(() => expect(bridge.transferCall).toHaveBeenCalled());
+    emit({ type: "callTransferred", call: newCall({ accountId: "999", transferPending: false, transferStatusCode: 0 }) });
+    runtime.listeners.forEach(listener => listener({ type: "callTransferred", generation: snapshot.generation - 1, sequence: snapshot.sequence + 1, call: newCall({ transferPending: false, transferStatusCode: 0 }) }));
+    await Promise.resolve(); expect(completed).toBe(false);
+    result(0); await transfer;
+  });
+  it("does not admit a new call from an unsolicited transfer outcome", async () => {
+    await ready();
+    emit({ type: "callTransferred", call: newCall({ callId: "999", id: "999", state: "connected", transferAttempted: true, transferPending: false, transferStatusCode: 0 }) });
+    expect(useSipCallStore.getState().activeCalls).toEqual({});
+    expect(runtime.callManager.reportOutgoingCall).not.toHaveBeenCalled();
+  });
+  it("times out without blocking mute or ending the call", async () => {
+    await connected(); vi.useFakeTimers();
+    try {
+      const transfer = engine.transferCall("11", "3003");
+      const assertion = expect(transfer).rejects.toThrow("not been confirmed");
+      await vi.advanceTimersByTimeAsync(30_000); await assertion;
+      await engine.setMute("11", true);
+      expect(bridge.hangupCall).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
+  it("allows a fresh request after expiry before invocation without old cleanup deleting it", async () => {
+    await connected(); vi.useFakeTimers();
+    try {
+      const identity = deferred<string>(); bridge.createTransferRequestId.mockReturnValueOnce(identity.promise);
+      const first = engine.transferCall("11", "3003"), expired = expect(first).rejects.toThrow("expired before it could be sent");
+      await vi.advanceTimersByTimeAsync(30_000); await expired;
+      expect(bridge.transferCall).not.toHaveBeenCalled(); expect(engine.hasAttemptedBlindTransfer("11")).toBe(false);
+      const next = engine.transferCall("11", "4004");
+      identity.resolve("00000000-0000-4000-8000-000000000123"); await vi.advanceTimersByTimeAsync(0);
+      expect(bridge.transferCall).toHaveBeenCalledOnce(); expect(bridge.transferCall.mock.calls[0][1]).toBe("4004");
+      result(0); await next;
+    } finally { vi.useRealTimers(); }
+  });
+  it("gates older installed bridges without transfer support", async () => {
+    const older = { ...bridge, transferCall: undefined };
+    runtime.modules.Phone11Siprix = older;
+    await connected();
+    expect(engine.supportsBlindTransfer()).toBe(false);
+    await expect(engine.transferCall("11", "3003")).rejects.toThrow("update");
+    expect(bridge.transferCall).not.toHaveBeenCalled();
+  });
+  it("handles native command rejection without ending the original call", async () => {
+    await connected(); bridge.transferCall.mockRejectedValueOnce(new Error("SDK rejected"));
+    await expect(engine.transferCall("11", "3003")).rejects.toThrow("Could not confirm");
+    expect(bridge.hangupCall).not.toHaveBeenCalled();
+  });
+  it("recovers a callback outcome from the native snapshot", async () => {
+    await connected(); const transfer = engine.transferCall("11", "3003");
+    await vi.waitFor(() => expect(bridge.transferCall).toHaveBeenCalled());
+    snapshot.calls = [newCall({ state: "connected", transferRequestId: bridge.transferCall.mock.calls.at(-1)?.[2], transferPending: false, transferStatusCode: 0 })];
+    await engine.restart(); await transfer;
+    expect(bridge.hangupCall).not.toHaveBeenCalled();
+  });
+  it("refuses a retry after a failed SDK outcome and ignores its late duplicate", async () => {
+    await connected(); const first = engine.transferCall("11", "3003");
+    const rejected = expect(first).rejects.toThrow("failed");
+    await vi.waitFor(() => expect(bridge.transferCall).toHaveBeenCalledTimes(1));
+    result(486); await rejected;
+    const retry = engine.transferCall("11", "4004");
+    const refused = expect(retry).rejects.toThrow("unavailable for this call");
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    result(0); await refused;
+    expect(bridge.transferCall).toHaveBeenCalledTimes(1);
+    expect(bridge.hangupCall).not.toHaveBeenCalled();
+    expect(useSipCallStore.getState().activeCalls["11"]).toBeDefined();
+  });
+  it("permits retry only for a known native refusal before SDK invocation", async () => {
+    await connected(); bridge.transferCall.mockRejectedValueOnce(Object.assign(new Error("not sent"), { code: "E_CALL_STATE" }));
+    await expect(engine.transferCall("11", "3003")).rejects.toThrow("Could not request");
+    expect(engine.hasAttemptedBlindTransfer("11")).toBe(false);
+    const next = engine.transferCall("11", "4004");
+    await vi.waitFor(() => expect(bridge.transferCall).toHaveBeenCalledTimes(2));
+    result(0); await next;
+  });
+  it.each(["E_SIPRIX_-20", "E_BRIDGE_TRANSPORT", "E_TRANSFER_ATTEMPTED"])("retains one-attempt admission after %s", async code => {
+    await connected(); bridge.transferCall.mockRejectedValueOnce(Object.assign(new Error("private native error"), { code }));
+    await expect(engine.transferCall("11", "3003")).rejects.toThrow("One transfer attempt");
+    await expect(engine.transferCall("11", "4004")).rejects.toThrow("unavailable for this call");
+    expect(bridge.transferCall).toHaveBeenCalledOnce(); expect(bridge.hangupCall).not.toHaveBeenCalled();
+    expect(useSipCallStore.getState().activeCalls["11"]).toBeDefined();
+  });
+  it("restores consumed transfer admission from a retained native snapshot", async () => {
+    await connected(); snapshot.calls = [newCall({ state: "connected", transferAttempted: true, transferPending: false, transferRequestId: "00000000-0000-4000-8000-000000000001", transferStatusCode: 486 })];
+    await engine.restart();
+    await expect(engine.transferCall("11", "4004")).rejects.toThrow("unavailable for this call");
+    expect(bridge.transferCall).not.toHaveBeenCalled();
+  });
+  it.each(["logout", "ended", "held"])("does not invoke SDK after %s while minting request identity", async boundary => {
+    await connected(); const identity = deferred<string>(); bridge.createTransferRequestId.mockReturnValueOnce(identity.promise);
+    const first = engine.transferCall("11", "3003"); const rejected = expect(first).rejects.toThrow();
+    await vi.waitFor(() => expect(bridge.createTransferRequestId).toHaveBeenCalled());
+    if (boundary === "logout") { runtime.user = null; runtime.authListeners.forEach(listener => listener()); }
+    if (boundary === "ended") emit({ type: "callTerminated", call: newCall({ state: "terminated" }) });
+    if (boundary === "held") emit({ type: "callHeld", call: newCall({ state: "held", held: true, holdState: 1 }) });
+    identity.resolve("00000000-0000-4000-8000-000000000123"); await rejected;
+    expect(bridge.transferCall).not.toHaveBeenCalled();
+  });
+  it("serializes replacement behind an old bridge refusal and preserves the reused-ID attempt", async () => {
+    await connected();
+    let rejectOld!: (error: Error) => void;
+    bridge.transferCall.mockImplementationOnce(() => new Promise<void>((_done, fail) => { rejectOld = fail; }));
+    const first = engine.transferCall("11", "3003"), firstResult = expect(first).rejects.toThrow("session changed");
+    await vi.waitFor(() => expect(bridge.transferCall).toHaveBeenCalledOnce());
+    const oldGeneration = snapshot.generation, oldRequest = bridge.transferCall.mock.calls[0][2];
+    runtime.user = { id: 17 }; runtime.authListeners.forEach(listener => listener());
+    const replacement = engine.initialize();
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    expect(bridge.createAccount).toHaveBeenCalledOnce();
+    rejectOld(Object.assign(new Error("old guard refusal"), { code: "E_CALL_STATE" }));
+    await firstResult; await replacement; registered(); await engine.makeCall("2002");
+    emit({ type: "callConnected", call: newCall({ state: "connected" }) });
+    let completed = false;
+    const next = engine.transferCall("11", "4004").then(() => { completed = true; });
+    await vi.waitFor(() => expect(bridge.transferCall).toHaveBeenCalledTimes(2));
+    runtime.listeners.forEach(listener => listener({ type: "callTransferred", generation: oldGeneration, sequence: snapshot.sequence + 1,
+      call: newCall({ state: "connected", transferRequestId: oldRequest, transferPending: false, transferStatusCode: 0 }) }));
+    await Promise.resolve(); expect(completed).toBe(false); expect(engine.hasAttemptedBlindTransfer("11")).toBe(true);
+    await expect(engine.transferCall("11", "5005")).rejects.toThrow("already");
+    result(0); await next; expect(completed).toBe(true);
+  });
+  it("isolates a recreated JS engine with a native-minted UUID", async () => {
+    await connected(); const first = engine.transferCall("11", "3003");
+    const firstResult = expect(first).rejects.toThrow("failed");
+    await vi.waitFor(() => expect(bridge.transferCall).toHaveBeenCalledTimes(1));
+    const oldRequest = bridge.transferCall.mock.calls[0][2];
+    result(486); await firstResult; await engine.destroy();
+    // Recreate JS counters and native generation; retained data must still not match.
+    snapshot = emptySnapshot(); engine = new SiprixEngine();
+    await connected(); let settled = false;
+    const next = engine.transferCall("11", "3003").finally(() => { settled = true; });
+    await vi.waitFor(() => expect(bridge.transferCall).toHaveBeenCalledTimes(2));
+    const newRequest = bridge.transferCall.mock.calls[1][2];
+    expect(newRequest).not.toBe(oldRequest);
+    expect(newRequest).toMatch(/^[0-9a-f-]{36}$/);
+    emit({ type: "callTransferred", call: newCall({ state: "connected", transferRequestId: oldRequest, transferPending: false, transferStatusCode: 0 }) });
+    await Promise.resolve(); expect(settled).toBe(false);
+    result(0); await next;
+  });
+  it("requires a confirmed unhold before transferring a held call", async () => {
+    await connected();
+    emit({ type: "callHeld", call: newCall({ state: "held", held: true, holdState: 1 }) });
+    await expect(engine.transferCall("11", "3003")).rejects.toThrow("Resume");
+    expect(bridge.transferCall).not.toHaveBeenCalled();
+    emit({ type: "callHeld", call: newCall({ state: "connected", held: false, holdState: 0 }) });
+    const transfer = engine.transferCall("11", "3003");
+    await vi.waitFor(() => expect(bridge.transferCall).toHaveBeenCalled());
+    result(0); await transfer;
+  });
+  it("rejects pending result on logout", async () => {
+    await connected(); const transfer = engine.transferCall("11", "3003");
+    const assertion = expect(transfer).rejects.toThrow("session changed");
+    await engine.destroy(); await assertion;
+  });
+});
+
+
+describe("default-off warm transfer native candidate", () => {
+  const requestId = "00000000-0000-4000-8000-111111111111";
+  const original = (phase: import("../modules/phone11-siprix").ConsultationPhase = "holding", extra: Partial<SiprixCall> = {}) => newCall({
+    state: "held", held: true, holdState: 1, historyId: "native-outbound:00000000-0000-4000-8000-000000000011",
+    consultationAttempted: true, consultationRequestId: requestId, consultationPhase: phase,
+    ...(phase !== "holding" ? { consultationCallId: "12" } : {}), ...extra,
+  });
+  const consult = () => newCall({ id: "12", callId: "12", state: "connected", consultationParentId: "11", consultationRequestId: requestId,
+    remoteUri: "sip:3003@sip.example.test", historyId: "native-outbound:00000000-0000-4000-8000-000000000012" });
+  async function warmReady() {
+    snapshot.warmTransferAvailable = true;
+    await ready(); await engine.makeCall("2002");
+    emit({ type: "callConnected", call: newCall({state:"connected"}) });
+  }
+  function admit() {
+    emit({type:"consultationChanged",call:original("calling")});
+    emit({type:"consultationChanged",call:consult()});
+    emit({type:"consultationChanged",call:original("ready")});
+  }
+  it("requires affirmative native capability, keeping old/gate-off builds and wake adoption unavailable", async () => {
+    await ready(); expect(engine.supportsWarmTransfer()).toBe(false);
+    await engine.makeCall("2002"); emit({type:"callConnected",call:newCall({state:"connected"})});
+    await expect(engine.beginConsultation("11","3003")).rejects.toThrow();
+    expect(bridge.beginConsultation).not.toHaveBeenCalled();
+  });
+  it("reauthorizes outward dialing after authoritative hold and sends one continuation only",async()=>{
+    await warmReady(); await engine.beginConsultation("11","3003");
+    emit({type:"callHeld",call:original("held_ready")});
+    emit({type:"callHeld",call:original("held_ready")});
+    await new Promise(resolve=>setTimeout(resolve,0));
+    expect(bridge.continueConsultation).toHaveBeenCalledOnce();
+    expect(bridge.continueConsultation).toHaveBeenCalledWith("11",requestId);
+  });
+  it.each(["logout","account","ended","request"])("does not dial a consultation retired between begin and hold (%s)",async boundary=>{
+    await warmReady(); await engine.beginConsultation("11","3003");
+    if (boundary === "logout") runtime.user=null;
+    if (boundary === "account") useSipAccountStore.setState({account:{...account,tenantId:99}});
+    if (boundary === "ended") emit({type:"callTerminated",call:newCall({state:"terminated"})});
+    if (boundary === "request") {
+      emit({type:"callHeld",call:original("held_ready")});
+      emit({type:"consultationChanged",call:original("canceling",{consultationRequestId:"replacement-request"})});
+    } else emit({type:"callHeld",call:original("held_ready")});
+    await new Promise(resolve=>setTimeout(resolve,0));
+    expect(bridge.continueConsultation).not.toHaveBeenCalled();
+    expect(bridge.makeCall).toHaveBeenCalledOnce();
+  });
+  it.each(["+66812345678", "1".repeat(32), "+" + "1".repeat(32)])("preserves the shared consultation destination boundary %s", async target => {
+    await warmReady(); await engine.beginConsultation("11", target);
+    expect(bridge.beginConsultation).toHaveBeenCalledWith("11", target, expect.any(String));
+  });
+  it.each(["66+812345678", "++66812345678", "+", "1".repeat(33), "+" + "1".repeat(33)])("rejects malformed or overlong shared consultation destination %s before native work", async target => {
+    await warmReady(); await expect(engine.beginConsultation("11", target)).rejects.toThrow("phone number or extension");
+    expect(bridge.beginConsultation).not.toHaveBeenCalled(); expect(bridge.createTransferRequestId).not.toHaveBeenCalled();
+  });
+  it("starts a consultation using a native UUID and does not optimistically hold or create a second call",async()=>{
+    await warmReady(); expect(engine.supportsWarmTransfer()).toBe(true);
+    await engine.beginConsultation("11","3003");
+    expect(bridge.beginConsultation).toHaveBeenCalledWith("11","3003",expect.stringMatching(/^[0-9a-f-]{36}$/));
+    expect(useSipCallStore.getState().activeCalls["11"].isHeld).toBe(false);
+    expect(Object.keys(useSipCallStore.getState().activeCalls)).toEqual(["11"]);
+    emit({type:"consultationChanged",call:original()});
+    expect(useSipCallStore.getState().activeCalls["11"].isHeld).toBe(true);
+    expect(engine.consultation("11")?.phase).toBe("holding");
+    await expect(engine.beginConsultation("11","4004")).rejects.toThrow();
+    expect(bridge.beginConsultation).toHaveBeenCalledOnce();
+  });
+  it("rejects session change and original replacement while requesting a native identity",async()=>{
+    await warmReady(); const identity=deferred<string>(); bridge.createTransferRequestId.mockImplementationOnce(()=>identity.promise);
+    const pending=engine.beginConsultation("11","3003"); await new Promise(resolve=>setTimeout(resolve,0));
+    runtime.user={id:18}; identity.resolve(requestId);
+    await expect(pending).rejects.toThrow(); expect(bridge.beginConsultation).not.toHaveBeenCalled();
+  });
+  it("admits only a same-account native request-owned consultation, rejecting ordinary extra calls",async()=>{
+    await warmReady(); emit({type:"consultationChanged",call:original("calling")});
+    emit({type:"callConnected",call:{...consult(),consultationRequestId:"stale"}});
+    expect(bridge.hangupCall).toHaveBeenCalledWith("12");
+    expect(Object.keys(useSipCallStore.getState().activeCalls)).toEqual(["11"]);
+    admit(); expect(Object.keys(useSipCallStore.getState().activeCalls).sort()).toEqual(["11","12"]);
+    await expect(engine.makeCall("4004")).rejects.toThrow();
+    emit({type:"callIncoming",call:newCall({id:"13",callId:"13",state:"ringing",direction:"incoming"})});
+    expect(bridge.hangupCall).toHaveBeenCalledWith("13");
+  });
+  it("cancels only the current native consultation and waits for authoritative restoration",async()=>{
+    await warmReady(); admit();
+    await expect(engine.cancelConsultation("11","stale")).rejects.toThrow();
+    expect(bridge.cancelConsultation).not.toHaveBeenCalled();
+    await engine.cancelConsultation("11",requestId);
+    expect(bridge.cancelConsultation).toHaveBeenCalledWith("11",requestId);
+    expect(useSipCallStore.getState().activeCalls["11"].isHeld).toBe(true);
+    expect(bridge.hangupCall).not.toHaveBeenCalled(); // Native owns exactly the consultation leg.
+    emit({type:"callTerminated",call:{...consult(),state:"terminated"}});
+    emit({type:"consultationChanged",call:original("returned",{state:"connected",held:false,holdState:0})});
+    expect(useSipCallStore.getState().activeCalls["11"].isHeld).toBe(false);
+    await expect(engine.beginConsultation("11","4004")).rejects.toThrow();
+  });
+  it("rejects retained blind transfer before consuming its latch while consultation hold is pending",async()=>{
+    await warmReady();
+    emit({type:"consultationChanged",call:original("holding",{state:"connected",held:false,holdState:0})});
+    await expect(engine.transferCall("11","4004")).rejects.toThrow("consultation controls");
+    expect(bridge.transferCall).not.toHaveBeenCalled(); expect(engine.hasAttemptedBlindTransfer("11")).toBe(false);
+    admit(); const outcome=engine.completeConsultation("11",requestId); await new Promise(resolve=>setTimeout(resolve,0));
+    expect(bridge.completeConsultation).toHaveBeenCalledOnce();
+    const transferId=bridge.completeConsultation.mock.calls[0][2];
+    emit({type:"callTransferred",call:original("completed",{transferAttempted:true,transferRequestId:transferId,transferPending:false,transferStatusCode:0})}); await outcome;
+  });
+  it("retains the single original CallKit audio session when SDK terminates original before transfer callback",async()=>{
+    await warmReady(); admit(); expect(runtime.callManager.reportOutgoingCall).toHaveBeenCalledOnce();
+    const outcome=engine.completeConsultation("11",requestId); const uncertain=expect(outcome).rejects.toThrow("ended before transfer");
+    await new Promise(resolve=>setTimeout(resolve,0)); const transferId=bridge.completeConsultation.mock.calls[0][2];
+    emit({type:"callTransferred",call:original("transferring",{transferAttempted:true,transferRequestId:transferId,transferPending:true})});
+    emit({type:"callTerminated",call:original("transferring",{state:"terminated",transferAttempted:true,transferRequestId:transferId,transferPending:true})});
+    await uncertain; expect(runtime.callManager.reportCallEnded).not.toHaveBeenCalled(); expect(bridge.hangupCall).not.toHaveBeenCalled();
+    emit({type:"callTransferred",call:original("completed",{transferAttempted:true,transferRequestId:transferId,transferPending:false,transferStatusCode:0})});
+    expect(runtime.callManager.reportCallEnded).not.toHaveBeenCalled();
+    emit({type:"callTerminated",call:{...consult(),state:"terminated"}});
+    expect(runtime.callManager.reportCallEnded).toHaveBeenCalledOnce(); expect(runtime.callManager.reportCallEnded).toHaveBeenCalledWith("11");
+  });
+  it("allows explicit OS End(original) to end the remaining owned consultation after original termination",async()=>{
+    await warmReady(); admit(); const outcome=engine.completeConsultation("11",requestId); const uncertain=expect(outcome).rejects.toThrow("ended before transfer");
+    await new Promise(resolve=>setTimeout(resolve,0)); const transferId=bridge.completeConsultation.mock.calls[0][2];
+    emit({type:"callTransferred",call:original("transferring",{transferAttempted:true,transferRequestId:transferId,transferPending:true})});
+    emit({type:"callTerminated",call:original("transferring",{state:"terminated",transferAttempted:true,transferRequestId:transferId,transferPending:true})});
+    await uncertain; expect(bridge.hangupCall).not.toHaveBeenCalled();
+    expect(engine.remainingConsultation("12")).toEqual(engine.remainingConsultation("11"));
+    expect(engine.remainingConsultation("12")?.originalId).toBe("11");
+    await engine.hangupCall("11"); expect(bridge.hangupCall).toHaveBeenCalledWith("12");
+    expect(runtime.callManager.reportCallEnded).not.toHaveBeenCalled();
+    emit({type:"callTerminated",call:{...consult(),state:"terminated"}});
+    expect(runtime.callManager.reportCallEnded).toHaveBeenCalledWith("11");
+  });
+  it.each(["callback-first", "termination-first", "account-retired"])("fences the actual retained CallKit End listener to the remaining leg (%s)", async order => {
+    const handlers = runtime.osHandlers; handlers.clear(); const keep = runtime.osKeep;
+    const { createRequire } = await import("node:module");
+    const require = createRequire(import.meta.url); const key = require.resolve("react-native-callkeep");
+    require.cache[key] = { id: key, filename: key, loaded: true, exports: { default: { ...keep,
+      addEventListener: (event: string, callback: (event: any) => unknown) => handlers.set(event, callback) } } } as any;
+    const { nativeCallManager } = await vi.importActual<typeof import("../lib/sip/native-call")>("../lib/sip/native-call");
+    nativeCallManager.destroy();
+    // The engine and OS listener are real; only the unavailable native packages are mocked.
+    runtime.osHangup.mockImplementation(id => engine.hangupCall(id));
+    runtime.callManager.initialize.mockImplementationOnce(() => nativeCallManager.initialize());
+    runtime.callManager.reportOutgoingCall.mockImplementationOnce((...args: any[]) => nativeCallManager.reportOutgoingCall(args[0], args[1]));
+    runtime.callManager.reportCallConnected.mockImplementationOnce((...args: any[]) => nativeCallManager.reportCallConnected(args[0]));
+    runtime.callManager.reportCallEnded.mockImplementationOnce((...args: any[]) => nativeCallManager.reportCallEnded(args[0]));
+    vi.stubEnv("EXPO_PUBLIC_SIP_ENGINE", "siprix");
+    try {
+      await warmReady(); admit();
+      const callUUID = keep.startCall.mock.calls[0][0];
+      const outcome = engine.completeConsultation("11", requestId);
+      const result = order === "termination-first" ? expect(outcome).rejects.toThrow("ended before transfer") : outcome;
+      await new Promise(resolve => setTimeout(resolve, 0)); const transferId = bridge.completeConsultation.mock.calls.at(-1)![2];
+      const transfer = (phase: "completed" | "transferring") => original(phase, { transferAttempted: true, transferRequestId: transferId,
+        transferPending: phase === "transferring", ...(phase === "completed" ? { transferStatusCode: 0 } : {}) });
+      emit({ type: "callTransferred", call: transfer(order === "termination-first" ? "transferring" : "completed") });
+      emit({ type: "callTerminated", call: { ...transfer(order === "termination-first" ? "transferring" : "completed"), state: "terminated" } });
+      await result;
+      if (order === "termination-first") emit({ type: "callTransferred", call: transfer("completed") });
+      expect(bridge.hangupCall).not.toHaveBeenCalled(); expect(keep.reportEndCallWithUUID).not.toHaveBeenCalled();
+      if (order === "account-retired") useSipAccountStore.setState({ account: { ...account, tenantId: 99 } });
+      await handlers.get("endCall")!({ callUUID });
+      expect(runtime.osHangup).toHaveBeenCalledWith("11");
+      if (order === "account-retired") {
+        expect(bridge.hangupCall).not.toHaveBeenCalled(); expect(engine.remainingConsultation("11")).toBeNull();
+        // Account retirement owns OS cleanup; its old UUID must not target another leg.
+        await handlers.get("endCall")!({ callUUID }); expect(bridge.hangupCall).not.toHaveBeenCalled(); return;
+      }
+      expect(keep.reportEndCallWithUUID).not.toHaveBeenCalled();
+      expect(bridge.hangupCall).toHaveBeenCalledWith("12");
+      emit({ type: "callTerminated", call: { ...consult(), state: "terminated" } });
+      expect(keep.reportEndCallWithUUID).toHaveBeenCalledOnce();
+    } finally { nativeCallManager.destroy(); }
+  });
+  it.each(["logout", "account", "request", "history", "queued-request"])("retires the explicit remaining-leg End mapping (%s)", async boundary => {
+    await warmReady(); admit();
+    emit({ type: "callTransferred", call: original("completed", { transferPending: false, transferStatusCode: 0 }) });
+    emit({ type: "callTerminated", call: original("completed", { state: "terminated" }) });
+    expect(engine.remainingConsultation("11")?.callId).toBe("12");
+    let end: Promise<void> | undefined;
+    if (boundary === "queued-request") end = engine.hangupCall("11");
+    if (boundary === "logout") runtime.user = null;
+    if (boundary === "account") useSipAccountStore.setState({ account: { ...account, tenantId: 99 } });
+    if (boundary === "request" || boundary === "queued-request") emit({ type: "consultationChanged", call: { ...consult(), consultationRequestId: "replacement" } });
+    if (boundary === "history") emit({ type: "consultationChanged", call: { ...consult(), historyId: "replacement" } });
+    expect(engine.remainingConsultation("11")).toBeNull();
+    await expect(end ?? engine.hangupCall("11")).rejects.toThrow();
+    expect(bridge.hangupCall).not.toHaveBeenCalled();
+  });
+  it("keeps explicit remaining-leg End available after SDK refusal, retiring it only on termination", async () => {
+    await warmReady(); admit();
+    emit({ type: "callTransferred", call: original("completed", { transferPending: false, transferStatusCode: 0 }) });
+    emit({ type: "callTerminated", call: original("completed", { state: "terminated" }) });
+    bridge.hangupCall.mockRejectedValueOnce(new Error("SDK refused"));
+    await expect(engine.hangupCall("11")).rejects.toThrow();
+    expect(engine.remainingConsultation("11")?.callId).toBe("12");
+    await engine.hangupCall("11");
+    expect(bridge.hangupCall).toHaveBeenCalledTimes(2);
+    emit({ type: "callTerminated", call: { ...consult(), state: "terminated" } });
+    expect(engine.remainingConsultation("11")).toBeNull();
+    await expect(engine.hangupCall("11")).rejects.toThrow();
+    expect(bridge.hangupCall).toHaveBeenCalledTimes(2);
+  });
+  it("waits for the matching attended SDK outcome and never forces disconnect after success",async()=>{
+    await warmReady(); admit(); let resolved=false;
+    const outcome=engine.completeConsultation("11",requestId).then(()=>{resolved=true;});
+    await new Promise(resolve=>setTimeout(resolve,0));
+    expect(bridge.completeConsultation).toHaveBeenCalledOnce(); expect(resolved).toBe(false);
+    const transferId=bridge.completeConsultation.mock.calls[0][2];
+    emit({type:"callTransferred",call:original("transferring",{transferAttempted:true,transferRequestId:transferId,transferPending:false,transferStatusCode:0})});
+    await outcome; expect(resolved).toBe(true); expect(bridge.hangupCall).not.toHaveBeenCalled();
+    expect(Object.keys(useSipCallStore.getState().activeCalls).sort()).toEqual(["11","12"]);
+  });
+  it("preserves both legs on failed attended transfer and rejects a later transfer request",async()=>{
+    await warmReady(); admit(); const outcome=engine.completeConsultation("11",requestId);
+    await new Promise(resolve=>setTimeout(resolve,0));
+    const transferId=bridge.completeConsultation.mock.calls[0][2];
+    emit({type:"callTransferred",call:original("transfer_failed",{transferAttempted:true,transferRequestId:transferId,transferPending:false,transferStatusCode:486})});
+    await expect(outcome).rejects.toThrow("failed"); expect(bridge.hangupCall).not.toHaveBeenCalled();
+    await expect(engine.completeConsultation("11",requestId)).rejects.toThrow();
+    expect(bridge.completeConsultation).toHaveBeenCalledOnce();
+    await engine.cancelConsultation("11",requestId); expect(bridge.cancelConsultation).toHaveBeenCalledOnce();
+  });
+  it("fences timed-out completion and delayed outcomes while keeping call controls responsive",async()=>{
+    vi.useFakeTimers();
+    try {
+      await warmReady(); admit(); const outcome=engine.completeConsultation("11",requestId); const failure=expect(outcome).rejects.toThrow("not been confirmed");
+      await vi.advanceTimersByTimeAsync(0); const transferId=bridge.completeConsultation.mock.calls[0][2];
+      await engine.setMute("11",true); expect(bridge.setMute).toHaveBeenCalledWith("11",true);
+      await vi.advanceTimersByTimeAsync(30_000); await failure;
+      await expect(engine.completeConsultation("11",requestId)).rejects.toThrow("One transfer attempt");
+      emit({type:"callTransferred",call:original("completed",{transferAttempted:true,transferRequestId:transferId,transferPending:false,transferStatusCode:0})});
+      expect(bridge.completeConsultation).toHaveBeenCalledOnce(); expect(bridge.hangupCall).not.toHaveBeenCalled();
+    } finally {vi.useRealTimers();}
+  });
+});

@@ -1,0 +1,136 @@
+name: Phone11 live iPhone register capture v43
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - ".github/workflows/phone11-live-iphone-register-capture-v43.yml"
+
+permissions:
+  contents: read
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_USER: ubuntu
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+  EC2_HOST: 43.210.122.111
+
+jobs:
+  iphone-register-capture-v43:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Locate EC2 and prepare temporary SSH key
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          INSTANCE_JSON=$(aws ec2 describe-instances --filters "Name=ip-address,Values=$EC2_HOST" "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0]' --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          test -n "$INSTANCE_ID" && test "$INSTANCE_ID" != null
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_v43_key -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key --instance-id "$INSTANCE_ID" --availability-zone "$AZ" --instance-os-user "$EC2_USER" --ssh-public-key "file://$HOME/.ssh/phone11_v43_key.pub" >/dev/null
+
+      - name: Capture one iPhone REGISTER attempt and classify auth
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ssh -i ~/.ssh/phone11_v43_key -o StrictHostKeyChecking=no -o ServerAliveInterval=15 -o ServerAliveCountMax=20 "$EC2_USER@$EC2_HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          DOMAIN=sip.phone11.ai
+          EXT=1001
+          OUT=/tmp/phone11-v43-register.pcap.txt
+          PARSED=/tmp/phone11-v43-parsed.txt
+          rm -f "$OUT" "$PARSED"
+
+          PGUSER="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_USER:-postgres}"')"
+          PGDATABASE="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_DB:-${POSTGRES_USER:-postgres}}"')"
+          PGPASSWORD_VALUE="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_PASSWORD:-}"')"
+
+          echo "===== V43 current live auth row, redacted ====="
+          docker exec -i -e PGPASSWORD="$PGPASSWORD_VALUE" cp11-postgres psql -v ON_ERROR_STOP=1 -U "$PGUSER" -d "$PGDATABASE" <<SQL
+          SELECT 'extensions' AS table_name, id, extension_number, sip_username, sip_domain, user_id, transport, status, length(coalesce(sip_password,'')) AS password_len
+          FROM extensions
+          WHERE extension_number = '$EXT' OR sip_username = '$EXT'
+          ORDER BY id;
+          SELECT 'subscriber' AS table_name, username, domain, length(coalesce(password,'')) AS password_len,
+                 length(coalesce(ha1,'')) AS ha1_len,
+                 coalesce(ha1,'') = md5(username || ':' || domain || ':' || password) AS ha1_matches_password
+          FROM subscriber
+          WHERE username = '$EXT' AND domain = '$DOMAIN';
+          SQL
+
+          echo "===== Capture window started ====="
+          echo "V43_CAPTURE_SECONDS=150"
+          echo "Now run the iPhone manual SIP registration test once."
+          sudo timeout 150 tcpdump -i any -nn -s0 -A "udp port 5060 and (host 43.210.122.111 or port 5060)" > "$OUT" 2>&1 || true
+          echo "===== Capture window ended ====="
+
+          PHONE11_CAPTURE="$OUT" PHONE11_TEST_USER="$EXT" PHONE11_TEST_DOMAIN="$DOMAIN" PHONE11_TEST_PASS="$(docker exec -i -e PGPASSWORD="$PGPASSWORD_VALUE" cp11-postgres psql -At -v ON_ERROR_STOP=1 -U "$PGUSER" -d "$PGDATABASE" -c "SELECT password FROM subscriber WHERE username='$EXT' AND domain='$DOMAIN' LIMIT 1")" python3 - <<'PY' | tee "$PARSED"
+          import hashlib, os, re
+          path=os.environ['PHONE11_CAPTURE']; user=os.environ['PHONE11_TEST_USER']; domain=os.environ['PHONE11_TEST_DOMAIN']; password=os.environ['PHONE11_TEST_PASS']
+          data=open(path,'rb').read().decode('latin1','ignore') if os.path.exists(path) else ''
+          chunks=[]
+          for part in re.split(r'(?=REGISTER sip:|(?=SIP/2.0 ))', data):
+              if user in part and domain in part and ('REGISTER sip:' in part or 'SIP/2.0' in part):
+                  chunks.append(part)
+          reqs=[c for c in chunks if c.startswith('REGISTER') or 'REGISTER sip:' in c[:80]]
+          replies=[c for c in chunks if c.startswith('SIP/2.0') or 'SIP/2.0' in c[:80]]
+          auth_reqs=[]
+          matching_auth=0
+          bad_auth=0
+          def fields(auth):
+              return {k.lower():(q or b) for k,q,b in re.findall(r'(\w+)=(?:"([^"]*)"|([^,\s]+))', auth)}
+          def md5(s): return hashlib.md5(s.encode()).hexdigest()
+          for r in reqs:
+              m=re.search(r'Authorization:\s*Digest\s+([^\r\n]+)', r, re.I)
+              if not m:
+                  continue
+              auth_reqs.append(r)
+              f=fields(m.group(1))
+              uri=f.get('uri','sip:'+domain); realm=f.get('realm',domain); nonce=f.get('nonce',''); resp=f.get('response',''); qop=f.get('qop',''); nc=f.get('nc',''); cnonce=f.get('cnonce','')
+              ha1=md5(f'{user}:{realm}:{password}')
+              ha2=md5(f'REGISTER:{uri}')
+              expected=md5(f'{ha1}:{nonce}:{nc}:{cnonce}:{qop}:{ha2}') if qop else md5(f'{ha1}:{nonce}:{ha2}')
+              if resp and expected == resp:
+                  matching_auth += 1
+              elif resp:
+                  bad_auth += 1
+          status_counts={}
+          for rep in replies:
+              m=re.search(r'SIP/2.0\s+(\d+)', rep)
+              if m:
+                  status_counts[m.group(1)] = status_counts.get(m.group(1),0)+1
+          print(f'V43_REGISTER_REQUESTS_FOR_1001={len(reqs)}')
+          print(f'V43_REGISTER_REPLIES_FOR_1001={len(replies)}')
+          print(f'V43_AUTHORIZATION_REGISTER_REQUESTS={len(auth_reqs)}')
+          print(f'V43_AUTHORIZATION_MATCHES_CURRENT_PASSWORD={matching_auth}')
+          print(f'V43_AUTHORIZATION_BAD_DIGESTS={bad_auth}')
+          print('V43_STATUS_COUNTS=' + ','.join(f'{k}:{v}' for k,v in sorted(status_counts.items())) )
+          if not reqs:
+              print('V43_CLASSIFICATION=no_iphone_register_seen')
+          elif not auth_reqs:
+              print('V43_CLASSIFICATION=client_did_not_send_authorization_after_401')
+          elif matching_auth > 0 and status_counts.get('200',0) > 0:
+              print('V43_CLASSIFICATION=server_registered_ok_client_state_issue')
+          elif matching_auth > 0:
+              print('V43_CLASSIFICATION=auth_digest_correct_but_no_200_seen')
+          else:
+              print('V43_CLASSIFICATION=client_sent_wrong_password_or_realm_digest')
+          PY
+
+          echo "===== Redacted SIP evidence ====="
+          if [ -s "$OUT" ]; then
+            grep -aE "REGISTER sip:|SIP/2.0 (100|200|401|403)|Call-ID:|CSeq:|From:|To:|WWW-Authenticate:|Authorization:" "$OUT" \
+              | sed -E 's/(response=")[^"]+/\1<redacted>/Ig; s/(nonce=")[^"]+/\1<redacted>/Ig; s/(cnonce=")[^"]+/\1<redacted>/Ig; s/(Authorization: Digest ).*/\1<redacted>/Ig' \
+              | tail -n 240 || true
+          else
+            echo "no_capture_file"
+          fi
+          echo "V43_CAPTURE_COMPLETE=yes"
+          REMOTE

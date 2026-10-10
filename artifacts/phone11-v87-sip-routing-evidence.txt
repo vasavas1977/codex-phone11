@@ -1,0 +1,48 @@
+V87_STARTED_UTC=2026-05-26T16:21:15Z
+V87_SIP_HOST=sip.phone11.ai
+V87_EXPECTED_EC2_HOST=43.210.122.111
+V87_RUNNER_DNS_BEGIN
+43.210.122.111  STREAM sip.phone11.ai
+43.210.122.111  DGRAM  
+43.210.122.111  RAW    
+V87_RUNNER_PYTHON_ADDRS=43.210.122.111
+V87_RUNNER_DNS_END
+V87_EC2_DESCRIBE_STATUS=0
+{"InstanceId":"i-0851dd1ea1cfeef71","PrivateIpAddress":"10.0.1.69","PublicIpAddress":"43.210.122.111","Placement":{"AvailabilityZoneId":"apse7-az1","GroupName":"","Tenancy":"default","AvailabilityZone":"ap-southeast-7a"}}
+V87_EC2_INSTANCE_ID=i-0851dd1ea1cfeef71
+V87_EC2_AZ=ap-southeast-7a
+V87_EIC_PUSH=true
+Warning: Permanently added '43.210.122.111' (ED25519) to the list of known hosts.
+V87_EC2_STARTED_UTC=2026-05-26T16:21:27Z
+V87_EC2_HOSTNAME=ip-10-0-1-69
+V87_EC2_PUBLIC_IP_EXPECTED=43.210.122.111
+V87_EC2_DNS_GETENT_BEGIN
+43.210.122.111  STREAM sip.phone11.ai
+43.210.122.111  DGRAM  
+43.210.122.111  RAW    
+V87_EC2_DNS_GETENT_END
+V87_EC2_PYTHON_ADDRS=43.210.122.111
+V87_EC2_SIP_LISTEN_BEGIN
+udp   UNCONN 0      0           10.0.1.69:5060       0.0.0.0:*    users:(("kamailio",pid=2694812,fd=7),("kamailio",pid=2694811,fd=7),("kamailio",pid=2694810,fd=7),("kamailio",pid=2694809,fd=7),("kamailio",pid=2694807,fd=7),("kamailio",pid=2694805,fd=7),("kamailio",pid=2694802,fd=7),("kamailio",pid=2694801,fd=7),("kamailio",pid=2694799,fd=7),("kamailio",pid=2694798,fd=7),("kamailio",pid=2694797,fd=7),("kamailio",pid=2694794,fd=7),("kamailio",pid=2694793,fd=7),("kamailio",pid=2694792,fd=7),("kamailio",pid=2694791,fd=7),("kamailio",pid=2694790,fd=7),("kamailio",pid=2694789,fd=7),("kamailio",pid=2694786,fd=7),("kamailio",pid=2694783,fd=7),("kamailio",pid=2694782,fd=7),("kamailio",pid=2694781,fd=7),("kamailio",pid=2694779,fd=7),("kamailio",pid=2694777,fd=7),("kamailio",pid=2694775,fd=7),("kamailio",pid=2694774,fd=7),("kamailio",pid=2694773,fd=7),("kamailio",pid=2694771,fd=7))
+udp   UNCONN 0      0           127.0.0.1:22222      0.0.0.0:*    users:(("rtpengine",pid=1126949,fd=4))                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           
+udp   UNCONN 0      0               [::1]:5060          [::]:*    users:(("freeswitch",pid=1651741,fd=33))                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         
+tcp   LISTEN 0      128         127.0.0.1:22223      0.0.0.0:*    users:(("rtpengine",pid=1126949,fd=8))                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           
+tcp   LISTEN 0      1024        10.0.1.69:5060       0.0.0.0:*    users:(("kamailio",pid=2694812,fd=9))                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            
+tcp   LISTEN 0      1024        10.0.1.69:8088       0.0.0.0:*    users:(("kamailio",pid=2694812,fd=10))                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           
+tcp   LISTEN 0      64              [::1]:5060          [::]:*    users:(("freeswitch",pid=1651741,fd=36))                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         
+V87_EC2_SIP_LISTEN_END
+V87_DOCKER_CONTAINERS_BEGIN
+cp11-backend     cloudphone11-prod-backend                  127.0.0.1:3000->3000/tcp
+p11-kamailio     ghcr.io/kamailio/kamailio:5.8.4-bookworm   
+p11-rtpengine    drachtio/rtpengine:latest                  
+cp11-postgres    postgres:16-alpine                         127.0.0.1:5432->5432/tcp
+p11-freeswitch   safarov/freeswitch:latest                  
+V87_DOCKER_CONTAINERS_END
+V87_KAMAILIO_CONTAINER=p11-kamailio
+V87_KAMAILIO_RECENT_1001_BEGIN
+Allow: ACK, BYE, CANCEL, INFO, INVITE, MESSAGE, NOTIFY, OPTIONS, PRACK, REFER, REGISTER, SUBSCRIBE, UPDATE, PUBLISH
+V87_KAMAILIO_RECENT_1001_END
+V87_DNS_MATCH_EXPECTED=true
+V87_EC2_DONE_UTC=2026-05-26T16:21:27Z
+V87_SSH_STATUS=0
+V87_DONE_UTC=2026-05-26T16:21:27Z

@@ -1,0 +1,107 @@
+name: Phone11 DB Tenant Slug Fix
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - '.github/workflows/phone11-db-tenant-slug-fix.yml'
+
+permissions:
+  contents: read
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_HOST: '43.209.112.208'
+  EC2_USER: 'ubuntu'
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+
+jobs:
+  fix-tenant-slug:
+    name: Repair tenant slug default
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Repair tenant slug default on live backend DB
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+            echo 'ERROR: AWS credentials are not configured.'
+            exit 30
+          fi
+
+          echo '--- Locate EC2 ---'
+          INSTANCE_JSON=$(aws ec2 describe-instances --filters "Name=ip-address,Values=$EC2_HOST" "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0]' --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = 'null' ]; then
+            echo "ERROR: Could not find running EC2 instance for $EC2_HOST"
+            exit 32
+          fi
+          echo "Found EC2 instance $INSTANCE_ID in $AZ"
+
+          echo '--- Prepare temporary SSH access ---'
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_temp_eic_key -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key --instance-id "$INSTANCE_ID" --availability-zone "$AZ" --instance-os-user "$EC2_USER" --ssh-public-key "file://$HOME/.ssh/phone11_temp_eic_key.pub"
+
+          echo '--- Write remote repair script ---'
+          cat >/tmp/phone11-tenant-slug-fix.sh <<'REMOTE'
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+
+          docker exec -i cp11-backend node --input-type=module - <<'NODE'
+          import pg from 'pg';
+
+          const firstEnv = (...keys) => keys.map((key) => process.env[key]).find((value) => value && value.length > 0);
+          const cfg = {
+            host: firstEnv('PG_HOST', 'DB_HOST', 'POSTGRES_HOST'),
+            port: Number(firstEnv('PG_PORT', 'DB_PORT', 'POSTGRES_PORT') || 5432),
+            user: firstEnv('PG_USER', 'DB_USER', 'POSTGRES_USER'),
+            password: firstEnv('PG_PASSWORD', 'DB_PASSWORD', 'POSTGRES_PASSWORD'),
+            database: firstEnv('PG_DATABASE', 'DB_NAME', 'DB_DATABASE', 'POSTGRES_DB'),
+          };
+          const missing = Object.entries(cfg).filter(([key, value]) => key !== 'port' && !value).map(([key]) => key);
+          if (missing.length) throw new Error(`Missing backend DB env: ${missing.join(', ')}`);
+          const sslMode = firstEnv('PG_SSL', 'DB_SSL', 'POSTGRES_SSL', 'DATABASE_SSL')?.toLowerCase();
+          const ssl = sslMode === 'false' || sslMode === '0' || sslMode === 'disable' ? false : { rejectUnauthorized: false };
+          const pool = new pg.Pool({ ...cfg, ssl, connectionTimeoutMillis: 5000, max: 2 });
+
+          try {
+            await pool.query('BEGIN');
+            await pool.query('ALTER TABLE tenants ADD COLUMN IF NOT EXISTS slug VARCHAR(128)');
+            await pool.query("ALTER TABLE tenants ALTER COLUMN slug SET DEFAULT 'phone11'");
+            await pool.query("UPDATE tenants SET slug = CASE WHEN id = 1 THEN 'phone11' ELSE 'tenant-' || id::text END WHERE slug IS NULL OR slug = ''");
+            await pool.query('ALTER TABLE tenants ALTER COLUMN slug SET NOT NULL');
+            await pool.query(`
+              INSERT INTO tenants (id, name, slug, plan, status)
+              VALUES (1, 'Phone11', 'phone11', 'business', 'active')
+              ON CONFLICT (id) DO UPDATE SET
+                slug = COALESCE(NULLIF(tenants.slug, ''), EXCLUDED.slug),
+                name = COALESCE(NULLIF(tenants.name, ''), EXCLUDED.name),
+                plan = COALESCE(NULLIF(tenants.plan, ''), EXCLUDED.plan),
+                status = COALESCE(NULLIF(tenants.status, ''), EXCLUDED.status),
+                updated_at = NOW()
+            `);
+            await pool.query('COMMIT');
+            const check = await pool.query('SELECT id, name, slug, plan, status FROM tenants WHERE id = 1');
+            console.log(`Tenant slug repair OK: ${JSON.stringify(check.rows[0])}`);
+          } catch (error) {
+            await pool.query('ROLLBACK').catch(() => {});
+            throw error;
+          } finally {
+            await pool.end();
+          }
+          NODE
+          REMOTE
+
+          echo '--- Run remote repair ---'
+          scp -i ~/.ssh/phone11_temp_eic_key -o StrictHostKeyChecking=no /tmp/phone11-tenant-slug-fix.sh "$EC2_USER@$EC2_HOST:/tmp/phone11-tenant-slug-fix.sh"
+          ssh -i ~/.ssh/phone11_temp_eic_key -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" 'bash /tmp/phone11-tenant-slug-fix.sh'
+          echo 'Tenant slug DB repair completed.'

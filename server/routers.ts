@@ -1,10 +1,25 @@
+import { invitationsRouter } from "./invitations/router";
+import { meetingsRouter } from "./meetings/router";
+import { conferenceRouter } from "./conference/router";
+import { cloudRecordingsRouter } from "./cloud-recordings/router";
+import { chatNotificationsRouter } from "./chat-notifications/router";
 import { z } from "zod";
+import { TRPCError } from "@trpc/server";
+import { integrationSecretStatus } from "./pbx/integration-auth";
+import { findOwnedRecording } from "./pbx/media-access";
 import { COOKIE_NAME } from "../shared/const.js";
 import { getSessionCookieOptions } from "./_core/cookies";
+import { revokePhone11Session } from "./_core/phone11-auth";
+import { getPool } from "./pbx/db";
 import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, protectedProcedure, adminProcedure, router } from "./_core/trpc";
 import { pbxRouter } from "./pbx/pbx-router";
 import { ivrRouter } from "./pbx/ivr-router";
+import { chatRouter } from "./chat/router";
+import { profileRouter } from "./profile/router";
+import { wakeService,wakeEnrollSchema,wakeIdentitySchema } from "./push/wake-service";
+import { resolvePushSession } from "./push/session";
+import { WakeError } from "./push/wake-repository";
 import { invokeLLM } from "./_core/llm";
 import {
   getPhoneConfig,
@@ -26,11 +41,107 @@ import {
   triggerPushSchema,
 } from "./push-gateway";
 
+const phoneTenantIdSchema = z.number().int().positive();
+
+const legacyRecordingAnalysisSchema = z.object({
+  summary: z.string().trim().min(1).max(12_000),
+  topics: z.array(z.object({
+    label: z.string().trim().min(1),
+    confidence: z.number().min(0).max(100),
+    description: z.string().trim().min(1),
+  }).strict()).max(5),
+  keyPoints: z.array(z.object({
+    text: z.string().trim().min(1),
+    speaker: z.enum(["caller", "callee", "unknown"]),
+  }).strict()).max(6),
+  sentiment: z.enum(["positive", "neutral", "negative", "mixed"]),
+  sentimentScore: z.number().min(-1).max(1),
+  actionItems: z.array(z.object({
+    task: z.string().trim().min(1),
+    assignee: z.string().trim().min(1),
+    urgency: z.enum(["high", "medium", "low"]),
+  }).strict()).max(5),
+  language: z.string().trim().min(1).max(80),
+  category: z.string().trim().min(1).max(80),
+}).strict();
+
+/**
+ * The old phone.* management API predates the PBX router's tenant context.
+ * Keep its authorization separate from the global platform-admin role: every
+ * request reads the current tenant membership directly, so a revocation takes
+ * effect before the next provisioning operation.
+ */
+async function requirePhoneTenantAdmin(
+  userId: number,
+  requestedTenantId?: number,
+): Promise<number> {
+  const values = requestedTenantId === undefined ? [userId] : [userId, requestedTenantId];
+  const requestedClause = requestedTenantId === undefined ? "" : "AND tm.tenant_id = $2";
+  const result = await getPool().query(
+    `SELECT tm.tenant_id
+       FROM tenant_memberships tm
+       JOIN tenants t ON t.id = tm.tenant_id AND t.status = 'active'
+      WHERE tm.user_id = $1
+        AND tm.status = 'active'
+        AND tm.role IN ('owner', 'admin')
+        ${requestedClause}
+      ORDER BY tm.created_at ASC, tm.tenant_id ASC`,
+    values,
+  );
+
+  if (
+    requestedTenantId === undefined &&
+    result.rows.length !== 1
+  ) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Select a workspace before changing phone settings.",
+    });
+  }
+  const tenantId = result.rows[0]?.tenant_id;
+  if (!Number.isSafeInteger(tenantId) || tenantId <= 0) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "Workspace administrator access is required." });
+  }
+  return tenantId;
+}
+
+async function listPhoneAdminTenants(userId: number): Promise<number[]> {
+  const result = await getPool().query(
+    `SELECT tm.tenant_id
+       FROM tenant_memberships tm
+       JOIN tenants t ON t.id = tm.tenant_id AND t.status = 'active'
+      WHERE tm.user_id = $1
+        AND tm.status = 'active'
+        AND tm.role IN ('owner', 'admin')
+      ORDER BY tm.created_at ASC, tm.tenant_id ASC`,
+    [userId],
+  );
+  const tenantIds: number[] = [];
+  for (const row of result.rows as Array<{ tenant_id: unknown }>) {
+    const tenantId = row.tenant_id;
+    if (typeof tenantId === "number" && Number.isSafeInteger(tenantId) && tenantId > 0) {
+      tenantIds.push(tenantId);
+    }
+  }
+  if (tenantIds.length === 0) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "Workspace administrator access is required." });
+  }
+  return tenantIds;
+}
+
 export const appRouter = router({
+  invitations: invitationsRouter,
+  meetings: meetingsRouter,
+  conference: conferenceRouter,
+  cloudRecordings: cloudRecordingsRouter,
+  profile: profileRouter,
   system: systemRouter,
   auth: router({
     me: publicProcedure.query((opts) => opts.ctx.user),
-    logout: publicProcedure.mutation(({ ctx }) => {
+    logout: publicProcedure.mutation(async ({ ctx }) => {
+      const response = await revokePhone11Session(ctx.req.headers);
+      const cookies = response.headers.getSetCookie();
+      if (cookies.length) ctx.res.setHeader("Set-Cookie", cookies);
       const cookieOptions = getSessionCookieOptions(ctx.req);
       ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
       return {
@@ -42,85 +153,100 @@ export const appRouter = router({
   /** Phone provisioning - auto-configure SIP after login */
   phone: router({
     /** Get SIP config for the logged-in user (auto-provisioning) */
-    getConfig: protectedProcedure.query(async ({ ctx }) => {
-      return getPhoneConfig(ctx.user.id, ctx.user.openId);
-    }),
+    getConfig: protectedProcedure
+      .input(z.object({ tenantId: phoneTenantIdSchema }).strict().optional())
+      .query(async ({ ctx, input }) => getPhoneConfig(ctx.user.id, ctx.user.openId, input?.tenantId)),
 
-    /** Pilot: create or assign a first-device test extension for the logged-in user */
-    ensurePilotConfig: protectedProcedure.mutation(async ({ ctx }) => {
-      return ensurePilotExtensionForUser(ctx.user.id, ctx.user.openId);
-    }),
+    /** Legacy pilot endpoint: read the selected assignment without allocation. */
+    ensurePilotConfig: protectedProcedure
+      .input(z.object({ tenantId: phoneTenantIdSchema }).strict().optional())
+      .mutation(async ({ ctx, input }) => ensurePilotExtensionForUser(ctx.user.id, ctx.user.openId, input?.tenantId)),
 
-    /** Admin: list all extensions */
-    listExtensions: adminProcedure
-      .input(z.object({ orgId: z.number().optional() }).optional())
-      .query(async ({ input }) => {
-        return listExtensions(input?.orgId ?? 1);
+    /** Legacy admin: list extensions only in a live administrator workspace. */
+    listExtensions: protectedProcedure
+      .input(z.object({ orgId: phoneTenantIdSchema.optional() }).optional())
+      .query(async ({ ctx, input }) => {
+        const tenantId = await requirePhoneTenantAdmin(ctx.user.id, input?.orgId);
+        return listExtensions(tenantId);
       }),
 
-    /** Admin: create a new extension */
-    createExtension: adminProcedure
+    /** Legacy admin: create an extension only in a live administrator workspace. */
+    createExtension: protectedProcedure
       .input(z.object({
-        orgId: z.number().default(1),
+        orgId: phoneTenantIdSchema.optional(),
         extensionNumber: z.string(),
         displayName: z.string().optional(),
-        password: z.string().optional(),
       }))
-      .mutation(async ({ input }) => {
-        return createExtension(input);
+      .mutation(async ({ ctx, input }) => {
+        const tenantId = await requirePhoneTenantAdmin(ctx.user.id, input.orgId);
+        return createExtension({ ...input, orgId: tenantId, actorUserId: ctx.user.id });
       }),
 
-    /** Admin: assign extension to user */
-    assignExtension: adminProcedure
+    /** Legacy admin: assign only inside the extension's live administrator workspace. */
+    assignExtension: protectedProcedure
       .input(z.object({
-        userId: z.number(),
-        extensionId: z.number(),
+        userId: z.number().int().positive(),
+        extensionId: z.number().int().positive(),
         isPrimary: z.boolean().default(true),
       }))
-      .mutation(async ({ input }) => {
-        return assignExtensionToUser(input.userId, input.extensionId, input.isPrimary);
+      .mutation(async ({ ctx, input }) => {
+        const extension = await getPool().query(
+          `SELECT tenant_id FROM extensions
+            WHERE id = $1 AND status = 'active' AND deleted_at IS NULL
+            LIMIT 1`,
+          [input.extensionId],
+        );
+        const extensionTenantId = extension.rows[0]?.tenant_id;
+        if (!Number.isSafeInteger(extensionTenantId) || extensionTenantId <= 0) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Extension not found." });
+        }
+        const tenantId = await requirePhoneTenantAdmin(ctx.user.id, extensionTenantId);
+        return assignExtensionToUser(input.userId, input.extensionId, input.isPrimary, tenantId, ctx.user.id);
       }),
 
-    /** Admin: list organizations */
-    listOrganizations: adminProcedure.query(async () => {
-      return listOrganizations();
+    /** Legacy admin: return only organizations the caller can administer. */
+    listOrganizations: protectedProcedure.query(async ({ ctx }) => {
+      return listOrganizations(await listPhoneAdminTenants(ctx.user.id));
     }),
 
-    /** Admin: list DID numbers */
-    listDids: adminProcedure
-      .input(z.object({ orgId: z.number().optional() }).optional())
-      .query(async ({ input }) => {
-        return listDidNumbers(input?.orgId ?? 1);
+    /** Legacy admin: list DIDs only in a live administrator workspace. */
+    listDids: protectedProcedure
+      .input(z.object({ orgId: phoneTenantIdSchema.optional() }).optional())
+      .query(async ({ ctx, input }) => {
+        const tenantId = await requirePhoneTenantAdmin(ctx.user.id, input?.orgId);
+        return listDidNumbers(tenantId);
       }),
 
-    /** Admin: create DID number */
-    createDid: adminProcedure
+    /** Legacy admin: create a DID only in a live administrator workspace. */
+    createDid: protectedProcedure
       .input(z.object({
-        orgId: z.number().default(1),
+        orgId: phoneTenantIdSchema.optional(),
         number: z.string(),
         description: z.string().optional(),
         destinationType: z.string().default('extension'),
         destinationValue: z.string().optional(),
       }))
-      .mutation(async ({ input }) => {
-        return createDidNumber(input);
+      .mutation(async ({ ctx, input }) => {
+        const tenantId = await requirePhoneTenantAdmin(ctx.user.id, input.orgId);
+        return createDidNumber({ ...input, orgId: tenantId, actorUserId: ctx.user.id });
       }),
   }),
 
   /** AI-powered call transcript analysis */
   recording: router({
-    analyzeTranscript: publicProcedure
+    analyzeTranscript: protectedProcedure
       .input(
         z.object({
           recordingId: z.string(),
-          transcription: z.string().min(1),
+          transcription: z.string().min(1).max(100_000),
           callerName: z.string(),
           calleeName: z.string(),
           direction: z.string(),
           duration: z.number(),
         })
       )
-      .mutation(async ({ input }) => {
+      .mutation(async ({ input, ctx }) => {
+        if (!await findOwnedRecording(ctx.user.id, input.recordingId)) throw new TRPCError({ code: "NOT_FOUND", message: "Recording not found" });
         const { transcription, callerName, calleeName, direction, duration } = input;
 
         const durationMin = Math.round(duration / 60);
@@ -169,49 +295,30 @@ Rules:
             ? rawContent
             : (rawContent as any[]).map((p: any) => (typeof p === "string" ? p : p.text || "")).join("");
 
-          const parsed = JSON.parse(contentStr);
+          const parsed = legacyRecordingAnalysisSchema.parse(JSON.parse(contentStr));
 
-          // Validate and normalize the response
+          // Publish only complete provider output. Missing fields remain an
+          // unavailable analysis instead of becoming synthetic placeholders.
           const analysis = {
             recordingId: input.recordingId,
             analyzedAt: Date.now(),
             status: "completed" as const,
-            summary: parsed.summary || "No summary available.",
-            topics: Array.isArray(parsed.topics)
-              ? parsed.topics.map((t: any) => ({
-                  label: t.label || "Unknown",
-                  confidence: Math.min(100, Math.max(0, Number(t.confidence) || 50)),
-                  description: t.description || "",
-                }))
-              : [],
-            keyPoints: Array.isArray(parsed.keyPoints)
-              ? parsed.keyPoints.map((k: any) => ({
-                  text: k.text || "",
-                  speaker: ["caller", "callee", "unknown"].includes(k.speaker) ? k.speaker : "unknown",
-                }))
-              : [],
-            sentiment: ["positive", "neutral", "negative", "mixed"].includes(parsed.sentiment)
-              ? parsed.sentiment
-              : "neutral",
-            sentimentScore: Math.min(1, Math.max(-1, Number(parsed.sentimentScore) || 0)),
-            actionItems: Array.isArray(parsed.actionItems)
-              ? parsed.actionItems.map((a: any) => ({
-                  task: a.task || "",
-                  assignee: a.assignee || "Unassigned",
-                  urgency: ["high", "medium", "low"].includes(a.urgency) ? a.urgency : "medium",
-                  completed: false,
-                }))
-              : [],
-            language: parsed.language || "en",
-            category: parsed.category || "General",
+            summary: parsed.summary,
+            topics: parsed.topics,
+            keyPoints: parsed.keyPoints,
+            sentiment: parsed.sentiment,
+            sentimentScore: parsed.sentimentScore,
+            actionItems: parsed.actionItems.map((item) => ({ ...item, completed: false })),
+            language: parsed.language,
+            category: parsed.category,
           };
 
           return { success: true, analysis };
         } catch (error: any) {
-          console.error("[AI Analysis] Failed:", error.message);
+          console.error("[AI Analysis] Failed:", error instanceof Error ? error.name : "unknown");
           return {
             success: false,
-            error: error.message || "Analysis failed",
+            error: "Analysis unavailable. Please try again.",
             analysis: null,
           };
         }
@@ -220,26 +327,40 @@ Rules:
 
   /** Push Gateway — VoIP push token management and call trigger */
   push: router({
+    enrollWake: protectedProcedure.input(wakeEnrollSchema).mutation(async({input,ctx})=>{
+      const session=await resolvePushSession(ctx.req.headers,ctx.user.id);
+      return wakeService.enroll(session,ctx.user.id,input);
+    }),
+    resolveWakeBinding: protectedProcedure.input(wakeIdentitySchema).query(async({input,ctx})=>{
+      const session=await resolvePushSession(ctx.req.headers,ctx.user.id);
+      try{return await wakeService.resolve(session,ctx.user.id,input.bindingId);}
+      catch(error){if(error instanceof WakeError && error.status===403)return null;throw error;}
+    }),
+    revokeWake: protectedProcedure.input(wakeIdentitySchema).mutation(async({input,ctx})=>{
+      const session=await resolvePushSession(ctx.req.headers,ctx.user.id);
+      await wakeService.revoke(session,ctx.user.id,input.bindingId);return {ok:true};
+    }),
     /** Register a VoIP push token (called by mobile app on startup) */
     register: protectedProcedure
       .input(registerTokenSchema)
-      .mutation(async ({ input }) => {
-        return registerPushToken(input);
+      .mutation(async ({ input, ctx }) => {
+        return registerPushToken(input, ctx.user.id, ctx.req.headers);
       }),
 
     /** Unregister a push token (called on logout) */
     unregister: protectedProcedure
       .input(unregisterTokenSchema)
-      .mutation(async ({ input }) => {
-        return unregisterPushToken(input);
+      .mutation(async ({ input, ctx }) => {
+        return unregisterPushToken(input, ctx.user.id, ctx.req.headers);
       }),
 
     /** Trigger a VoIP push for incoming call (called by SIP proxy webhook) */
     triggerCall: publicProcedure
       .input(triggerPushSchema)
-      .mutation(async ({ input }) => {
-        // TODO: Add authentication for SIP proxy webhook
-        // (shared secret or IP whitelist)
+      .mutation(async ({ input, ctx }) => {
+        const auth = integrationSecretStatus("PUSH_SHARED_SECRET", ctx.req.headers["x-push-secret"]);
+        if (auth === "unavailable") throw new TRPCError({ code: "SERVICE_UNAVAILABLE", message: "Push integration is not configured" });
+        if (auth !== "ok") throw new TRPCError({ code: "FORBIDDEN" });
         return triggerPushForUser(input);
       }),
 
@@ -254,6 +375,8 @@ export const fullRouter = router({
   ...appRouter._def.record,
   pbx: pbxRouter,
   ivr: ivrRouter,
+  chat: chatRouter,
+  chatNotifications: chatNotificationsRouter,
 });
 
 export type AppRouter = typeof fullRouter;

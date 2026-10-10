@@ -54,8 +54,8 @@ if route then
         session:execute("set", "continue_on_fail=true")
         session:execute("bridge", "user/" .. route.dest .. "@${domain_name}")
         -- Fallback to voicemail
-        session:execute("answer")
-        session:execute("voicemail", "default ${domain_name} " .. route.dest)
+        session:execute("lua", "/etc/freeswitch/scripts/phone11_legacy_voicemail.lua " ..
+            route.dest .. " " .. (session:getVariable("domain_name") or "") .. " answer")
 
     elseif route.type == "ring_group" then
         -- Transfer to ring group

@@ -1,0 +1,256 @@
+# Conference ownership handoff — 2026-09-21
+
+The owner explicitly requested coordination to stop duplicated conferencing
+work across the two tasks. Phone11 has read and accepted Connect11's proposed
+ownership boundary. A coordination message was successfully delivered to the
+Connect11 task on 21 September, requesting one bounded read-only provider-log
+investigation. This supersedes the earlier failed task-message delivery.
+
+## Single-writer boundary
+
+- **Complete Phone11 UCC task** (`01a0891d-0d3b-7013-ac12-ff966856b2d5`):
+  sole owner of Phone11 conferencing client fixes, native lifecycle,
+  signed builds, installation, and handset acceptance, alongside its existing
+  Phone11 server/profile/chat work.
+- **Complete Connect11 project** (`01a04460-f510-76a3-89e6-2e0215b24cc4`):
+  no further Phone11 client edits, build dispatches, installations or device
+  tests. Retains Connect11 service/provider-side investigation only when an
+  explicitly bounded backend need is identified. No speculative backend change.
+- The two existing read-only Connect11 workers are concluding evidence handoff;
+  no replacement implementation worker will be started for Phone11.
+
+## Latest handset evidence
+
+- Build 77 source: `1f0fabc9a095e7f1c5d8d51f4097bb48ac0d8b45`.
+- EAS: `66e8f36e-cc3c-4390-843a-539dc7cd6ac9`.
+- IPA SHA-256: `4f9f31de9378a214179bf1bf9c1916ddb094d7240b1347f6f7115ac84ea31c2f`.
+- First phone installation/inventory verified at approximately 01:17 ICT on
+  September 21. The owner subsequently reported **Reference: room_connect**.
+  Second phone was last verified on Build 75; do not assume Build 77 there.
+- Admission and manual audio startup completed. This does **not** prove a
+  successful provider WebSocket join or media connection.
+- `room_connect` wraps Room construction, event binding, SDK room.connect,
+  post-connect refresh and cancellation. Camera/microphone permission rejection
+  is nonfatal in this adapter and does not by itself explain this reference.
+
+## Read-only findings and next discriminator
+
+No concrete source root cause or package incompatibility was established.
+Build 77 resolves one peer-compatible closure: React Native SDK 3.0.0,
+namespaced WebRTC 144.2.0, and client 2.22.3. Its verified IPA contains the native
+framework/module symbols. Existing provider evidence proves token issuance and
+WSS-origin/TLS reachability, not acceptance of an authenticated WebSocket join.
+
+Prefer correlating one bounded retry with provider connection logs before a
+new fix. If unavailable, the Phone11 owner can add narrowly allowlisted
+diagnostics distinguishing construction, event binding, connection and
+post-connect stages, plus SDK connection reason/status enums. Never publish
+SDK messages, contexts, stacks, URLs, tokens, room or participant identifiers.
+
+Phone11 requested that Connect11 first inspect available historical connection
+and admission logs for the reported Build 77 failure, without new meetings,
+credentials, provider writes or handset test requests. If those logs cannot
+correlate the failure, Connect11 should return the exact evidence gap and a
+bounded capture procedure. Phone11 then coordinates one user retry. Build 77
+remains the current test package; no additional build is justified yet.
+
+Validation rerun this turn: installed Vitest directly; browser-session 9 tests
+and native-session 9 tests passed (18 total). These mocked tests do not establish
+real-device connection or audio/video acceptance. No runtime code was changed
+and no build was dispatched this turn.
+
+## Coordinated USB retry — 21 September, 01:35 ICT
+
+- The owner connected the failing iPhone by USB and confirmed one requested
+  join retry still returned `Reference: room_connect`.
+- Connect11 correlated the only new request/token pair in that retry window:
+  preceding request HTTP 200 at `2026-09-20T18:35:00.122Z`, token HTTP 200 at
+  `18:35:00.190Z`. This establishes successful admission response, not provider
+  WebSocket acceptance or media connection.
+- Phone11-only syslog capture ran for three minutes. It retained allowlisted
+  category labels/timestamps only, never raw log lines, tokens or identifiers.
+  It saw 4,889 process lines but no allowlisted SDK reason/connection exception.
+  Generic DNS/TLS/timeout mentions were also present during idle polling and
+  are not evidence that DNS, TLS or a timeout caused the failed meeting.
+- Provider historical console access is sign-in gated. The saved provider CLI
+  configuration authenticated a read-only request to the deployed host, but
+  this does not verify the deployed API signer credentials or handset token.
+- Source inspection found no concrete static client/SDK mismatch. Phone11 owns
+  a bounded diagnostic change to separate room construction, event binding,
+  SDK connection and post-connect work and classify allowlisted reason enums.
+  No root-cause fix or further handset success is claimed.
+
+## Diagnostic update in progress
+
+- Source `91fe9abdedf0ad0e5838172276a481d028143757` separates connection
+  boundaries and maps only allowlisted SDK connection reasons and validated
+  HTTP status codes into the existing Reference line. Raw SDK causes remain
+  in memory and are not rendered. Validation: 35 focused tests and TypeScript
+  passed; the lead inspected the diagnostic and adapter changes.
+- Phone11 dispatched exactly one signed daily-pilot workflow:
+  [35529898146](https://github.com/vasavas1977/codex-phone11/actions/runs/35529898146).
+  Actual build number, package verification and installation remain pending.
+  Do not label this a root-cause fix or ask for another retry on Build 77.
+- Connect11 confirmed in-place provider authentication probing is unavailable:
+  the running API service/task has ECS Execute Command disabled and no managed
+  execution agent. No execution feature, credential or infrastructure setting
+  was changed. Saved CLI credentials are separate evidence from API signer
+  credentials and must not be substituted as proof.
+
+## Verified diagnostic Build 78
+
+Workflow 35529898146 finished successfully for exact source `91fe9ab` above.
+EAS build `6e3c95a8-69d4-4733-9baf-d3bb320f532e` is FINISHED, internal daily-pilot,
+version 1.0.0/build 78. Siprix/native bridge/strict signature checks and all 22
+signed configuration/provisioning checks passed. Retained IPA SHA-256:
+`fc48563af1d2d9bc312dddd14eb8c2b14cc63fe5699388e8a551172a8fc04040`.
+
+[Install Build 78](https://expo.dev/accounts/vasavas/projects/phone11ai/builds/6e3c95a8-69d4-4733-9baf-d3bb320f532e).
+Update the failing phone in place and request one join attempt, reporting the
+full new Reference line. The package is diagnostic-only: no root cause, actual
+installation, provider join, or media success has yet been established for it.
+
+## Build 78 handset result and constructor discriminator
+
+The owner installed Build 78 and retried the admitted meeting. The new result
+was **Reference: room_create**. This proves native bindings and manual audio
+startup completed, then the synchronous SDK `Room` constructor failed before
+Phone11 bound room events or attempted a provider connection. It provides no
+evidence of a transport, token, provider or media failure.
+
+The exact constructor expression still cannot be established from the retained
+handset evidence: the allowlisted syslog capture contains no SDK exception, no
+device is currently attached, and no simulator is booted. Source inspection
+does not support changing transport settings or moving LiveKit registration.
+React Native 0.81 installs `AbortController` before the app entry, and a missing
+`TextEncoder` or `DOMException` would fail during the earlier SDK module import,
+not at `room_create`. The installed React Native SDK 3.0.0 already carries its
+DOMException polyfill for the upstream Hermes issue.
+
+The next source candidate therefore remains diagnostic-only. It classifies a
+Room construction failure by fixed built-in error class and an allowlisted
+installed-SDK constructor area (`data_channel`, `data_stream`, `data_track`,
+`signal_client`, `engine`, `rpc`, `participant`, `frame_metadata`, or `room`).
+It also checks the two concrete constructor contracts: LiveKit 2.22.3 creates
+three `AbortController` instances in its data-channel wrappers, and Room
+requires inherited EventEmitter `setMaxListeners`/`on` methods. Raw messages,
+stacks, URLs, tokens, room and participant identifiers remain only in memory
+and are never formatted into the Reference line. No new build, installation,
+provider action or handset acceptance is claimed for this source candidate.
+
+## Verified diagnostic Build 79
+
+Build 79 is the signed package that introduced the current Room-constructor
+discriminator and the bounded Team Chat voice controls. At package-verification
+time it had not yet been installed and did not itself establish a root cause.
+
+- Exact source: `841d2894f415951562fd031107094f84db839aaf`.
+- [Successful CI run 35554062293](https://github.com/vasavas1977/codex-phone11/actions/runs/35554062293)
+  completed `daily-use-check`, `native-check`, and the signed build job.
+- [Install Build 79](https://expo.dev/accounts/vasavas/projects/phone11ai/builds/61fe406b-2a88-45f8-9337-136d4f1f5889)
+  is the EAS build-details page. EAS build `61fe406b-2a88-45f8-9337-136d4f1f5889`
+  finished with the internal `preview-ios-siprix-daily-pilot` profile, version
+  `1.0.0`, build `79`, and the same source SHA.
+- IPA SHA-256: `0f7862f85985c87112047fb07454ee38c84e40d141562e2209cb681d9297e9e7`.
+  The combined package gate passed Siprix linkage, native bridge, legacy-bridge
+  absence, strict signature, embedded JavaScript, and all 22 signed
+  configuration/provisioning checks against Build 49. The archive has no
+  development-launcher payload entries; device launch behavior still requires
+  a physical check.
+- The IPA, package-verification JSON, and metadata are retained under
+  `~/Library/Application Support/Phone11/verified-builds/79/`.
+
+The Team Chat portion changes keyboard return after safe recorder cancellation
+and turns an immediately completed zero-duration clip into the existing retry
+state. Normal voice clips already work; this package does not claim a general
+audio repair. Physical checks remain separate for keyboard return/cancel,
+failed-clip retry, SIP interruption, the Room constructor reference, and real
+conference media.
+
+## Build 79 handset result and confirmed constructor cause
+
+The owner subsequently installed Build 79 and retried the admitted meeting.
+The exact result was **Reference: room_create / signal_client /
+reference_error**. The installed LiveKit 2.22.3 path explains all three labels:
+`Room` creates `RTCEngine`, which creates `SignalClient`; its constructor calls
+`createSignalMachine()` and Machina 7.0.1 `createFsm()`, whose initial transition
+executes an unguarded `new WeakRef(client)`. Removing `WeakRef` and constructing
+the real installed `Room` reproduces the same `ReferenceError` and constructor
+stack before any provider connection.
+
+The matching runtime evidence is specific but is not a direct JavaScript probe
+of the failing handset. Exact source `841d2894` sets `newArchEnabled: false`, and
+the retained signed Build 79 IPA sets `RCTNewArchEnabled=false`. React Native
+0.81.5 passes its bridgeless-architecture flag into Hermes microtask-queue
+configuration. The pinned Hermes defines the `WeakRef` global only when that
+queue is enabled; the bundled matching Hermes compiler reports `undefined` by
+default and `function` with its microtask-queue flag. IPA `WeakRef` symbols only
+prove that the engine contains the capability. Together with the exact handset
+reference and installed-SDK reproduction, this establishes the constructor
+cause without claiming an on-handset `typeof WeakRef` capture.
+
+Source commit `2b92d3d9bd838cad7a08d332769f2326330235a2` pins a package patch for
+LiveKit 2.22.3's ESM bundle. It guards Machina's three optional weak-client
+registry insertions when `WeakRef` is absent. It does not install a global shim,
+enable the new architecture or alter SIP, manual audio, provider or transport
+behavior. Machina continues to store client state in its `WeakMap`; its
+single-client `Fsm` still owns the signal context. Native-`WeakRef` runtimes keep
+the original behavior.
+
+Validation passed 60 focused constructor/native/browser meeting tests,
+TypeScript, formatting and diff checks. A fresh frozen pnpm install applied the
+patch, then the real installed `Room` constructed with `WeakRef` deleted and did
+not add the global. Independent Sol High approved the exact root-cause fix for
+source release.
+
+## Verified root-cause Build 80
+
+Build 80 is the first signed daily-pilot package containing the reviewed
+Machina weak-client guard. The package verification recorded below was followed
+by the 22 September in-place installation evidence at the end of this record.
+
+- Exact release source: `8c6f2f49c7183ba3946657b41eac410682d0f55b`, comprising
+  the root-cause patch `2b92d3d9bd838cad7a08d332769f2326330235a2` and its
+  handoff record.
+- [Successful CI run 35564510132](https://github.com/vasavas1977/codex-phone11/actions/runs/35564510132)
+  completed every daily-use check, native check, and signed build job for that
+  exact SHA.
+- [Install Build 80](https://expo.dev/accounts/vasavas/projects/phone11ai/builds/fc240e92-33b0-4ee2-adcb-ec252b0544af)
+  is the EAS build-details page. EAS build `fc240e92-33b0-4ee2-adcb-ec252b0544af`
+  finished as internal `preview-ios-siprix-daily-pilot`, version `1.0.0`, build
+  `80`, from the exact release source.
+- IPA SHA-256: `89492a21dde5b99a4d4b52a0004e473f8aee2289b225bf6ca276ae2e572926ef`.
+  The combined Build 49 package gate passed Siprix linkage, native bridge,
+  legacy-bridge absence, strict signature, embedded JavaScript, and all 22
+  signed configuration/provisioning checks. It retains the expected identity,
+  production APNs, commissioned wake/chat settings, and over-the-air updates
+  disabled.
+- The packaged Hermes bytecode preserves all three guarded Machina registry
+  insertions: each checks `typeof WeakRef` and jumps past `new WeakRef` when it
+  is unavailable. The complete bytecode disassembly has no assignment to the
+  `WeakRef` global. Signed `RCTNewArchEnabled` remains `false`; the archive has
+  no `ExpoDevLauncher` framework payload entries.
+- The IPA, package-verification JSON, and metadata are retained under
+  `~/Library/Application Support/Phone11/verified-builds/80/`. The install QR
+  targets the EAS build-details page above, not the raw IPA.
+
+The remaining acceptance gate is an in-place Build 80 handset install followed
+by the formerly failing admitted meeting join, then real room connection, local
+and remote video, and two-way audio. Run the existing SIP/manual-audio
+interruption, route, and lock-state checks separately. This package does not
+prove device runtime behavior, provider admission, or conference media.
+
+## Paired Build 80 installation — 22 September 2026
+
+The iPhone 15 Pro Max was updated in place from Build 75 to Build 80 using
+`devicectl device install app`, without uninstalling Phone11. Immediately before
+installation, the retained IPA SHA-256 matched the Build 80 pin above, extracted
+app deep/strict signature verification passed, and application identity,
+`get-task-allow=false`, and production APNs entitlements matched. The embedded
+Ad Hoc profile includes the paired target device and expires 28 April 2027.
+
+Installation succeeded. Fresh installed-app reads then showed Phone11 version
+1.0.0 / Build 80 on both the iPhone 15 Pro Max and iPhone 17 Pro Max. No application
+launch, credential entry, message send, meeting join, or call was performed by
+this installation check. The owner was asked to test the same admitted Team Chat
+meeting on both phones; video/audio/lifecycle acceptance remains pending.

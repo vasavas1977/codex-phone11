@@ -1,0 +1,2 @@
+/** Host declaration only; never Android or React Native runtime proof. */
+package com.facebook.react.bridge; public class ReactApplicationContext extends android.content.ContextWrapper { public ReactApplicationContext(){super(null);} public boolean hasActiveReactInstance(){return false;} public com.facebook.react.common.LifecycleState getLifecycleState(){return com.facebook.react.common.LifecycleState.RESUMED;} public <T> T getJSModule(Class<T> type){return null;} }

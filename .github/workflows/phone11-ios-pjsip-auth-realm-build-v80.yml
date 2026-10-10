@@ -1,0 +1,92 @@
+name: Phone11 iOS PJSIP auth realm build v80
+
+on:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - .github/workflows/phone11-ios-pjsip-auth-realm-build-v80.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  EAS_PROFILE: preview-ios-existing-credentials
+
+jobs:
+  ios-preview-build:
+    name: Prove PJSIP realm patch and queue iOS preview build
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout fixed branch
+        uses: actions/checkout@v4
+        with:
+          ref: codex/phone11-mobile-pjsip-20260506
+
+      - name: Prove SIP auth realm source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "V80_BUILD_SOURCE_COMMIT=$(git rev-parse HEAD)"
+          git log -1 --oneline
+          echo "V80_REGSERVER_LINES"
+          grep -n "regServer:" lib/sip/engine.ts
+          if ! grep -Fq "regServer: account.domain," lib/sip/engine.ts; then
+            echo "V80_ERROR=Missing required PJSIP digest realm line: regServer: account.domain," >&2
+            exit 1
+          fi
+          if grep -Fq "regServer: null," lib/sip/engine.ts; then
+            echo "V80_ERROR=Old null PJSIP realm line is still present." >&2
+            exit 1
+          fi
+          echo "V80_AUTH_REALM_PATCH=present"
+          echo "V80_REASON=react-native-pjsip iOS uses config.regServer as digest credential realm."
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Enable pnpm
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+          pnpm --version
+
+      - name: Setup Expo and EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+          packager: pnpm
+
+      - name: Install locked dependencies
+        shell: bash
+        run: pnpm install --frozen-lockfile
+
+      - name: Run existing test suite
+        shell: bash
+        run: pnpm test
+
+      - name: Validate Expo config
+        shell: bash
+        run: pnpm exec expo config --type public
+
+      - name: Queue iOS preview build
+        shell: bash
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          if [ -z "${EXPO_TOKEN:-}" ]; then
+            echo "V80_ERROR=Missing EXPO_TOKEN repository secret." >&2
+            exit 1
+          fi
+          eas whoami
+          eas build --platform ios --profile "$EAS_PROFILE" --non-interactive --no-wait
+          echo "V80_IOS_BUILD=queued"

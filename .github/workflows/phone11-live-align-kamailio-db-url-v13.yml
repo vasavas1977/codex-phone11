@@ -1,0 +1,200 @@
+name: Phone11 Live Align Kamailio DB URL V13
+
+on:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - ".github/workflows/phone11-live-align-kamailio-db-url-v13.yml"
+  workflow_dispatch:
+    inputs:
+      ec2_host:
+        description: Live SIP/media EC2 host
+        required: true
+        default: 43.210.122.111
+      extension:
+        description: SIP extension for auth proof
+        required: true
+        default: "1996"
+
+permissions:
+  contents: read
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_USER: ubuntu
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+
+jobs:
+  align-and-prove-register:
+    name: Point Kamailio auth DB at local Postgres and prove REGISTER
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Locate EC2 and prepare temporary SSH key
+        id: ec2
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EC2_HOST="${{ github.event.inputs.ec2_host || '43.210.122.111' }}"
+          INSTANCE_JSON=$(aws ec2 describe-instances --filters "Name=ip-address,Values=$EC2_HOST" "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0]' --output json)
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "null" ]; then echo "ERROR: EC2 not found"; exit 31; fi
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_kam_db_url_v13_key -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key --instance-id "$INSTANCE_ID" --availability-zone "$AZ" --instance-os-user "$EC2_USER" --ssh-public-key "file://$HOME/.ssh/phone11_kam_db_url_v13_key.pub" >/dev/null
+          echo "ec2_host=$EC2_HOST" >> "$GITHUB_OUTPUT"
+
+      - name: Patch DB_URL, restart Kamailio, and prove REGISTER
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EXTENSION="${{ github.event.inputs.extension || '1996' }}"
+          ssh -i ~/.ssh/phone11_kam_db_url_v13_key -o StrictHostKeyChecking=no -o ServerAliveInterval=15 -o ServerAliveCountMax=20 "$EC2_USER@${{ steps.ec2.outputs.ec2_host }}" \
+            "EXTENSION='$EXTENSION' bash -s" <<'REMOTE'
+          set -Eeuo pipefail
+          DOMAIN="sip.phone11.ai"
+          PASSWORD="phone11-auth-debug-v13"
+          CFG="/opt/phone11ai/cloudphone11/infra/configs/kamailio/kamailio.cfg"
+
+          echo "===== Pre-patch evidence ====="
+          docker ps --format '{{.Names}} {{.Status}}' | grep -E 'p11-kamailio|cp11-postgres|p11-rtpengine|p11-freeswitch' || true
+          grep -nE '^#!substdef "!DB_URL!' "$CFG" | sed -E 's#(postgres://)[^:@/]+:[^@]+@#\1<redacted>:<redacted>@#g'
+
+          PGUSER="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_USER:-postgres}"')"
+          PGDATABASE="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_DB:-${POSTGRES_USER:-postgres}}"')"
+          PGPASSWORD_VALUE="$(docker exec cp11-postgres sh -lc 'printf %s "${POSTGRES_PASSWORD:-}"')"
+          POSTGRES_IP="$(docker inspect cp11-postgres --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')"
+          if [ -z "$POSTGRES_IP" ] || [ -z "$PGPASSWORD_VALUE" ]; then
+            echo "ERROR: local Postgres IP/password missing"
+            exit 41
+          fi
+
+          LOCAL_DB_URL="postgres://$PGUSER:$PGPASSWORD_VALUE@$POSTGRES_IP:5432/$PGDATABASE?sslmode=disable"
+          BACKUP="$CFG.bak-v13-$(date +%Y%m%d%H%M%S)"
+          sudo cp "$CFG" "$BACKUP"
+          sudo python3 - "$CFG" "$LOCAL_DB_URL" <<'PYCFG'
+          import pathlib, sys
+          path=pathlib.Path(sys.argv[1])
+          db_url=sys.argv[2]
+          text=path.read_text()
+          lines=[]
+          replaced=False
+          for line in text.splitlines():
+              if line.startswith('#!substdef "!DB_URL!'):
+                  lines.append(f'#!substdef "!DB_URL!{db_url}!g"')
+                  replaced=True
+              else:
+                  lines.append(line)
+          if not replaced:
+              raise SystemExit('DB_URL substdef line not found')
+          path.write_text('\n'.join(lines) + '\n')
+          PYCFG
+
+          echo "===== Post-patch DB_URL evidence ====="
+          grep -nE '^#!substdef "!DB_URL!' "$CFG" | sed -E 's#(postgres://)[^:@/]+:[^@]+@#\1<redacted>:<redacted>@#g'
+
+          echo "===== Kamailio syntax check ====="
+          if ! docker exec p11-kamailio kamailio -c -f /etc/kamailio/kamailio.cfg >/tmp/phone11-kamailio-v13-check.log 2>&1; then
+            cat /tmp/phone11-kamailio-v13-check.log
+            sudo cp "$BACKUP" "$CFG"
+            echo "ERROR: syntax check failed; restored backup"
+            exit 42
+          fi
+          echo "syntax_check=ok"
+
+          echo "===== Restart Kamailio ====="
+          docker restart p11-kamailio >/dev/null
+          sleep 6
+          docker ps --format '{{.Names}} {{.Status}}' | grep -E 'p11-kamailio|cp11-postgres' || true
+          docker logs --since 20s --timestamps p11-kamailio 2>&1 | tail -n 80 | sed -E 's#(postgres://)[^:@/]+:[^@]+@#\1<redacted>:<redacted>@#g' || true
+
+          echo "===== Seed deterministic local subscriber ====="
+          docker exec -i -e PGPASSWORD="$PGPASSWORD_VALUE" cp11-postgres psql -v ON_ERROR_STOP=1 -U "$PGUSER" -d "$PGDATABASE" <<SQL
+          INSERT INTO subscriber (username, domain, password, ha1, ha1b)
+          VALUES ('$EXTENSION', '$DOMAIN', '$PASSWORD', md5('$EXTENSION:$DOMAIN:$PASSWORD'), md5('$EXTENSION@$DOMAIN:$DOMAIN:$PASSWORD'))
+          ON CONFLICT (username, domain) DO UPDATE SET password = EXCLUDED.password, ha1 = EXCLUDED.ha1, ha1b = EXCLUDED.ha1b;
+          SELECT username, domain, length(password) AS password_len, length(ha1) AS ha1_len, left(ha1, 8) AS ha1_prefix
+          FROM subscriber WHERE username = '$EXTENSION' AND domain = '$DOMAIN';
+          SQL
+
+          export SIP_TARGET_IP="$(hostname -I | awk '{print $1}')"
+          export DOMAIN PASSWORD EXTENSION
+          PYLOG="/tmp/phone11-register-auth-proof-v13.log"
+          CALLID_FILE="/tmp/phone11-register-auth-proof-v13.callid"
+          rm -f "$PYLOG" "$CALLID_FILE"
+
+          python3 - <<'PYTEST' > "$PYLOG" 2>&1
+          import hashlib, os, re, secrets, select, socket, time
+          domain=os.environ['DOMAIN']; username=os.environ['EXTENSION']; password=os.environ['PASSWORD']; server=(os.environ['SIP_TARGET_IP'],5060)
+          def md5(value): return hashlib.md5(value.encode()).hexdigest()
+          def header(text, name):
+              m=re.search(rf'^{re.escape(name)}:\s*(.+)$', text, re.I|re.M)
+              return m.group(1).strip() if m else ''
+          def status(text):
+              first=text.splitlines()[0] if text.splitlines() else ''
+              m=re.match(r'SIP/2.0\s+(\d+)\s*(.*)', first)
+              return int(m.group(1)) if m else 0, first
+          def parse_auth(value):
+              value=value.replace('Digest','',1).strip()
+              return {k.lower():(q or b) for k,q,b in re.findall(r'(\w+)=(?:"([^"]*)"|([^,\s]+))', value)}
+          def recv(sock, call_id, timeout=8):
+              deadline=time.time()+timeout
+              while time.time()<deadline:
+                  ready,_,_=select.select([sock],[],[],0.25)
+                  if not ready: continue
+                  data,addr=sock.recvfrom(65535)
+                  text=data.decode(errors='replace')
+                  if call_id in text: return text
+              raise TimeoutError('no response')
+          sock=socket.socket(socket.AF_INET, socket.SOCK_DGRAM); sock.bind(('0.0.0.0',0)); sock.setblocking(False)
+          local_ip=os.environ['SIP_TARGET_IP']; local_port=sock.getsockname()[1]; uri=f'sip:{domain}'
+          call_id=f'phone11-v13-register-{secrets.token_hex(6)}@{local_ip}'
+          open('/tmp/phone11-register-auth-proof-v13.callid','w').write(call_id)
+          from_tag=secrets.token_hex(4)
+          def msg(cseq, digest=''):
+              branch=f'z9hG4bKv13{secrets.token_hex(8)}{cseq}'
+              lines=[f'REGISTER {uri} SIP/2.0', f'Via: SIP/2.0/UDP {local_ip}:{local_port};branch={branch};rport', 'Max-Forwards: 70', f'From: <sip:{username}@{domain}>;tag={from_tag}', f'To: <sip:{username}@{domain}>', f'Call-ID: {call_id}', f'CSeq: {cseq} REGISTER', f'Contact: <sip:{username}@{local_ip}:{local_port};transport=udp>;expires=300', 'Expires: 300', 'User-Agent: Phone11RegisterProof/13']
+              if digest: lines.append(f'Authorization: {digest}')
+              lines += ['Content-Length: 0', '', '']
+              return '\r\n'.join(lines)
+          print(f'register_call_id={call_id}')
+          print(f'sip_target={server[0]}:{server[1]}')
+          sock.sendto(msg(1).encode(), server)
+          first=recv(sock, call_id)
+          code,line=status(first)
+          print(f'first_status={code}')
+          print(f'first_line={line}')
+          challenge=header(first,'WWW-Authenticate') or header(first,'Proxy-Authenticate')
+          d=parse_auth(challenge)
+          realm=d.get('realm', domain); nonce=d.get('nonce',''); qop='auth' if 'auth' in d.get('qop','') else ''; nc='00000001'; cnonce=secrets.token_hex(8)
+          ha1=md5(f'{username}:{realm}:{password}'); ha2=md5(f'REGISTER:{uri}')
+          response=md5(f'{ha1}:{nonce}:{nc}:{cnonce}:{qop}:{ha2}') if qop else md5(f'{ha1}:{nonce}:{ha2}')
+          parts=[f'username="{username}"', f'realm="{realm}"', f'nonce="{nonce}"', f'uri="{uri}"', f'response="{response}"', 'algorithm=MD5']
+          if d.get('opaque'): parts.append(f'opaque="{d["opaque"]}"')
+          if qop: parts += [f'qop={qop}', f'nc={nc}', f'cnonce="{cnonce}"']
+          print(f'challenge_realm={realm}')
+          print(f'challenge_qop={d.get("qop", "")}')
+          sock.sendto(msg(2, 'Digest ' + ', '.join(parts)).encode(), server)
+          final=recv(sock, call_id)
+          final_code, final_line=status(final)
+          print(f'final_status={final_code}')
+          print(f'final_line={final_line}')
+          print('REGISTER_AUTH_RESULT=' + ('pass' if final_code == 200 else 'fail'))
+          PYTEST
+
+          echo "===== REGISTER proof output ====="
+          cat "$PYLOG"
+          CALL_ID="$(cat "$CALLID_FILE" 2>/dev/null || true)"
+          echo "===== Kamailio logs for REGISTER proof ====="
+          if [ -n "$CALL_ID" ]; then
+            docker logs --since 180s --timestamps p11-kamailio 2>&1 | grep -F "$CALL_ID" | tail -n 120 || true
+          fi
+          echo "===== Kamailio auth context ====="
+          docker logs --since 180s --timestamps p11-kamailio 2>&1 | grep -Eia 'REGISTER|401|403|200 OK|auth|credential|password|ha1|subscriber|db_|1996|sip.phone11.ai' | tail -n 240 || true
+
+          grep -q 'REGISTER_AUTH_RESULT=pass' "$PYLOG"
+          REMOTE

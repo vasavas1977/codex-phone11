@@ -1,0 +1,269 @@
+name: Phone11 desktop helper build
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/phone11-desktop-helper-build.yml
+      - desktop/native/**
+      - scripts/generate-phone11-native-license.py
+      - tests/phone11-native-license-input.test.py
+      - tests/phone11-native-license-xcode.test.py
+
+permissions:
+  contents: read
+
+jobs:
+  call-control-protocol:
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require the native protocol test compiler
+        shell: bash
+        run: clang++ --version
+      - name: Test callback-confirmed controls with the isolated fake SDK
+        shell: bash
+        run: |
+          python3 desktop/native/test_accept_end.py
+          python3 desktop/native/test_controls.py
+          python3 desktop/native/test_hold_reconcile.py
+          python3 desktop/native/test_transfer.py
+          python3 desktop/native/test_warm.py
+          python3 desktop/native/test_redirect.py
+
+  macos-arm64:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: siprix/SiprixUA
+          ref: 38fe11b14fb80c40bef725bbb61e6b1ea42a0d4f
+          path: _vendor/siprixua
+          persist-credentials: false
+      - name: Compile native helper
+        shell: bash
+        run: |
+          cmake -S desktop/native -B "$RUNNER_TEMP/phone11-desktop-helper" -G Xcode \
+            -DSIPRIX_SDK_ROOT="$GITHUB_WORKSPACE/_vendor/siprixua"
+          cmake --build "$RUNNER_TEMP/phone11-desktop-helper" --config Release
+      - name: Require Xcode private build-input regeneration
+        shell: bash
+        run: |
+          python3 tests/phone11-native-license-xcode.test.py \
+            --sdk-root "$GITHUB_WORKSPACE/_vendor/siprixua" \
+            --evidence "$RUNNER_TEMP/phone11-native-license-xcode-regression"
+      - name: Smoke-test private-pipe bootstrap
+        shell: bash
+        run: |
+          python3 desktop/native/test_bootstrap.py \
+            "$RUNNER_TEMP/phone11-desktop-helper/Release/phone11_siprix_helper.app/Contents/MacOS/phone11_siprix_helper"
+      - name: Compile gated warm-transfer source against the real macOS SDK
+        shell: bash
+        run: |
+          cmake -S desktop/native -B "$RUNNER_TEMP/phone11-desktop-helper-warm-source" -G Xcode \
+            -DSIPRIX_SDK_ROOT="$GITHUB_WORKSPACE/_vendor/siprixua" \
+            -DPHONE11_DESKTOP_WARM_TRANSFER_SOURCE_ENABLED=ON
+          cmake --build "$RUNNER_TEMP/phone11-desktop-helper-warm-source" --config Release
+
+  windows-x64:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: siprix/SiprixUA
+          ref: 38fe11b14fb80c40bef725bbb61e6b1ea42a0d4f
+          path: _vendor/siprixua
+          persist-credentials: false
+      - name: Check pinned Windows SDK and build contract
+        shell: pwsh
+        run: |
+          python desktop/native/test_canonical_checkout.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python desktop/native/test_windows_build_contract.py "$env:GITHUB_WORKSPACE\_vendor\siprixua"
+      - name: Compile native helper
+        shell: pwsh
+        run: |
+          cmake -S desktop/native -B "$env:RUNNER_TEMP\phone11-desktop-helper" -G "Visual Studio 17 2022" -A x64 "-DSIPRIX_SDK_ROOT=$env:GITHUB_WORKSPACE\_vendor\siprixua"
+          cmake --build "$env:RUNNER_TEMP\phone11-desktop-helper" --config Release
+      - name: Smoke-test private-pipe bootstrap
+        shell: pwsh
+        run: |
+          python desktop/native/test_bootstrap.py "$env:RUNNER_TEMP\phone11-desktop-helper\Release\phone11_siprix_helper.exe"
+      - name: Compile gated warm-transfer source against the real Windows SDK
+        shell: pwsh
+        run: |
+          cmake -S desktop/native -B "$env:RUNNER_TEMP\phone11-desktop-helper-warm-source" -G "Visual Studio 17 2022" -A x64 "-DSIPRIX_SDK_ROOT=$env:GITHUB_WORKSPACE\_vendor\siprixua" -DPHONE11_DESKTOP_WARM_TRANSFER_SOURCE_ENABLED=ON
+          cmake --build "$env:RUNNER_TEMP\phone11-desktop-helper-warm-source" --config Release
+      - name: Compile protocol test double with MSVC
+        shell: pwsh
+        run: |
+          cmake -S desktop/native -B "$env:RUNNER_TEMP\phone11-desktop-helper-fake" -G "Visual Studio 17 2022" -A x64 -DPHONE11_USE_FAKE_SDK=ON
+          cmake --build "$env:RUNNER_TEMP\phone11-desktop-helper-fake" --config Release
+      - name: Smoke-test Windows protocol test double
+        shell: pwsh
+        run: |
+          python desktop/native/test_bootstrap.py "$env:RUNNER_TEMP\phone11-desktop-helper-fake\Release\phone11_siprix_helper.exe"
+      # This public repository retains only our application helper and a safe receipt.
+      # Vendor DLLs/headers/import libraries, PDBs, configuration and logs stay excluded.
+      - name: Validate and stage the own Windows helper
+        if: success() && github.event_name == 'workflow_dispatch' && github.repository == 'vasavas1977/codex-phone11'
+        shell: pwsh
+        run: |
+          @'
+          import hashlib, json, os, pathlib, re, shutil, struct, subprocess, sys
+          import xml.etree.ElementTree as ET
+
+          def require(condition, message):
+              if not condition:
+                  raise SystemExit(message)
+
+          def digest(path):
+              require(path.is_file() and not path.is_symlink(), "Expected a regular retained input")
+              result = hashlib.sha256()
+              with path.open("rb") as stream:
+                  for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                      result.update(chunk)
+              return result.hexdigest()
+
+          def git(cwd, *args):
+              return subprocess.check_output(["git", "-C", str(cwd), *args], text=True).strip()
+
+          def pe(data):
+              require(64 <= len(data) <= 5 * 1024 * 1024 and data[:2] == b"MZ", "Invalid bounded helper PE")
+              offset = struct.unpack_from("<I", data, 0x3c)[0]
+              require(offset + 24 <= len(data) and data[offset:offset + 4] == b"PE\0\0", "Invalid helper PE signature")
+              machine, count, _, _, _, optional_size, flags = struct.unpack_from("<HHIIIHH", data, offset + 4)
+              optional = offset + 24
+              table = optional + optional_size
+              require(machine == 0x8664 and 1 <= count <= 96 and flags & 2 and not flags & 0x2000,
+                      "Expected the own x64 executable, not a DLL")
+              require(optional_size >= 240 and table + count * 40 <= len(data) and
+                      struct.unpack_from("<H", data, optional)[0] == 0x20b and
+                      struct.unpack_from("<I", data, optional + 108)[0] >= 3, "Expected PE32+ directories")
+              sections = []
+              for index in range(count):
+                  section = table + index * 40
+                  virtual_size, rva, raw_size, raw = struct.unpack_from("<IIII", data, section + 8)
+                  require(raw + raw_size <= len(data), "Truncated helper section")
+                  sections.append((rva, raw_size, raw))
+
+              def location(rva, size):
+                  for start, length, raw in sections:
+                      if start <= rva and rva - start + size <= length:
+                          return raw + rva - start
+                  raise SystemExit("Unbacked helper directory")
+
+              import_rva, import_size = struct.unpack_from("<II", data, optional + 120)
+              require(import_rva and 20 <= import_size <= 64 * 20, "Invalid helper import directory")
+              imports = []
+              terminated = False
+              for index in range(import_size // 20):
+                  descriptor = struct.unpack_from("<IIIII", data, location(import_rva + index * 20, 20))
+                  if not any(descriptor):
+                      terminated = True
+                      break
+                  name_rva = descriptor[3]
+                  name = bytearray()
+                  for character in range(128):
+                      value = data[location(name_rva + character, 1)]
+                      if value == 0:
+                          break
+                      name.append(value)
+                  else:
+                      raise SystemExit("Unbounded helper import name")
+                  module = name.decode("ascii").lower()
+                  require(module == "siprix.dll" or module in {"kernel32.dll", "kernelbase.dll", "user32.dll", "advapi32.dll", "ucrtbase.dll"} or
+                          re.fullmatch(r"(?:msvcp|vcruntime)140(?:_[a-z0-9_]+)?\.dll", module) or
+                          re.fullmatch(r"api-ms-win-(?:crt|core)-[a-z0-9-]+\.dll", module), "Unexpected helper import")
+                  imports.append(module)
+              require(terminated and "siprix.dll" in imports, "Helper must dynamically import Siprix")
+
+              # The CMake application may contain the normal Windows manifest, never SDK resources.
+              resource_rva, resource_size = struct.unpack_from("<II", data, optional + 128)
+              resource_types = []
+              if resource_rva or resource_size:
+                  require(resource_rva and 16 <= resource_size <= 65536, "Invalid bounded helper resources")
+
+                  def resource(offset, depth):
+                      require(depth <= 2 and offset + 16 <= resource_size, "Invalid helper resource tree")
+                      directory = location(resource_rva + offset, 16)
+                      named, identified = struct.unpack_from("<HH", data, directory + 12)
+                      require(named == 0 and 1 <= identified <= 16 and offset + 16 + identified * 8 <= resource_size,
+                              "Unexpected named or unbounded helper resources")
+                      for index in range(identified):
+                          name, target = struct.unpack_from("<II", data, location(resource_rva + offset + 16 + index * 8, 8))
+                          if depth == 0:
+                              require(name == 24, "Only the application manifest may be embedded")
+                              resource_types.append(name)
+                          if depth < 2:
+                              require(target & 0x80000000, "Invalid helper manifest tree")
+                              resource(target & 0x7fffffff, depth + 1)
+                          else:
+                              require(not target & 0x80000000 and target + 16 <= resource_size, "Invalid helper manifest data")
+                              content_rva, size, _, _ = struct.unpack_from("<IIII", data, location(resource_rva + target, 16))
+                              require(0 < size <= 8192, "Unbounded application manifest")
+                              content = location(content_rva, size)
+                              try:
+                                  manifest = ET.fromstring(data[content:content + size])
+                              except ET.ParseError:
+                                  raise SystemExit("Invalid application manifest XML")
+                              require(manifest.tag == "{urn:schemas-microsoft-com:asm.v1}assembly", "Unexpected application manifest")
+                  resource(0, 0)
+              return {"machine": "AMD64", "format": "PE32+", "imports": sorted(set(imports)),
+                      "resourceTypes": sorted(set(resource_types))}
+
+          require(os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch" and
+                  os.environ.get("GITHUB_REPOSITORY") == "vasavas1977/codex-phone11", "Trusted manual build required")
+          source = os.environ["GITHUB_SHA"]
+          require(re.fullmatch(r"[0-9a-f]{40}", source), "Invalid source identity")
+          root = pathlib.Path(os.environ["GITHUB_WORKSPACE"])
+          sdk = root / "_vendor" / "siprixua"
+          sdk_revision = "38fe11b14fb80c40bef725bbb61e6b1ea42a0d4f"
+          require(git(root, "rev-parse", "HEAD") == source and not git(root, "status", "--porcelain", "--", "desktop/native"),
+                  "Changed helper source")
+          require(git(sdk, "rev-parse", "HEAD") == sdk_revision and not git(sdk, "status", "--porcelain"), "Changed pinned vendor checkout")
+          lib = sdk / "win" / "siprix.framework" / "lib"
+          vendor_hashes = {"siprix.lib": "cca002e86c2898d9cda336406f3121e8c5cfbdffeed775e5c28784d14091060d",
+                           "siprix.dll": "55869c2f83b8ca08659e1ecd40d7542b54563ed8452bb1a49a1fa9d80eeb2cd4",
+                           "siprixMedia.dll": "0ebd1bddf590002a83c0059e4064bbae80e91bbd9827a68546280af45452887b"}
+          require(all(digest(lib / name) == expected for name, expected in vendor_hashes.items()), "Changed pinned SDK link/runtime inputs")
+          helper = pathlib.Path(os.environ["RUNNER_TEMP"]) / "phone11-desktop-helper" / "Release" / "phone11_siprix_helper.exe"
+          helper_hash = digest(helper)
+          helper_pe = pe(helper.read_bytes())
+          bootstrap = subprocess.run([sys.executable, str(root / "desktop/native/test_bootstrap.py"), str(helper)],
+                                     capture_output=True, text=True, timeout=30)
+          require(bootstrap.returncode == 0 and bootstrap.stderr == "" and
+                  bootstrap.stdout.strip() == "Phone11 Siprix helper bootstrap smoke test passed", "Helper bootstrap receipt failed")
+          require(digest(helper) == helper_hash, "Helper changed during bootstrap")
+          run_id, attempt = os.environ["GITHUB_RUN_ID"], os.environ["GITHUB_RUN_ATTEMPT"]
+          require(re.fullmatch(r"[0-9]{1,20}", run_id) and re.fullmatch(r"[0-9]{1,10}", attempt), "Invalid workflow identity")
+          receipt = {"version": 1, "kind": "phone11-windows-helper-build-bootstrap-only", "sourceSha": source,
+                     "sdkSha": sdk_revision, "runId": run_id, "runAttempt": attempt, "trialMaxSeconds": 60,
+                     "helper": {"file": helper.name, "sha256": helper_hash, "bytes": helper.stat().st_size, **helper_pe},
+                     "bootstrap": {"passed": True, "testSha256": digest(root / "desktop/native/test_bootstrap.py")},
+                     "inputs": {"cppSha256": digest(root / "desktop/native/phone11_siprix_helper.cpp"),
+                                "cmakeSha256": digest(root / "desktop/native/CMakeLists.txt"),
+                                "headerSha256": digest(sdk / "win/siprix.framework/include/Siprix.h"), "vendorSha256": vendor_hashes},
+                     "scope": "Public own helper and receipt only; no vendor binaries, user data or Windows calling acceptance"}
+          retained = pathlib.Path(os.environ["RUNNER_TEMP"]) / "phone11-windows-helper-retained"
+          retained.mkdir(exist_ok=False)
+          shutil.copyfile(helper, retained / helper.name)
+          require(digest(retained / helper.name) == helper_hash, "Retained helper copy mismatch")
+          (retained / "integrity-receipt.json").write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+          require(sorted(path.name for path in retained.iterdir()) == ["integrity-receipt.json", "phone11_siprix_helper.exe"],
+                  "Unexpected retained file")
+          '@ | python
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Retain own Windows helper and safe integrity receipt
+        if: success() && github.event_name == 'workflow_dispatch' && github.repository == 'vasavas1977/codex-phone11'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: phone11-windows-helper-x64-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/phone11-windows-helper-retained/phone11_siprix_helper.exe
+            ${{ runner.temp }}/phone11-windows-helper-retained/integrity-receipt.json
+          if-no-files-found: error
+          retention-days: 7

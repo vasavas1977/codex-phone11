@@ -1,0 +1,119 @@
+name: Phone11 Connect11 Conference Activation Preflight
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      PHONE11_PLAIN_VIDEO_ADMISSION_DATABASE_URL: ${{ secrets.PHONE11_PLAIN_VIDEO_ADMISSION_DATABASE_URL }}
+      PHONE11_CONNECT11_PLAIN_VIDEO_TENANTS: ${{ secrets.PHONE11_CONNECT11_PLAIN_VIDEO_TENANTS }}
+    steps:
+      - name: Check out the selected revision
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Enable the pinned package manager
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+
+      - name: Install locked dependencies without lifecycle scripts
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Require and validate server configuration
+        id: config
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${PHONE11_PLAIN_VIDEO_ADMISSION_DATABASE_URL:-}" ]]; then
+            echo "FAIL: required database secret is unavailable" > config-status.txt
+            exit 1
+          fi
+          if [[ -z "${PHONE11_CONNECT11_PLAIN_VIDEO_TENANTS:-}" ]]; then
+            echo "FAIL: required Connect11 tenant secret is unavailable" > config-status.txt
+            exit 1
+          fi
+          if pnpm exec tsx --eval '
+            import { readServerConnect11PlainVideoTenantConfiguration } from "./server/meetings/connect11-plain-video-config.ts";
+            const configuration = readServerConnect11PlainVideoTenantConfiguration(process.env);
+            if (!configuration.enabled) {
+              console.error("FAIL: Connect11 tenant configuration is missing, malformed, disabled, or duplicated");
+              process.exit(1);
+            }
+            console.log(`PASS: Connect11 tenant configuration parsed (${configuration.tenants.length} tenant entries; values withheld)`);
+          ' > config-status.txt 2>&1; then
+            cat config-status.txt
+          else
+            cat config-status.txt
+            exit 1
+          fi
+
+      - name: Inspect the protected clone schema in a read-only transaction
+        id: database
+        shell: bash
+        run: |
+          set -euo pipefail
+          if pnpm run meetings:plain-video:preflight > database-status.txt 2>&1; then
+            {
+              echo "PASS: protected-clone schema preflight completed"
+              sed -n -E '/^(Prerequisites|Migration state|Outcome):/p' database-status.txt
+            } > database-summary.txt
+          else
+            echo "FAIL: protected-clone schema preflight did not pass; no database change was attempted" > database-summary.txt
+            exit 1
+          fi
+
+      - name: Run focused conference checks
+        run: |
+          pnpm exec vitest run \
+            tests/phone11-plain-video-admission-preflight.test.ts \
+            server/meetings/connect11-plain-video-facade.test.ts \
+            server/meetings/connect11-plain-video-provider.test.ts \
+            server/meetings/connect11-plain-video-tenant-provider.test.ts
+          node --test tests/phone11-connect11-plain-video-compose.test.mjs
+          node --test tests/phone11-connect11-conference-activation-preflight-workflow.test.mjs
+
+      - name: Typecheck the repository
+        run: pnpm run check
+
+      - name: Emit redacted readiness summary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "Phone11 Connect11 conference activation preflight"
+            echo "Revision: ${GITHUB_SHA}"
+            if [[ -s config-status.txt ]]; then
+              sed -E 's/[[:space:]]+$//' config-status.txt
+            else
+              echo "Configuration result: unavailable"
+            fi
+            if [[ -s database-summary.txt ]]; then
+              cat database-summary.txt
+            else
+              echo "Database result: unavailable"
+            fi
+            echo "Repository checks: see workflow step result"
+            echo "Readiness: activation remains manual and gated"
+            echo "Secret values and connection details are withheld"
+          } > phone11-connect11-conference-readiness.txt
+          cat phone11-connect11-conference-readiness.txt >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the redacted readiness artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phone11-connect11-conference-readiness
+          path: phone11-connect11-conference-readiness.txt
+          if-no-files-found: error

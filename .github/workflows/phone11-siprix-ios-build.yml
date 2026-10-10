@@ -1,0 +1,130 @@
+name: Phone11 Siprix iOS internal build
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact independently reviewed published source SHA (40 lowercase hex)
+        required: true
+        type: string
+      build_profile:
+        description: Fixed standalone signed daily pilot; existing remote ad-hoc credentials only
+        required: true
+        # The working handset uses the daily pilot. Keep this as the safe
+        # default so an omitted manual selection cannot produce a lower-gate
+        # preview package or a development launcher replacement.
+        default: preview-ios-siprix-daily-pilot
+        type: choice
+        options:
+          - preview-ios-siprix-daily-pilot
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phone11-siprix-ios
+  cancel-in-progress: false
+
+jobs:
+  signing-guard-check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Enable pinned package manager for offline configuration checks
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+      - name: Install locked configuration dependencies without lifecycle scripts
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Verify iOS signing and output boundary offline
+        env:
+          NODE_OPTIONS: ''
+        run: node --test tests/phone11-ios-existing-build.test.mjs
+  daily-use-check:
+    uses: ./.github/workflows/phone11-daily-use.yml
+  native-check:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Enable pinned package manager
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+      - name: Install exact native dependency headers
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Check exact SDK headers and native bridge behavior
+        run: |
+          node scripts/stage-siprix-sdk.mjs
+          node --test modules/phone11-siprix/tests/*.test.mjs
+          node --test tests/phone11-wake-build-config.test.mjs
+  build:
+    needs: [native-check, daily-use-check, signing-guard-check]
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'vasavas1977/codex-phone11' && github.ref == 'refs/heads/codex/phone11-zoom-mainline-integration-20260928'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Enable pinned package manager
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+      - name: Install locked source dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Test authentication, adapters, and CallKit deduplication
+        run: |
+          pnpm run test:auth-client
+          pnpm run test:auth-sip
+          pnpm exec vitest run tests/phone11-siprix-engine.test.ts tests/phone11-siprix-callkit.test.ts tests/phone11-siprix-selection.test.ts
+          pnpm exec vitest run tests/phone11-call-history.test.ts tests/phone11-dial-input.test.ts
+          pnpm exec vitest run tests/phone11-current-call.test.ts tests/phone11-current-call-banner.test.tsx
+          node --test tests/phone11-siprix-packaging.test.mjs
+      - name: Stage and verify isolated Siprix native modules
+        env:
+          EXPO_PUBLIC_SIP_ENGINE: siprix
+        run: |
+          node scripts/stage-siprix-sdk.mjs
+          node scripts/verify-siprix-autolinking.mjs
+      - name: Generate the real Expo iOS project before requesting signing
+        run: node scripts/check-phone11-native-prebuild.mjs
+      - name: Bind the fixed request to owned source before any token use
+        env:
+          PHONE11_IOS_BUILD_SOURCE: ${{ inputs.source_sha }}
+          PHONE11_BUILD_PROFILE: ${{ inputs.build_profile }}
+          NODE_OPTIONS: ''
+        run: node scripts/request-phone11-ios-existing-build.mjs --check-source
+      - uses: expo/expo-github-action@c7b66a9c327a43a8fa7c0158e7f30d6040d2481e # v8
+        with:
+          eas-version: "23.2.0"
+          # CLI installation only. No account validation or token given to this action.
+          packager: pnpm
+      - name: Build signed Siprix app using existing iOS credentials
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          EXPO_NO_TELEMETRY: "1"
+          PHONE11_IOS_BUILD_SOURCE: ${{ inputs.source_sha }}
+          PHONE11_BUILD_PROFILE: ${{ inputs.build_profile }}
+          NODE_OPTIONS: ''
+          NODE_EXTRA_CA_CERTS: ''
+          NODE_TLS_REJECT_UNAUTHORIZED: ''
+          NODE_USE_ENV_PROXY: ''
+        run: node scripts/request-phone11-ios-existing-build.mjs

@@ -33,7 +33,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   state.poolQuery.mockResolvedValue({ rows: [] });
   state.txQuery.mockImplementation(async (sql: string) => ({
-    rows: sql.includes("INSERT INTO extensions") ? [{ id: 41, sip_password: null }] : [],
+    rows: sql.includes("INSERT INTO extensions") ? [{ id: 41, sip_password: null }]
+      : sql.includes("INSERT INTO subscriber") ? [{ username: "4101" }] : [],
   }));
   state.withTransaction.mockImplementation(async (callback) => callback({ query: state.txQuery }));
   state.createCredentials.mockReturnValue(credentials);
@@ -50,7 +51,7 @@ describe("legacy Phone11 SIP provisioning", () => {
     const sql = state.txQuery.mock.calls.map(([statement]) => String(statement));
     expect(sql.findIndex((statement) => statement.includes("pg_advisory_xact_lock")))
       .toBeLessThan(sql.findIndex((statement) => statement.includes("SELECT id FROM subscriber")));
-    expect(sql.some((statement) => statement.includes("INSERT INTO subscriber") && !statement.includes("ON CONFLICT"))).toBe(true);
+    expect(sql.some((statement) => statement.includes("INSERT INTO subscriber") && statement.includes("ON CONFLICT"))).toBe(true);
     expect(sql.some((statement) => statement.includes("INSERT INTO sip_accounts"))).toBe(true);
     const subscriberInsert = state.txQuery.mock.calls.find(([statement]) => String(statement).includes("INSERT INTO subscriber"));
     expect(subscriberInsert?.[1]).toContain("fixture-secret");
@@ -72,7 +73,8 @@ describe("legacy Phone11 SIP provisioning", () => {
   it("does not return credentials when the account insert fails", async () => {
     state.txQuery.mockImplementation(async (sql: string) => {
       if (sql.includes("INSERT INTO sip_accounts")) throw new Error("account insert failed");
-      return { rows: sql.includes("INSERT INTO extensions") ? [{ id: 41 }] : [] };
+      return { rows: sql.includes("INSERT INTO extensions") ? [{ id: 41 }]
+        : sql.includes("INSERT INTO subscriber") ? [{ username: "4101" }] : [] };
     });
     await expect(createExtension({ orgId: 7, extensionNumber: "4101" }))
       .rejects.toThrow("account insert failed");
@@ -88,10 +90,10 @@ describe("legacy Phone11 SIP provisioning", () => {
     await expect(listExtensions(7)).resolves.toEqual([{ id: 41 }]);
   });
 
-  it("does not allocate pilot calling resources without active tenant membership", async () => {
+  it("never allocates pilot calling resources from a read", async () => {
     await expect(ensurePilotExtensionForUser(33, "member-open-id"))
       .resolves.toEqual({ configured: false });
-    expect(state.poolQuery.mock.calls.some(([sql]) => String(sql).includes("tm.tenant_id = 1"))).toBe(true);
+    expect(state.poolQuery.mock.calls.some(([sql]) => String(sql).includes("tm.user_id = $1"))).toBe(true);
     expect(state.poolQuery.mock.calls.some(([sql]) => String(sql).includes("ORDER BY e.extension_number"))).toBe(false);
     expect(state.txQuery).not.toHaveBeenCalled();
   });
@@ -101,19 +103,16 @@ describe("legacy Phone11 SIP provisioning", () => {
       rows: sql.includes("SELECT id, tenant_id, user_id FROM extensions")
         ? [{ id: 41, tenant_id: 7, user_id: null }] : [],
     }));
-    await expect(assignExtensionToUser(33, 41)).rejects.toThrow("active member");
+    await expect(assignExtensionToUser(33, 41, true, 7)).rejects.toThrow("active member");
     expect(state.txQuery.mock.calls.some(([sql]) => String(sql).includes("UPDATE extensions SET user_id"))).toBe(false);
   });
 
-  it("checks owner fallback for active membership and duplicate SIP-account URI", async () => {
+  it("does not use an owner ID as a fallback to extension 1020", async () => {
     process.env.OWNER_OPEN_ID = "owner-open-id";
     try {
       await expect(getPhoneConfig(33, "owner-open-id")).resolves.toEqual({ configured: false });
-      const ownerSql = String(state.poolQuery.mock.calls.find(([sql]) =>
-        String(sql).includes("e.extension_number = '1020'"))?.[0]);
-      expect(ownerSql).toContain("owner_tm.status = 'active'");
-      expect(ownerSql).toContain("other_sa.sip_username");
-      expect(ownerSql).toContain("other_sa.status = 'active'");
+      expect(state.poolQuery.mock.calls.some(([sql]) => String(sql).includes("e.extension_number = '1020'"))).toBe(false);
+      expect(state.txQuery).not.toHaveBeenCalled();
     } finally {
       delete process.env.OWNER_OPEN_ID;
     }
@@ -134,7 +133,8 @@ describe("legacy Phone11 SIP provisioning", () => {
       secret_tag: Buffer.from("tag"),
     };
     state.poolQuery.mockImplementation(async (sql: string) => ({
-      rows: sql.includes("ue.is_primary") ? [assigned] : [],
+      rows: sql.includes("ORDER BY tm.tenant_id") ? [{ tenant_id: 7 }]
+        : sql.includes("ue.is_primary") ? [assigned] : [],
     }));
     state.decryptSecret.mockReturnValue("different-secret");
     await expect(getPhoneConfig(33, "member-open-id")).resolves.toEqual({ configured: false });

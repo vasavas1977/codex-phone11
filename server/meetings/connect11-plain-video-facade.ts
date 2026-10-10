@@ -1,0 +1,345 @@
+import { z } from "zod";
+import { normalizePlainVideoDisplayName } from "./plain-video-display-name";
+
+const contractVersion = "phone11-plain-video.v1";
+const identifier = z.string().regex(/^[A-Za-z0-9_-]{1,96}$/);
+const grantProfile = z.enum(["interactive", "listener"]);
+
+const capabilitiesSchema = z
+  .object({
+    contract_version: z.literal(contractVersion),
+    available: z.boolean(),
+    unavailable_reasons: z.array(z.enum(["not_configured", "issuer_isolation_unverified"])),
+    grant_profiles: z.array(grantProfile),
+    token_ttl_seconds: z.literal(300),
+    interpreter: z
+      .object({
+        enabled: z.literal(false),
+        dispatch: z.literal("none"),
+        status: z.literal("not_applicable"),
+      })
+      .strict(),
+  })
+  .strict();
+
+const admissionSchema = z
+  .object({
+    meetingId: identifier,
+    participantId: identifier,
+    grantProfile,
+    displayName: z.string().optional(),
+  })
+  .strict();
+
+/** The exact token contract returned by the plain-video facade. */
+export const connect11PlainVideoTokenSchema = z
+  .object({
+    contract_version: z.literal(contractVersion),
+    rtc_url: z.string().url(),
+    access_token: z.string().min(1).max(16_384),
+    expires_at: z.number().int(),
+  })
+  .strict();
+
+const evictionStatusSchema = z.enum(["pending", "processing", "completed", "failed"]);
+const evictionRequestSchema = z
+  .object({
+    meetingId: identifier,
+    participantId: identifier,
+  })
+  .strict();
+export const connect11PlainVideoEvictionSchema = z
+  .object({
+    eviction_id: z.string().uuid(),
+    contract_version: z.literal(contractVersion),
+    status: evictionStatusSchema,
+    revoke_token_ts: z.number().int().positive().refine(Number.isSafeInteger),
+    created_at: z.string().datetime({ offset: true }).nullable(),
+    completed_at: z.string().datetime({ offset: true }).nullable(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.status === "completed" && value.completed_at === null) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: "completed_at is required" });
+    }
+  });
+const idempotencyKey = z.string().regex(/^[A-Za-z0-9_-]{16,128}$/);
+
+export type Connect11PlainVideoCapabilities = z.infer<typeof capabilitiesSchema>;
+export type Connect11PlainVideoAdmission = z.infer<typeof admissionSchema>;
+export type Connect11PlainVideoToken = z.infer<
+  typeof connect11PlainVideoTokenSchema
+>;
+export type Connect11PlainVideoEviction = z.infer<typeof connect11PlainVideoEvictionSchema>;
+
+export type Connect11PlainVideoConfig = {
+  baseUrl: string;
+  statusCredential: string;
+  joinCredential: string;
+};
+
+function unavailable(): Error {
+  return new Error("Plain video service is unavailable");
+}
+
+type TokenRefusalCategory = "no_billable_wallet" | "insufficient_balance" | "trial_expired";
+type TokenRefusalDiagnostic = Readonly<{ category: TokenRefusalCategory; httpStatus: 402 }>;
+const tokenRefusals = new WeakMap<object, TokenRefusalDiagnostic>();
+
+function refusalCategory(value: unknown): TokenRefusalCategory | undefined {
+  switch (value) {
+    case "no_billable_wallet": return "no_billable_wallet";
+    case "insufficient_balance": return "insufficient_balance";
+    case "trial_expired": return "trial_expired";
+    default: return undefined;
+  }
+}
+
+/** Internal provenance prevents arbitrary provider errors/getters reaching logs. */
+export class Connect11PlainVideoTokenRefusalError extends Error {
+  constructor(category: TokenRefusalCategory) {
+    super("Plain video service is unavailable");
+    const safeCategory = refusalCategory(category);
+    if (!safeCategory) throw unavailable();
+    tokenRefusals.set(this, Object.freeze({ category: safeCategory, httpStatus: 402 }));
+  }
+}
+
+export function readConnect11PlainVideoTokenRefusal(error: unknown): TokenRefusalDiagnostic | undefined {
+  return typeof error === "object" && error !== null ? tokenRefusals.get(error) : undefined;
+}
+
+/** Read only a small error envelope; never retain a response or its raw body. */
+async function tokenRefusal(response: Response, signal: AbortSignal): Promise<TokenRefusalCategory | undefined> {
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  try {
+    if (response.status !== 402 || !response.body) return undefined;
+    reader = response.body.getReader();
+    const declaredLength = response.headers.get("content-length");
+    if (declaredLength !== null && (!/^\d{1,10}$/.test(declaredLength) || Number(declaredLength) > 4_096))
+      return undefined;
+    const bytes = new Uint8Array(4_096);
+    let length = 0;
+    for (let chunks = 0; chunks < 64; chunks++) {
+      if (signal.aborted) return undefined;
+      let abort: (() => void) | undefined;
+      const aborted = new Promise<never>((_resolve, reject) => {
+        abort = () => reject(unavailable());
+        signal.addEventListener("abort", abort, { once: true });
+      });
+      let chunk: ReadableStreamReadResult<Uint8Array>;
+      try {
+        chunk = await Promise.race([reader.read(), aborted]);
+      } finally {
+        if (abort) signal.removeEventListener("abort", abort);
+      }
+      if (chunk.done) {
+        const body = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, length)));
+        // JSON.parse supplies plain own data properties, never response getters.
+        if (!body || Array.isArray(body) || typeof body !== "object" ||
+            !Object.hasOwn(body, "error") || !body.error || Array.isArray(body.error) ||
+            typeof body.error !== "object" || !Object.hasOwn(body.error, "code") ||
+            !Object.hasOwn(body.error, "message") || body.error.code !== "http_error") return undefined;
+        return refusalCategory(body.error.message);
+      }
+      if (!(chunk.value instanceof Uint8Array) || chunk.value.byteLength > bytes.length - length)
+        return undefined;
+      bytes.set(chunk.value, length);
+      length += chunk.value.byteLength;
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  } finally {
+    // Cancellation can reject or remain pending: it must not delay denial.
+    try {
+      if (reader) void Promise.resolve(reader.cancel()).catch(() => {});
+      else if (response.body) void Promise.resolve(response.body.cancel()).catch(() => {});
+    } catch { /* Cleanup failures carry no diagnostic. */ }
+    try { reader?.releaseLock(); } catch { /* A hostile/errored stream stays generic. */ }
+  }
+}
+
+function safeBaseUrl(raw: string): URL {
+  try {
+    const url = new URL(raw);
+    if (
+      url.protocol !== "https:" ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash
+    )
+      throw unavailable();
+    return new URL(
+      `${url.href.replace(/\/+$/, "")}/api/v1/realtime/plain-video/`,
+    );
+  } catch {
+    throw unavailable();
+  }
+}
+
+function safeRtcUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (
+      url.protocol === "wss:" &&
+      !url.username &&
+      !url.password &&
+      !url.search &&
+      !url.hash
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A server-only facade for Connect11 plain video. It deliberately has a
+ * different contract from the interpretation facade: no language, consent,
+ * worker, agent, room, identity, customer, or TTL inputs can reach Connect11.
+ */
+export function createConnect11PlainVideoFacade(
+  config: Connect11PlainVideoConfig,
+  request: typeof fetch = fetch,
+) {
+  const base = safeBaseUrl(config.baseUrl);
+  if (!config.statusCredential || !config.joinCredential) throw unavailable();
+
+  const call = async (
+    path: string,
+    credential: string,
+    init: RequestInit = {},
+  ) => {
+    try {
+      const signal = AbortSignal.timeout(10_000);
+      const response = await request(new URL(path, base), {
+        ...init,
+        redirect: "error",
+        signal,
+        headers: {
+          accept: "application/json",
+          authorization: `Bearer ${credential}`,
+          ...init.headers,
+        },
+      });
+      if (!response.ok) {
+        if (path === "tokens" && init.method === "POST") {
+          const category = await tokenRefusal(response, signal);
+          if (category) throw new Connect11PlainVideoTokenRefusalError(category);
+        }
+        throw unavailable();
+      }
+      return await response.json();
+    } catch (error) {
+      if (readConnect11PlainVideoTokenRefusal(error)) throw error;
+      throw unavailable();
+    }
+  };
+
+  const evictionCall = async (
+    path: string,
+    init: RequestInit = {},
+  ): Promise<{ status: number; body: unknown }> => {
+    try {
+      const response = await request(new URL(path, base), {
+        ...init,
+        redirect: "error",
+        signal: AbortSignal.timeout(10_000),
+        headers: {
+          accept: "application/json",
+          authorization: `Bearer ${config.joinCredential}`,
+          ...init.headers,
+        },
+      });
+      return { status: response.status, body: await response.json() };
+    } catch {
+      throw unavailable();
+    }
+  };
+
+  const capabilities = async (): Promise<Connect11PlainVideoCapabilities> => {
+    const parsed = capabilitiesSchema.safeParse(
+      await call("capabilities", config.statusCredential),
+    );
+    if (!parsed.success) throw unavailable();
+    return parsed.data;
+  };
+
+  return {
+    capabilities,
+    /** `raw` must come from a trusted Phone11 server admission resolver. */
+    async admit(raw: unknown): Promise<Connect11PlainVideoToken> {
+      const rawAdmission = admissionSchema.safeParse(raw);
+      if (!rawAdmission.success) throw unavailable();
+      const admission = rawAdmission.data;
+      if (admission.displayName !== undefined &&
+          normalizePlainVideoDisplayName(admission.displayName) !== admission.displayName) throw unavailable();
+      const status = await capabilities();
+      if (
+        !status.available ||
+        status.unavailable_reasons.length !== 0 ||
+        !status.grant_profiles.includes(admission.grantProfile)
+      )
+        throw unavailable();
+      const parsed = connect11PlainVideoTokenSchema.safeParse(
+        await call("tokens", config.joinCredential, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            meeting_id: admission.meetingId,
+            participant_id: admission.participantId,
+            grant_profile: admission.grantProfile,
+            ...(admission.displayName === undefined ? {} : { display_name: admission.displayName }),
+          }),
+        }),
+      );
+      const now = Math.floor(Date.now() / 1000);
+      if (
+        !parsed.success ||
+        !safeRtcUrl(parsed.data.rtc_url) ||
+        parsed.data.expires_at <= now ||
+        parsed.data.expires_at > now + 330
+      )
+        throw unavailable();
+      return parsed.data;
+    },
+    /**
+     * This acknowledges receipt only when the response is 202. A pending
+     * eviction never proves a participant was removed; callers must observe
+     * `status: completed` through the bounded status method below.
+     */
+    async requestEviction(raw: unknown, rawIdempotencyKey: unknown): Promise<Connect11PlainVideoEviction> {
+      const eviction = evictionRequestSchema.safeParse(raw);
+      const key = idempotencyKey.safeParse(rawIdempotencyKey);
+      if (!eviction.success || !key.success) throw unavailable();
+      const response = await evictionCall("evictions", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "Idempotency-Key": key.data,
+        },
+        body: JSON.stringify({
+          meeting_id: eviction.data.meetingId,
+          participant_id: eviction.data.participantId,
+        }),
+      });
+      const parsed = connect11PlainVideoEvictionSchema.safeParse(response.body);
+      if (response.status !== 202 || !parsed.success) throw unavailable();
+      return parsed.data;
+    },
+    /** Performs one scoped status read; polling cadence belongs to a caller. */
+    async evictionStatus(rawEvictionId: unknown): Promise<Connect11PlainVideoEviction> {
+      const evictionId = z.string().uuid().safeParse(rawEvictionId);
+      if (!evictionId.success) throw unavailable();
+      const response = await evictionCall(
+        `evictions/${encodeURIComponent(evictionId.data)}`,
+      );
+      const parsed = connect11PlainVideoEvictionSchema.safeParse(response.body);
+      if (response.status !== 200 || !parsed.success || parsed.data.eviction_id !== evictionId.data) {
+        throw unavailable();
+      }
+      return parsed.data;
+    },
+  };
+}

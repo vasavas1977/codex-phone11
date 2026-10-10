@@ -1,0 +1,481 @@
+import { beforeEach, expect, it, vi } from "vitest";
+import { createElement, type ReactNode } from "react";
+import { createRequire } from "node:module";
+const { renderToStaticMarkup } = createRequire(import.meta.url)(
+  "react-dom/server",
+) as { renderToStaticMarkup(node: ReactNode): string };
+vi.mock("../components/cloud-recordings/call-actions-sheet", () => ({
+  CallActionsSheet: () => null,
+}));
+vi.mock("../hooks/use-hidden-calls", () => ({
+  useHiddenCalls: () => ({
+    ids: [],
+    ready: true,
+    hide: vi.fn(),
+    restoreAll: vi.fn(),
+  }),
+}));
+vi.mock("../hooks/use-call-favorites", () => ({
+  useCallFavorites: () => ({ starred: (number: string) => mocks.starredNumbers.has(number), toggle: vi.fn(), loading: false }),
+}));
+vi.mock("../lib/chat/store", () => ({
+  useChatStore: () => ({ userId: null, workspace: null }),
+}));
+vi.mock("../lib/_core/auth", () => ({
+  getAuthSnapshot: () => ({ user: mocks.user }),
+}));
+const mocks = vi.hoisted(() => ({
+  user: { id: 1 } as { id: number } | null,
+  history: {} as any,
+  workspaceHistory: { items: [] as any[], nextCursor: null as any, loading: false, loadingMore: false, error: null as string | null, reload: vi.fn(), loadMore: vi.fn() },
+  cloud: { items: [] as any[], reload: vi.fn(), loading: false },
+  contacts: [] as any[],
+  account: { ownerUserId: 1, tenantId: 7, enabled: true } as any,
+  directory: { owner: 1, workspace: { id: 7 }, people: [] as any[], reload: vi.fn() } as any,
+  calling: false,
+  call: vi.fn(async () => {}),
+  refresh: undefined as (() => void) | undefined,
+  refreshing: false,
+  starredNumbers: new Set<string>(),
+  routerPush: vi.fn(),
+  press: new Map<
+    string,
+    {
+      run: () => unknown;
+      disabled: boolean;
+      role?: string;
+      minHeight?: number;
+      selected?: boolean;
+    }
+  >(),
+}));
+vi.mock("../lib/sip/account-store", () => ({
+  useSipAccountStore: (selector: (state: any) => unknown) => selector({ account: mocks.account }),
+}));
+vi.mock("../hooks/use-directory", () => ({
+  useDirectory: () => mocks.directory,
+  useDirectoryFocusRefresh: vi.fn(),
+}));
+vi.mock("../components/profile/profile-avatar", () => ({
+  ProfileAvatar: ({ name, photoUrl }: any) => createElement("span", { "data-photo": photoUrl ?? "", "data-avatar": name }),
+  useProfilePhotoCacheScope: vi.fn(),
+}));
+vi.mock("../components/device-contacts-list", () => ({
+  DeviceContactAvatar: ({ name, imageUri }: any) => createElement("span", { "data-device-photo": imageUri ?? "", "data-avatar": name }),
+}));
+vi.mock("../hooks/use-device-contacts", () => ({
+  useDeviceContacts: () => ({ people: mocks.contacts }),
+}));
+vi.mock("expo-router", () => ({ useRouter: () => ({ push: mocks.routerPush }) }));
+vi.mock("../hooks/use-cloud-recordings", () => ({
+  useCloudRecordings: () => mocks.cloud,
+}));
+vi.mock("../hooks/use-personal-call-history", () => ({
+  usePersonalCallHistory: () => mocks.workspaceHistory,
+}));
+vi.mock("react-native", () => ({
+  StyleSheet: { create: (s: any) => s },
+  View: ({ children }: any) => createElement("div", null, children),
+  ScrollView: ({ children }: any) => createElement("div", null, children),
+  Text: ({ children }: any) => createElement("span", null, children),
+  TextInput: ({ accessibilityLabel, placeholder, value }: any) =>
+    createElement("input", {
+      "aria-label": accessibilityLabel,
+      placeholder,
+      value,
+      readOnly: true,
+    }),
+  FlatList: ({
+    data,
+    renderItem,
+    ListEmptyComponent,
+    ListHeaderComponent,
+    ListFooterComponent,
+    onRefresh,
+    refreshing,
+  }: any) => {
+    mocks.refresh = onRefresh;
+    mocks.refreshing = refreshing;
+    return createElement(
+      "div",
+      null,
+      ListHeaderComponent,
+      data.length
+        ? data.map((item: any, index: number) =>
+            createElement("div", { key: item.id }, renderItem({ item, index })),
+        )
+        : ListEmptyComponent,
+      ListFooterComponent,
+    );
+  },
+  TouchableOpacity: ({
+    children,
+    accessibilityLabel,
+    accessibilityRole,
+    accessibilityState,
+    onPress,
+    disabled,
+    style,
+  }: any) => {
+    if (accessibilityLabel)
+      mocks.press.set(accessibilityLabel, {
+        run: onPress,
+        disabled,
+        role: accessibilityRole,
+        minHeight: style?.minHeight,
+        selected: Boolean(accessibilityState?.selected),
+      });
+    return createElement(
+      "button",
+      { "aria-label": accessibilityLabel, disabled, onClick: onPress, role: accessibilityRole },
+      children,
+    );
+  },
+}));
+vi.mock("../components/cloud-recordings/live-recording-panel", () => ({
+  LiveRecordingPanel: () => null,
+}));
+vi.mock("@react-navigation/native", () => ({ useFocusEffect: vi.fn() }));
+vi.mock("expo-haptics", () => ({
+  impactAsync: vi.fn(),
+  ImpactFeedbackStyle: { Light: "light" },
+}));
+vi.mock("../components/screen-container", () => ({
+  ScreenContainer: ({ children }: any) => createElement("main", null, children),
+}));
+vi.mock("../components/ui/icon-symbol", () => ({ IconSymbol: () => null }));
+vi.mock("@expo/vector-icons/MaterialIcons", () => ({ default: () => null }));
+vi.mock("../hooks/use-colors", () => ({
+  useColors: () => ({
+    primary: "#008877",
+    foreground: "#112233",
+    muted: "#556677",
+    surface: "#eeeeee",
+  }),
+}));
+vi.mock("../hooks/use-auth", () => ({ useAuth: () => ({ user: mocks.user }) }));
+vi.mock("../hooks/use-phone-call", () => ({
+  usePhoneCall: () => ({ placeCall: mocks.call, calling: mocks.calling }),
+}));
+vi.mock("../lib/sip/call-history", () => ({
+  useCallHistoryStore: () => mocks.history,
+  historyDuration: () => 12,
+  isMissedCall: (entry: any) =>
+    entry.direction === "inbound" && entry.answeredAt === undefined,
+}));
+import RecentsScreen, { filterRecentsRows, safeCallbackNumber, workspaceHistoryRows } from "../app/(tabs)/recents";
+import { CallHistoryRow } from "../components/cloud-recordings/call-history-view";
+function entry(ownerUserId = 1) {
+  return {
+    id: `saved-${ownerUserId}`,
+    ownerUserId,
+    number: "3002",
+    name: ownerUserId === 1 ? "สมชาย" : "Other account private contact",
+    startedAt: Date.now() - 20000,
+    answeredAt: Date.now() - 13000,
+    endedAt: Date.now() - 1000,
+    direction: "inbound",
+  };
+}
+beforeEach(() => {
+  vi.clearAllMocks();
+  mocks.press.clear();
+  mocks.user = { id: 1 };
+  mocks.contacts = [];
+  mocks.account = { ownerUserId: 1, tenantId: 7, enabled: true };
+  mocks.directory = { owner: 1, workspace: { id: 7 }, people: [], reload: vi.fn() };
+  mocks.cloud.items = [];
+  mocks.cloud.loading = false;
+  mocks.calling = false;
+  mocks.starredNumbers.clear();
+  mocks.routerPush.mockReset();
+  mocks.history = {
+    ownerUserId: 1,
+    entries: [entry()],
+    loading: false,
+    error: null,
+    reload: vi.fn(),
+  };
+  mocks.workspaceHistory = {
+    items: [], nextCursor: null, loading: false, loadingMore: false,
+    error: null, reload: vi.fn(), loadMore: vi.fn(),
+  };
+});
+it("opens voicemail from Recents with an accessible 44-point target", async () => {
+  renderToStaticMarkup(<RecentsScreen />);
+  const voicemail = mocks.press.get("Open voicemail")!;
+  expect(voicemail.role).toBe("button");
+  expect(voicemail.minHeight).toBeGreaterThanOrEqual(44);
+  await voicemail.run();
+  expect(mocks.routerPush).toHaveBeenCalledWith("/voicemail");
+});
+it("defaults to This device and keeps Workspace rows separate from native history", () => {
+  mocks.workspaceHistory.items = [{
+    id: 200, call_uuid: "server-uuid", direction: "inbound", disposition: "missed",
+    caller_number: "3002", callee_number: "3001", callback_number: "3002",
+    total_duration_seconds: 0, started_at: new Date(Date.now() - 20000).toISOString(),
+  }];
+  const html = renderToStaticMarkup(<RecentsScreen />);
+  expect(mocks.press.get("This device call history")?.selected).toBe(true);
+  expect(mocks.press.get("Workspace call history")?.selected).toBe(false);
+  expect(html.match(/aria-label="Details for/g)).toHaveLength(1);
+  expect(html).toContain("สมชาย");
+  expect(html).not.toContain("server-uuid");
+});
+it("expands a row without dialing; only its explicit call button places a call", async () => {
+  renderToStaticMarkup(<RecentsScreen />);
+  await mocks.press.get("Details for สมชาย")!.run();
+  expect(mocks.call).not.toHaveBeenCalled();
+  await mocks.press.get("Call 3002")!.run();
+  expect(mocks.call).toHaveBeenNthCalledWith(1, "3002");
+  expect(mocks.call).toHaveBeenCalledTimes(1);
+});
+it("hides a previous owner's history after sign-out", () => {
+  mocks.user = null;
+  const html = renderToStaticMarkup(<RecentsScreen />);
+  expect(html).toContain("Sign in to see your calls");
+  expect(html).not.toContain("สมชาย");
+  expect(
+    [...mocks.press.keys()].some((label) => label.startsWith("Call ")),
+  ).toBe(false);
+  expect(
+    [...mocks.press.keys()].some((label) => label.startsWith("Details for ")),
+  ).toBe(false);
+});
+it("requires both the history owner and each individual entry to match the signed-in user", () => {
+  mocks.history.entries.push(entry(2));
+  expect(renderToStaticMarkup(<RecentsScreen />)).not.toContain(
+    "Other account private contact",
+  );
+  mocks.history.ownerUserId = 2;
+  expect(renderToStaticMarkup(<RecentsScreen />)).not.toContain("สมชาย");
+});
+it("shows loading and error feedback and supports a real refresh", () => {
+  mocks.history.entries = [];
+  mocks.history.loading = true;
+  expect(renderToStaticMarkup(<RecentsScreen />)).toContain("Loading calls...");
+  mocks.history.loading = false;
+  mocks.history.error = "Could not load saved calls. Please try again.";
+  expect(renderToStaticMarkup(<RecentsScreen />)).toContain(
+    "Could not load saved calls",
+  );
+  mocks.refresh!();
+  expect(mocks.history.reload).toHaveBeenCalledOnce();
+});
+it("keeps the refresh indicator visible until cloud metadata finishes", () => {
+  mocks.cloud.loading = true;
+  renderToStaticMarkup(<RecentsScreen />);
+  expect(mocks.refreshing).toBe(true);
+  mocks.cloud.loading = false;
+  renderToStaticMarkup(<RecentsScreen />);
+  expect(mocks.refreshing).toBe(false);
+});
+it("disables callback while keeping call details accessible during a pending request", () => {
+  mocks.calling = true;
+  renderToStaticMarkup(<RecentsScreen />);
+  expect(mocks.press.get("Details for สมชาย")!.disabled).not.toBe(true);
+  expect(mocks.press.get("Call 3002")!.disabled).toBe(true);
+});
+
+it("resolves a local contact name without changing saved history or its call target", async () => {
+  mocks.history.entries[0].number = "+66825826667";
+  mocks.contacts = [
+    {
+      id: "local1",
+      name: "Local friend",
+      phones: [{ number: "0825826667", label: "Mobile", key: "+66825826667" }],
+    },
+  ];
+  expect(renderToStaticMarkup(<RecentsScreen />)).toContain("Local friend");
+  expect(mocks.history.entries[0].name).toBe("สมชาย");
+  await mocks.press.get("Call +66825826667")!.run();
+  expect(mocks.call).toHaveBeenCalledWith("+66825826667");
+  mocks.contacts = [];
+  mocks.cloud.items = [];
+  expect(renderToStaticMarkup(<RecentsScreen />)).toContain("สมชาย");
+});
+
+it("shows the tenant-scoped team photo for a recent extension call", () => {
+  const photoUrl = "/api/profile/photo/7/42?v=11111111-1111-4111-8111-111111111111";
+  mocks.directory.people = [{ id: 42, name: "Teammate", extension: "3002", photoUrl }];
+  expect(renderToStaticMarkup(<RecentsScreen />)).toContain(`data-photo="${photoUrl}"`);
+  mocks.account = { ownerUserId: 2, tenantId: 7, enabled: true };
+  expect(renderToStaticMarkup(<RecentsScreen />)).not.toContain(`data-photo="${photoUrl}"`);
+});
+
+it("shows a unique local phone photo and falls back on ambiguous matches", () => {
+  mocks.history.entries[0].number = "+66825826667";
+  const local = {
+    id: "local1", name: "Local friend", imageUri: "file:///private/contact.jpg",
+    phones: [{ number: "0825826667", label: "Mobile", key: "+66825826667" }],
+  };
+  mocks.contacts = [local];
+  expect(renderToStaticMarkup(<RecentsScreen />)).toContain('data-device-photo="file:///private/contact.jpg"');
+  mocks.contacts = [local, { ...local, id: "local2" }];
+  expect(renderToStaticMarkup(<RecentsScreen />)).not.toContain('data-device-photo="file:///private/contact.jpg"');
+});
+
+it("maps emergency CDRs as outgoing and exposes no call action without a safe callback number", () => {
+  const [row] = workspaceHistoryRows([{
+    id: 900, call_uuid: "emergency", direction: "emergency", disposition: "answered",
+    caller_number: "3001", callee_number: "191", callback_number: null,
+    total_duration_seconds: 42, started_at: "2026-09-30T09:00:00.123456Z",
+  }], 7, [], []);
+  expect(row.direction).toBe("outgoing");
+  expect(row.name).toBe("Emergency call");
+  expect(row.number).toBe("191");
+  expect(row.callbackNumber).toBeNull();
+  const html = renderToStaticMarkup(createElement(CallHistoryRow, {
+    call: row, expanded: false, onToggle: vi.fn(),
+  }));
+  expect(html).not.toContain('aria-label="Call 191"');
+});
+
+it("allows only short plain callback targets and keeps malformed values display-only", () => {
+  expect(safeCallbackNumber("+66812345678")).toBe("+66812345678");
+  expect(safeCallbackNumber("sip:alice@evil.example")).toBeNull();
+  expect(safeCallbackNumber("tel:+66812345678")).toBeNull();
+  expect(safeCallbackNumber("+66abc123")).toBeNull();
+  expect(safeCallbackNumber("1".repeat(33))).toBeNull();
+});
+
+it("does not show an empty Workspace success state when the SIP account belongs to another owner", () => {
+  mocks.account = { ownerUserId: 2, tenantId: 7, enabled: true };
+  const html = renderToStaticMarkup(<RecentsScreen />);
+  expect(mocks.press.get("Workspace call history")?.disabled).toBe(true);
+  expect(html).toContain("Workspace history unavailable. Select or restore an active workspace phone account.");
+});
+
+it("joins cloud recording controls only by exact server-provided history ID", () => {
+  mocks.cloud.items = [
+    {
+      callUuid: "11111111-1111-4111-8111-111111111111",
+      nativeHistoryId: "saved-1",
+      number: "3002",
+      startedAt: 1000,
+      recordingStatus: "ready",
+      summaryStatus: "queued",
+    },
+  ];
+  let html = renderToStaticMarkup(createElement(RecentsScreen));
+  expect(html.match(/● Recording/g)).toHaveLength(1);
+  expect(html.match(/aria-label="Details for/g)).toHaveLength(1);
+  mocks.cloud.items[0].nativeHistoryId = "other-id";
+  html = renderToStaticMarkup(createElement(RecentsScreen));
+  expect(html.match(/aria-label="Details for/g)).toHaveLength(2);
+  expect(html.match(/● Recording/g)).toHaveLength(1);
+});
+
+it("offers compact filters and name-or-number search", () => {
+  const html = renderToStaticMarkup(<RecentsScreen />);
+  expect(html).toContain('aria-label="Search recent calls"');
+  expect(html).toContain('placeholder="Search name or number"');
+  expect(html).toContain('aria-label="Show recorded calls"');
+  expect(html).toContain('aria-label="Show all calls"');
+  expect(html).toContain('aria-label="Show missed calls"');
+  expect(html).not.toContain('aria-label="Show ai summary calls"');
+  expect(html).toContain('aria-label="Show starred calls"');
+});
+
+it("filters starred calls by the current owner's saved phone-number favorites", () => {
+  const rows = [
+    {
+      id: "call-1",
+      name: "Somchai",
+      number: "+66825826667",
+      direction: "incoming",
+      startedAt: 2,
+      time: "10:01",
+      duration: "1:00",
+    },
+    {
+      id: "call-2",
+      name: "Nathasa",
+      number: "+66815551234",
+      direction: "outgoing",
+      startedAt: 1,
+      time: "10:00",
+      duration: "0:30",
+    },
+  ] as any[];
+  const favorites = (number: string) => mocks.starredNumbers.has(number);
+  const filtered = () =>
+    filterRecentsRows(rows, "starred", "", () => false, favorites).map(
+      (row) => row.id,
+    );
+
+  expect(filtered()).toEqual([]);
+  mocks.starredNumbers.add("+66825826667");
+  expect(filtered()).toEqual(["call-1"]);
+  mocks.starredNumbers.delete("+66825826667");
+  expect(filtered()).toEqual([]);
+});
+
+it("keeps recordings with and without summaries together", () => {
+  const rows = [
+    {
+      id: "plain",
+      name: "Plain call",
+      number: "+6620303001",
+      direction: "incoming",
+      startedAt: 1,
+      time: "10:00",
+      duration: "0:30",
+    },
+    {
+      id: "recorded",
+      name: "Recorded call",
+      number: "+66811111111",
+      direction: "outgoing",
+      startedAt: 2,
+      time: "10:01",
+      duration: "1:00",
+      recordingReady: true,
+    },
+    {
+      id: "summary",
+      name: "Summarized call",
+      number: "+66822222222",
+      direction: "outgoing",
+      startedAt: 3,
+      time: "10:02",
+      duration: "2:00",
+      recordingReady: true,
+      summaryReady: true,
+    },
+  ] as any[];
+  expect(
+    filterRecentsRows(rows, "recorded", "", () => false).map((row) => row.id),
+  ).toEqual(["summary", "recorded"]);
+});
+
+it("searches contact names and normalized phone digits within the active filter", () => {
+  const rows = [
+    {
+      id: "friend",
+      name: "Nathasa Friend",
+      number: "+66 82 550 3222",
+      direction: "outgoing",
+      startedAt: 2,
+      time: "10:01",
+      duration: "1:00",
+      recordingReady: true,
+    },
+    {
+      id: "other",
+      name: "Somchai",
+      number: "+66 81 111 1111",
+      direction: "incoming",
+      startedAt: 1,
+      time: "10:00",
+      duration: "0:30",
+    },
+  ] as any[];
+  const filter = (query: string) =>
+    filterRecentsRows(rows, "recorded", query, () => false).map(
+      (row) => row.id,
+    );
+  expect(filter("nathasa")).toEqual(["friend"]);
+  expect(filter("0825503222")).toEqual(["friend"]);
+  expect(filter("Somchai")).toEqual([]);
+});

@@ -1,0 +1,69 @@
+name: Phone11 EAS iOS preview existing credentials v54
+
+on:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - .github/workflows/phone11-eas-ios-preview-existing-v54.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ios-preview-build:
+    name: Queue iOS preview build
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Require EXPO_TOKEN secret
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          if [ -z "$EXPO_TOKEN" ]; then
+            echo "Missing EXPO_TOKEN repository secret."
+            exit 1
+          fi
+
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: codex/phone11-mobile-pjsip-20260506
+
+      - name: Show build source commit and SIP restart patch
+        run: |
+          git rev-parse HEAD
+          git log -1 --oneline
+          grep -n "await sipEngine.restart();" app/settings/sip-diagnostics.tsx
+          grep -n "sipCredentialPresent" app/settings/sip-diagnostics.tsx
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+          pnpm --version
+
+      - name: Setup Expo and EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+          packager: pnpm
+
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate Expo config
+        run: pnpm exec expo config --type public
+
+      - name: Confirm EAS account
+        run: eas whoami
+
+      - name: Queue iOS preview build
+        run: eas build --platform ios --profile preview-ios-existing-credentials --non-interactive --no-wait

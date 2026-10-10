@@ -1,0 +1,427 @@
+name: Phone11 Mobile Native Check
+
+on:
+  workflow_dispatch:
+    inputs:
+      request_internal_android_trial:
+        description: "Build the fixed signed 60-second foreground Android trial after all checks"
+        type: boolean
+        required: false
+        default: false
+  pull_request:
+    paths:
+      - "app/**"
+      - "components/**"
+      - "hooks/**"
+      - "lib/**"
+      - "modules/phone11-siprix/**"
+      - "patches/**"
+      - "plugins/**"
+      - "react-native.config.js"
+      - "scripts/**"
+      - "tests/**"
+      - "docs/**"
+      - "app.config.ts"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "eas.json"
+      - ".github/workflows/phone11-mobile-cloud-check.yml"
+      - ".github/workflows/phone11-eas-android-dev-client.yml"
+      - ".github/workflows/phone11-eas-ios-dev-client.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  internal-android-trial:
+    name: Optional Android internal foreground trial
+    needs: [install-test-config, native-dev-client-prebuild, android-gradle-assemble, android-screen-transaction-compile, android-foreground-trial-assemble, siprix-bridge-regressions]
+    if: github.event_name == 'workflow_dispatch' && inputs.request_internal_android_trial == true && github.repository == 'vasavas1977/codex-phone11' && github.ref == 'refs/heads/codex/phone11-zoom-mainline-integration-20260928'
+    uses: ./.github/workflows/phone11-android-trial-internal-build.yml
+    secrets:
+      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+
+  install-test-config:
+    name: Install, test, and validate Expo config
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || github.head_ref || github.ref_name }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+          pnpm --version
+
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run tests
+        # The platform-independent Android lifecycle tests invoke the real JDK.
+        run: pnpm test
+
+      - name: Validate Expo config
+        run: pnpm exec expo config --type public
+
+  native-dev-client-prebuild:
+    name: Validate native dev-client prebuild
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || github.head_ref || github.ref_name }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+          pnpm --version
+
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Confirm native dev-client dependencies
+        run: pnpm list expo-dev-client react-native-callkeep @config-plugins/react-native-callkeep --depth 0
+
+      - name: Validate Expo config
+        run: pnpm exec expo config --type public
+
+      - name: Prebuild native projects without installing pods/gradle deps
+        run: pnpm exec expo prebuild --clean --no-install
+
+  android-gradle-assemble:
+    name: Compile Android debug build
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      PHONE11_ANDROID_SCREEN_TRANSACTION: "0"
+      EXPO_PUBLIC_PHONE11_ANDROID_SCREEN_TRANSACTION: "0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || github.head_ref || github.ref_name }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+          pnpm --version
+
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Prebuild Android project
+        run: pnpm exec expo prebuild --clean --platform android --no-install
+
+      - name: Verify ordinary Android has no screen-transaction wiring
+        run: node scripts/verify-phone11-android-screen-manifest.mjs android/app/src/main/AndroidManifest.xml off
+
+      - name: Stage the exact Android SDK for source compilation only
+        shell: bash
+        run: |
+          curl --fail --location --retry 2 --output "$RUNNER_TEMP/phone11-siprix-android.aar" \
+            https://raw.githubusercontent.com/siprix/SampleJava/80d198ed6179b45ff8cd8dad9b8086976b4197a0/app/libs/siprix_voip_sdk.aar
+          printf '%s  %s\n' 3173ee8bae7aa37d3be3b44f7533d43b4e4d8625110d1d2bd8d79367973c9198 "$RUNNER_TEMP/phone11-siprix-android.aar" | sha256sum --check --strict
+
+      - name: Include the Android source candidate without app autolinking or activation
+        shell: bash
+        run: |
+          cat >> android/settings.gradle <<'GRADLE'
+          include ':phone11-siprix-android-source'
+          project(':phone11-siprix-android-source').projectDir = new File(rootProject.projectDir, '../modules/phone11-siprix/android')
+          GRADLE
+
+      - name: Compile the Android bridge against actual React Native and SDK classes
+        working-directory: android
+        run: |
+          ./gradlew :phone11-siprix-android-source:verifyPhone11SiprixAndroidSdk \
+            :phone11-siprix-android-source:compileDebugJavaWithJavac \
+            -Pphone11SiprixAndroidAar="$RUNNER_TEMP/phone11-siprix-android.aar" --stacktrace
+
+      - name: Compile Android debug build
+        working-directory: android
+        run: ./gradlew :app:assembleDebug --stacktrace
+
+      - name: Verify ordinary merged manifest has no screen-transaction wiring
+        shell: bash
+        run: |
+          python3 - <<'PYMANIFEST'
+          from pathlib import Path
+          import subprocess
+          paths = [
+              Path('android/app/build/intermediates') / directory / 'debug/processDebugMainManifest/AndroidManifest.xml'
+              for directory in ('merged_manifest', 'merged_manifests')
+          ]
+          found = [path for path in paths if path.is_file()]
+          assert len(found) == 1, 'Expected one actual processDebugMainManifest output'
+          subprocess.run(['node', 'scripts/verify-phone11-android-screen-manifest.mjs', str(found[0]), 'off'], check=True)
+          PYMANIFEST
+
+      - name: Verify ordinary APK excludes the unfinished calling runtime
+        run: |
+          python3 tests/phone11-android-apk.test.py
+          python3 scripts/verify-phone11-android-apk.py \
+            --apk android/app/build/outputs/apk/debug/app-debug.apk \
+            --apkanalyzer "$ANDROID_HOME/cmdline-tools/latest/bin/apkanalyzer"
+
+  android-screen-transaction-compile:
+    name: Compile isolated Android screen transaction
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      EAS_BUILD_PLATFORM: android
+      PHONE11_ANDROID_SCREEN_TRANSACTION: "1"
+      EXPO_PUBLIC_PHONE11_ANDROID_SCREEN_TRANSACTION: "1"
+      PHONE11_APP_STORE_BUILD: "0"
+      PHONE11_ANDROID_FOREGROUND_TRIAL: "0"
+      EXPO_PUBLIC_PHONE11_ANDROID_FOREGROUND_TRIAL: "0"
+      PHONE11_VOIP_WAKE_COMMISSIONED: "0"
+      PHONE11_CHAT_NOTIFICATIONS_COMMISSIONED: "0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || github.head_ref || github.ref_name }}
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Enable pinned package manager
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+          test "$(pnpm --version)" = "9.12.0"
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Generate isolated Android screen configuration
+        run: pnpm exec expo prebuild --clean --platform android --no-install
+      - name: Verify generated screen configuration
+        run: node scripts/verify-phone11-android-screen-manifest.mjs android/app/src/main/AndroidManifest.xml on
+      - name: Compile the actual patched WebRTC bridge and merge app manifest
+        working-directory: android
+        shell: bash
+        run: |
+          ./gradlew projects --console=plain > "$RUNNER_TEMP/phone11-screen-gradle-projects.log"
+          grep -F -- "Project ':livekit_react-native-webrtc'" "$RUNNER_TEMP/phone11-screen-gradle-projects.log"
+          ./gradlew :livekit_react-native-webrtc:compileDebugJavaWithJavac :app:processDebugMainManifest --no-daemon --console=plain --stacktrace
+      - name: Verify actual merged screen manifest
+        shell: bash
+        run: |
+          python3 - <<'PYMANIFEST'
+          from pathlib import Path
+          import subprocess
+          paths = [
+              Path('android/app/build/intermediates') / directory / 'debug/processDebugMainManifest/AndroidManifest.xml'
+              for directory in ('merged_manifest', 'merged_manifests')
+          ]
+          found = [path for path in paths if path.is_file()]
+          assert len(found) == 1, 'Expected one actual processDebugMainManifest output'
+          subprocess.run(['node', 'scripts/verify-phone11-android-screen-manifest.mjs', str(found[0]), 'on'], check=True)
+          PYMANIFEST
+      - name: Revert generated app configuration to default off
+        env:
+          PHONE11_ANDROID_SCREEN_TRANSACTION: "0"
+          EXPO_PUBLIC_PHONE11_ANDROID_SCREEN_TRANSACTION: "0"
+        run: |
+          pnpm exec expo prebuild --clean --platform android --no-install
+          node scripts/verify-phone11-android-screen-manifest.mjs android/app/src/main/AndroidManifest.xml off
+
+  android-foreground-trial-assemble:
+    name: Package isolated Android foreground calling trial
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      PHONE11_ANDROID_FOREGROUND_TRIAL: "1"
+      EXPO_PUBLIC_PHONE11_ANDROID_FOREGROUND_TRIAL: "1"
+      EXPO_PUBLIC_SIP_ENGINE: siprix
+      PHONE11_APP_STORE_BUILD: "0"
+      PHONE11_VOIP_WAKE_COMMISSIONED: "0"
+      PHONE11_CHAT_NOTIFICATIONS_COMMISSIONED: "0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || github.head_ref || github.ref_name }}
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Enable pinned package manager
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Stage full checksum-pinned runtime SDK
+        shell: bash
+        run: |
+          curl --fail --location --retry 2 --output "$RUNNER_TEMP/phone11-siprix-android.aar" \
+            https://raw.githubusercontent.com/siprix/SampleJava/80d198ed6179b45ff8cd8dad9b8086976b4197a0/app/libs/siprix_voip_sdk.aar
+          printf '%s  %s\n' 3173ee8bae7aa37d3be3b44f7533d43b4e4d8625110d1d2bd8d79367973c9198 "$RUNNER_TEMP/phone11-siprix-android.aar" | sha256sum --check --strict
+          printf 'PHONE11_SIPRIX_ANDROID_AAR=%s\n' "$RUNNER_TEMP/phone11-siprix-android.aar" >> "$GITHUB_ENV"
+      - name: Require standalone trial source and pinned transport regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          PHONE11_SIPRIX_ANDROID_AAR="$RUNNER_TEMP/phone11-siprix-android.aar" \
+            node --test --test-reporter=tap tests/phone11-android-trial-build.test.mjs | tee "$RUNNER_TEMP/phone11-android-standalone-source.tap"
+          python3 - <<'PY'
+          import os, re
+          from pathlib import Path
+          output = (Path(os.environ["RUNNER_TEMP"]) / "phone11-android-standalone-source.tap").read_text()
+          assert output.strip(), "Standalone TAP report is empty"
+          counts = {}
+          for key in ("tests", "pass", "fail", "cancelled", "skipped", "todo"):
+              values = re.findall(rf"^# {key} (\d+)$", output, re.M)
+              assert len(values) == 1, f"Standalone {key} report missing or ambiguous"
+              counts[key] = int(values[0])
+          assert counts["tests"] == 11 and counts["pass"] == 11, counts
+          assert all(counts[key] == 0 for key in ("fail", "cancelled", "skipped", "todo")), counts
+          required = ["already-owned pinned AAR is read-only and avoids transport",
+                      "mocked pinned transfer atomically stages private bytes before environment persistence",
+                      "staging rejects output directory symlinks and failed persistence yields no success"]
+          for name in required:
+              assert re.search(rf"^ok \d+ - {re.escape(name)}$", output, re.M), f"SDK-positive case did not execute: {name}"
+          print("Standalone trial source and pinned transport gates executed with zero skips")
+          PY
+      - name: Prebuild separate foreground trial
+        run: pnpm exec expo prebuild --clean --platform android --no-install
+      - name: Check explicit bridge registration and foreground build gate
+        shell: bash
+        run: |
+          test "$(grep -c "include ':phone11-siprix-android-runtime'" android/settings.gradle)" = 1
+          grep -F 'phone11AndroidForegroundSourceEnabled=true' android/gradle.properties
+          test "$(grep -R -F 'add(Phone11SiprixPackage())' android/app/src/main/java --include='MainApplication.kt' | wc -l)" = 1
+      - name: Compile and assemble real SDK linked trial APK
+        working-directory: android
+        run: |
+          ./gradlew :phone11-siprix-android-runtime:verifyPhone11SiprixAndroidSdk \
+            :phone11-siprix-android-runtime:compileDebugJavaWithJavac :app:assembleDebug \
+            -PreactNativeArchitectures=arm64-v8a,armeabi-v7a --stacktrace
+      - name: Verify trial APK identity, bridge, SDK and audio permissions
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Gradle has already assembled with its installed Android build tools.
+          # Select only these supported installed SDK tools; never install one.
+          case "$ANDROID_HOME" in /*) ;; *) echo "Absolute installed Android SDK required" >&2; exit 1 ;; esac
+          selected_apksigner=""
+          for version in 36.0.0 35.0.0 34.0.0; do
+            candidate="$ANDROID_HOME/build-tools/$version/apksigner"
+            if test -x "$candidate" && test -f "$ANDROID_HOME/build-tools/$version/lib/apksigner.jar"; then
+              selected_apksigner="$candidate"
+              break
+            fi
+          done
+          test -n "$selected_apksigner" || { echo "Supported installed apksigner required; no installation performed" >&2; exit 1; }
+          export PHONE11_TEST_APKSIGNER="$selected_apksigner"
+          PHONE11_SIPRIX_ANDROID_AAR="$RUNNER_TEMP/phone11-siprix-android.aar" PYTHONDONTWRITEBYTECODE=1 \
+            python3 tests/phone11-android-apk.test.py -v 2>&1 | tee "$RUNNER_TEMP/phone11-android-trial-parser.log"
+          python3 - <<'PY'
+          import os, re
+          from pathlib import Path
+          output = (Path(os.environ["RUNNER_TEMP"]) / "phone11-android-trial-parser.log").read_text()
+          counts = re.findall(r"^Ran (\d+) tests? in ", output, re.M)
+          assert len(counts) == 1 and int(counts[0]) > 0, "APK tests did not execute"
+          assert re.findall(r"^OK$", output, re.M) == ["OK"], "APK test suite did not pass with zero skips"
+          for name in ("test_explicitly_staged_pinned_sdk_contains_the_expected_core_class",
+                       "test_actual_apksigner_rejects_unsigned_fixture"):
+              assert re.search(rf"^{name}\b.* \.\.\. ok$", output, re.M), f"Required actual SDK/tool case did not execute: {name}"
+          print("Pinned APK parser and actual unsigned-fixture signature rejection executed with zero skips")
+          PY
+          python3 scripts/verify-phone11-android-apk.py --trial \
+            --apk android/app/build/outputs/apk/debug/app-debug.apk \
+            --apkanalyzer "$ANDROID_HOME/cmdline-tools/latest/bin/apkanalyzer"
+      # Debug APK may require Metro. This job proves packaging only and does not
+      # distribute an APK or represent foreground/background/device acceptance.
+
+  siprix-bridge-regressions:
+    name: Compile and test the iOS Siprix bridge
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || github.head_ref || github.ref_name }}
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Enable pinned package manager
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+      - name: Setup Java for Android lifecycle source checks
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Install locked native headers
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Check pinned headers and actual bridge callbacks
+        run: |
+          test -f modules/phone11-siprix/tests/native-runtime.test.mjs
+          test -f modules/phone11-siprix/tests/native-runtime.m
+          test -f modules/phone11-siprix/tests/native-warm-runtime.test.mjs
+          test -f modules/phone11-siprix/tests/native-warm-runtime.m
+          test "$(uname -s)" = Darwin
+          xcrun --find clang
+          node scripts/stage-siprix-sdk.mjs
+          node --test --test-reporter=tap modules/phone11-siprix/tests/*.test.mjs | tee "$RUNNER_TEMP/phone11-native-results.tap"
+          python3 - <<'PY'
+          import os, re
+          from pathlib import Path
+          output = (Path(os.environ["RUNNER_TEMP"]) / "phone11-native-results.tap").read_text()
+          for key, expected in [("fail", 0), ("skipped", 0), ("cancelled", 0), ("todo", 0)]:
+              assert re.search(rf"^# {key} {expected}$", output, re.M), f"Native {key} gate failed"
+          count = re.search(r"^# tests (\d+)$", output, re.M)
+          assert count and int(count[1]) > 0, "Native tests did not execute"
+          required = ["all native selectors and delegate methods compile against the exact staged SDK header",
+                      "actual bridge lifecycle, callback, security, and call-control behavior with a mock SDK",
+                      "default-off native warm-transfer candidate uses pinned selectors and owned async lifecycle",
+                      "Android isolated callback, lease, account, call, request, logout and failure state contracts",
+                      "Android preflight never downloads or accepts an unpinned SDK",
+                      "Android source candidate preserves default-off integration and unsupported capabilities"]
+          for name in required:
+              assert re.search(rf"^ok \d+ - {re.escape(name)}$", output, re.M), f"Required native case did not execute: {name}"
+          print("Native bridge and warm-transfer source gates executed with zero skips")
+          PY

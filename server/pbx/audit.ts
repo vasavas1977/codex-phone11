@@ -6,6 +6,45 @@
  */
 import { query } from "./db";
 
+// Old extension rows can contain the legacy plaintext sip_password. Audit
+// records are also read back through the admin API, so sanitize both new
+// writes and historical rows before they cross that boundary.
+const SECRET_FIELD = /(?:password|secret|credential|authorization|cookie|token|private[_-]?key|api[_-]?key|^ha1b?$)/i;
+
+export function redactAuditValue(value: unknown, depth = 0): unknown {
+  if (depth > 16) return "[redacted]";
+  if (Array.isArray(value)) return value.map((item) => redactAuditValue(item, depth + 1));
+  if (value && typeof value === "object") {
+    const prototype: unknown = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) return "[redacted]";
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [
+      key,
+      SECRET_FIELD.test(key) ? "[redacted]" : redactAuditValue(item, depth + 1),
+    ]));
+  }
+  return value;
+}
+
+function redactStoredAuditValue(value: unknown): unknown {
+  if (typeof value !== "string") return redactAuditValue(value);
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return parsed && typeof parsed === "object" ? redactAuditValue(parsed) : "[redacted]";
+  } catch {
+    // Audit payloads are JSON objects. A malformed legacy payload must not
+    // be echoed as raw text, since it may itself contain a credential.
+    return "[redacted]";
+  }
+}
+
+export function redactAuditRow<T extends Record<string, unknown>>(row: T): T {
+  const safe = { ...row };
+  for (const key of ["old_value", "new_value", "oldValue", "newValue"] as const) {
+    if (key in safe) (safe as Record<string, unknown>)[key] = redactStoredAuditValue(safe[key]);
+  }
+  return safe;
+}
+
 export interface AuditEntry {
   tenantId: number;
   actorUserId?: number;
@@ -36,17 +75,18 @@ export async function writeAuditLog(entry: AuditEntry): Promise<void> {
         entry.action,
         entry.resourceType,
         entry.resourceId || null,
-        entry.oldValue ? JSON.stringify(entry.oldValue) : null,
-        entry.newValue ? JSON.stringify(entry.newValue) : null,
+        entry.oldValue ? JSON.stringify(redactAuditValue(entry.oldValue)) : null,
+        entry.newValue ? JSON.stringify(redactAuditValue(entry.newValue)) : null,
         entry.ipAddress || null,
         entry.userAgent || null,
         entry.requestId || null,
         entry.sessionId || null,
       ]
     );
-  } catch (error: any) {
+  } catch {
     // Audit logging should never break the main operation
-    console.error("[Audit] Failed to write log:", error.message);
+    // A database error can include row details; never log an audit payload.
+    console.error("[Audit] Failed to write log");
   }
 }
 
@@ -109,7 +149,7 @@ export async function queryAuditLogs(params: {
   ]);
 
   return {
-    rows: dataResult.rows,
+    rows: dataResult.rows.map((row) => redactAuditRow(row)),
     total: parseInt(countResult.rows[0]?.total || "0"),
   };
 }

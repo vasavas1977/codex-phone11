@@ -1,24 +1,32 @@
 import "@/global.css";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Stack } from "expo-router";
+import { ProfileCardProvider } from "@/components/profile/profile-card-provider";
+import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
-import "react-native-reanimated";
-import { Platform } from "react-native";
 import "@/lib/_core/nativewind-pressable";
-import { ThemeProvider } from "@/lib/theme-provider";
+import { ThemeProvider, useThemeContext } from "@/lib/theme-provider";
+import { useColors } from "@/hooks/use-colors";
 import {
-  SafeAreaFrameContext,
-  SafeAreaInsetsContext,
   SafeAreaProvider,
   initialWindowMetrics,
 } from "react-native-safe-area-context";
-import type { EdgeInsets, Metrics, Rect } from "react-native-safe-area-context";
+import type { EdgeInsets, Rect } from "react-native-safe-area-context";
 
 import { trpc, createTRPCClient } from "@/lib/trpc";
+import { PhoneProvisioner } from "@/lib/sip/phone-provisioner";
 import { SipProvider } from "@/lib/sip/sip-provider";
-import { initManusRuntime, subscribeSafeAreaInsets } from "@/lib/_core/manus-runtime";
+import { CurrentCallBanner } from "@/components/current-call-banner";
+import { ChatForegroundRefresh } from "@/lib/chat/foreground-refresh";
+import { ChatNotifications } from "@/lib/notifications/chat-notifications";
+import { Phone11PresencePublisher } from "@/lib/chat/presence";
+import * as Auth from "@/lib/_core/auth";
+
+SplashScreen.preventAutoHideAsync().catch(() => {
+  // The splash screen may already be hidden during fast reloads.
+});
 
 const DEFAULT_WEB_INSETS: EdgeInsets = { top: 0, right: 0, bottom: 0, left: 0 };
 const DEFAULT_WEB_FRAME: Rect = { x: 0, y: 0, width: 0, height: 0 };
@@ -28,27 +36,24 @@ export const unstable_settings = {
 };
 
 export default function RootLayout() {
+  return <ThemeProvider><RootNavigator /></ThemeProvider>;
+}
+
+function RootNavigator() {
+  const colors = useColors();
+  const { colorScheme } = useThemeContext();
   const initialInsets = initialWindowMetrics?.insets ?? DEFAULT_WEB_INSETS;
   const initialFrame = initialWindowMetrics?.frame ?? DEFAULT_WEB_FRAME;
 
-  const [insets, setInsets] = useState<EdgeInsets>(initialInsets);
-  const [frame, setFrame] = useState<Rect>(initialFrame);
-
-  // Initialize Manus runtime for cookie injection from parent container
   useEffect(() => {
-    initManusRuntime();
-  }, []);
+    const timer = setTimeout(() => {
+      SplashScreen.hideAsync().catch(() => {
+        // Ignore duplicate hide calls from development reloads.
+      });
+    }, 3000);
 
-  const handleSafeAreaUpdate = useCallback((metrics: Metrics) => {
-    setInsets(metrics.insets);
-    setFrame(metrics.frame);
+    return () => clearTimeout(timer);
   }, []);
-
-  useEffect(() => {
-    if (Platform.OS !== "web") return;
-    const unsubscribe = subscribeSafeAreaInsets(handleSafeAreaUpdate);
-    return () => unsubscribe();
-  }, [handleSafeAreaUpdate]);
 
   // Create clients once and reuse them
   const [queryClient] = useState(
@@ -66,6 +71,17 @@ export default function RootLayout() {
   );
   const [trpcClient] = useState(() => createTRPCClient());
 
+  useEffect(() => {
+    let userId = Auth.getAuthSnapshot().user?.id;
+    return Auth.addAuthChangeListener(() => {
+      const nextUserId = Auth.getAuthSnapshot().user?.id;
+      if (nextUserId === userId) return;
+      userId = nextUserId;
+      void queryClient.cancelQueries();
+      queryClient.clear();
+    });
+  }, [queryClient]);
+
   // Ensure minimum 8px padding for top and bottom on mobile
   const providerInitialMetrics = useMemo(() => {
     const metrics = initialWindowMetrics ?? { insets: initialInsets, frame: initialFrame };
@@ -80,43 +96,36 @@ export default function RootLayout() {
   }, [initialInsets, initialFrame]);
 
   const content = (
-    <GestureHandlerRootView style={{ flex: 1 }}>
+    <GestureHandlerRootView style={{ flex: 1, backgroundColor: colors.background }}>
       <SipProvider>
-      <trpc.Provider client={trpcClient} queryClient={queryClient}>
-        <QueryClientProvider client={queryClient}>
-          {/* Default to hiding native headers so raw route segments don't appear (e.g. "(tabs)", "products/[id]"). */}
-          {/* If a screen needs the native header, explicitly enable it and set a human title via Stack.Screen options. */}
-          {/* in order for ios apps tab switching to work properly, use presentation: "fullScreenModal" for login page, whenever you decide to use presentation: "modal*/}
-          <Stack screenOptions={{ headerShown: false }}>
-            <Stack.Screen name="(tabs)" />
-            <Stack.Screen name="oauth/callback" />
-          </Stack>
-          <StatusBar style="auto" />
-        </QueryClientProvider>
-      </trpc.Provider>
+        <trpc.Provider client={trpcClient} queryClient={queryClient}>
+          <QueryClientProvider client={queryClient}>
+            <PhoneProvisioner />
+            <ChatForegroundRefresh />
+            <ChatNotifications />
+            <Phone11PresencePublisher />
+            {/* Default to hiding native headers so raw route segments don't appear (e.g. "(tabs)", "products/[id]"). */}
+            {/* If a screen needs the native header, explicitly enable it and set a human title via Stack.Screen options. */}
+            <ProfileCardProvider>
+            <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.background } }}>
+              <Stack.Screen name="(tabs)" />
+              <Stack.Screen name="auth/sign-in" />
+              <Stack.Screen name="auth/forgot-password" />
+              <Stack.Screen name="auth/reset-password" />
+              <Stack.Screen name="auth/accept-invitation" />
+              <Stack.Screen name="oauth/callback" />
+              <Stack.Screen name="conference/room" options={{ gestureEnabled: false }} />
+            </Stack>
+            <CurrentCallBanner />
+            </ProfileCardProvider>
+            <StatusBar style={colorScheme === "dark" ? "light" : "dark"} backgroundColor={colors.background} />
+          </QueryClientProvider>
+        </trpc.Provider>
       </SipProvider>
     </GestureHandlerRootView>
   );
 
-  const shouldOverrideSafeArea = Platform.OS === "web";
-
-  if (shouldOverrideSafeArea) {
-    return (
-      <ThemeProvider>
-        <SafeAreaProvider initialMetrics={providerInitialMetrics}>
-          <SafeAreaFrameContext.Provider value={frame}>
-            <SafeAreaInsetsContext.Provider value={insets}>
-              {content}
-            </SafeAreaInsetsContext.Provider>
-          </SafeAreaFrameContext.Provider>
-        </SafeAreaProvider>
-      </ThemeProvider>
-    );
-  }
-
   return (
-    <ThemeProvider>
-      <SafeAreaProvider initialMetrics={providerInitialMetrics}>{content}</SafeAreaProvider>
-    </ThemeProvider>
+    <SafeAreaProvider initialMetrics={providerInitialMetrics}>{content}</SafeAreaProvider>
   );
 }

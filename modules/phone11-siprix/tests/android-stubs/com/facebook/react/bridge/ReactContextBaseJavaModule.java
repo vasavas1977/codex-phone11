@@ -1,0 +1,2 @@
+/** Host declaration only; never Android or React Native runtime proof. */
+package com.facebook.react.bridge; public abstract class ReactContextBaseJavaModule implements NativeModule { private final ReactApplicationContext context; protected ReactContextBaseJavaModule(ReactApplicationContext context){this.context=context;} public ReactApplicationContext getReactApplicationContext(){return context;} public abstract String getName(); public void invalidate(){} }

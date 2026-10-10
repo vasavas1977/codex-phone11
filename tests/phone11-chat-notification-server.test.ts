@@ -1,0 +1,12 @@
+import {afterEach,it,expect,vi} from 'vitest';
+const mocks=vi.hoisted(()=>({register:vi.fn(async()=>({registered:true})),resolve:vi.fn(async()=>null),unregister:vi.fn(async()=>{}),session:vi.fn(async()=>'actual-session'),config:vi.fn(()=>({bundleId:'test.phone11',environment:'production'}))}));
+vi.mock('../server/chat-notifications/repository',()=>({chatNotificationsEnabled:()=>process.env.PHONE11_CHAT_NOTIFICATIONS_ENABLED==='1',chatNotificationRepository:mocks}));
+vi.mock('../server/push/session',()=>({resolvePushSession:mocks.session}));
+vi.mock('../server/push/apns',()=>({readApnsConfig:mocks.config}));
+import {chatNotificationsRouter} from '../server/chat-notifications/router';
+const input={tenantId:10,deviceId:'00000000-0000-4000-8000-000000000009',token:'a'.repeat(64),bundleId:'test.phone11',environment:'production' as const};
+const caller=(user:any={id:2})=>chatNotificationsRouter.createCaller({user,req:{headers:{}},res:{}} as any);
+afterEach(()=>{vi.unstubAllEnvs();vi.clearAllMocks();});
+it('default gate off denies enrollment before DB/session/provider work',async()=>{vi.stubEnv('PHONE11_CHAT_NOTIFICATIONS_ENABLED','0');expect(await caller().readiness()).toEqual({available:false});await expect(caller().register(input)).rejects.toThrow('not configured');expect(mocks.session).not.toHaveBeenCalled();expect(mocks.register).not.toHaveBeenCalled();});
+it('unauthenticated callers cannot register or resolve events',async()=>{vi.stubEnv('PHONE11_CHAT_NOTIFICATIONS_ENABLED','1');await expect(caller(null).register(input)).rejects.toThrow();await expect(caller(null).resolve({eventId:input.deviceId})).rejects.toThrow();expect(mocks.session).not.toHaveBeenCalled();});
+it('registration uses authenticated user and server-resolved session, rejecting provider mismatch first',async()=>{vi.stubEnv('PHONE11_CHAT_NOTIFICATIONS_ENABLED','1');await expect(caller().register({...input,bundleId:'other.app'})).rejects.toThrow('does not match');expect(mocks.session).not.toHaveBeenCalled();await caller().register(input);expect(mocks.register).toHaveBeenCalledWith(2,'actual-session',input);});

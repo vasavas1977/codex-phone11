@@ -1,4 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+const auth = vi.hoisted(() => ({ revoke: vi.fn() }));
+vi.mock("../server/_core/phone11-auth", () => ({
+  revokePhone11Session: auth.revoke,
+  resolvePhone11User: vi.fn(),
+}));
 import { appRouter } from "../server/routers";
 import { COOKIE_NAME } from "../shared/const";
 import type { TrpcContext } from "../server/_core/context";
@@ -18,7 +23,7 @@ function createAuthContext(): { ctx: TrpcContext; clearedCookies: CookieCall[] }
     openId: "sample-user",
     email: "sample@example.com",
     name: "Sample User",
-    loginMethod: "manus",
+    loginMethod: "phone11",
     role: "user",
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -29,27 +34,36 @@ function createAuthContext(): { ctx: TrpcContext; clearedCookies: CookieCall[] }
     user,
     req: {
       protocol: "https",
+      hostname: "api.phone11.test",
       headers: {},
     } as TrpcContext["req"],
     res: {
+      setHeader: vi.fn(),
       clearCookie: (name: string, options: Record<string, unknown>) => {
         clearedCookies.push({ name, options });
       },
-    } as TrpcContext["res"],
+    } as unknown as TrpcContext["res"],
   };
   
   return { ctx, clearedCookies };
 }
 
-// TODO: Remove `.skip` below once you implement user authentication
-describe.skip("auth.logout", () => {
-  it("clears the session cookie and reports success", async () => {
+describe("auth.logout", () => {
+  beforeEach(() => {
+    auth.revoke.mockReset();
+    auth.revoke.mockResolvedValue(new Response("{}", {
+      headers: { "set-cookie": "phone11.session_token=; Path=/; HttpOnly; Max-Age=0" },
+    }));
+  });
+  it("revokes the server session before clearing cookies and reporting success", async () => {
     const { ctx, clearedCookies } = createAuthContext();
     const caller = appRouter.createCaller(ctx);
 
     const result = await caller.auth.logout();
 
     expect(result).toEqual({ success: true });
+    expect(auth.revoke).toHaveBeenCalledWith(ctx.req.headers);
+    expect(ctx.res.setHeader).toHaveBeenCalledWith("Set-Cookie", [expect.stringContaining("phone11.session_token=")]);
     expect(clearedCookies).toHaveLength(1);
     expect(clearedCookies[0]?.name).toBe(COOKIE_NAME);
     expect(clearedCookies[0]?.options).toMatchObject({
@@ -59,5 +73,12 @@ describe.skip("auth.logout", () => {
       httpOnly: true,
       path: "/",
     });
+  });
+  it("propagates a revocation failure without clearing cookies or claiming success", async () => {
+    auth.revoke.mockRejectedValueOnce(new Error("Revocation unavailable"));
+    const { ctx, clearedCookies } = createAuthContext();
+    await expect(appRouter.createCaller(ctx).auth.logout()).rejects.toThrow("Revocation unavailable");
+    expect(clearedCookies).toHaveLength(0);
+    expect(ctx.res.setHeader).not.toHaveBeenCalled();
   });
 });

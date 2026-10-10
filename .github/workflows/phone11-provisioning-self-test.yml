@@ -1,0 +1,209 @@
+name: Phone11 Provisioning Backend Self-Test
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - '.github/workflows/phone11-provisioning-self-test.yml'
+      - 'server/_core/.phone11-provisioning-self-test-trigger-*'
+
+concurrency:
+  group: phone11-provisioning-self-test-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'ap-southeast-7' }}
+  EC2_HOST: '43.209.112.208'
+  EC2_USER: 'ubuntu'
+  PILOT_USER_ID: '1'
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+
+permissions:
+  contents: write
+
+jobs:
+  self-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run backend provisioning self-test on EC2
+        shell: bash
+        run: |
+          set +e
+          LOG=/tmp/phone11-provisioning-self-test.log
+          STATUS=0
+          exec > >(tee "$LOG") 2>&1
+
+          finish() {
+            local result='success'
+            if [ "$STATUS" != '0' ]; then result='failure'; fi
+            git fetch origin "$GITHUB_REF_NAME" >/dev/null 2>&1 || true
+            git pull --rebase origin "$GITHUB_REF_NAME" >/dev/null 2>&1 || true
+            mkdir -p ops
+            {
+              echo '# Phone11 Provisioning Backend Self-Test Status'
+              echo ''
+              echo "- Time UTC: $(date -u -Iseconds)"
+              echo "- Branch: $GITHUB_REF_NAME"
+              echo "- Workflow commit: $GITHUB_SHA"
+              echo "- EC2 host: $EC2_HOST"
+              echo "- Pilot user id: $PILOT_USER_ID"
+              echo "- Result: $result"
+              echo "- Exit code: $STATUS"
+              echo ''
+              echo '## Sanitized output'
+              echo '```text'
+              sed -E 's#(Bearer )[A-Za-z0-9._~-]+#\1<redacted>#g; s#(app_session_id|JWT_SECRET|DB_PASSWORD|PG_PASSWORD|POSTGRES_PASSWORD|AWS_SECRET_ACCESS_KEY|AWS_ACCESS_KEY_ID)=([^[:space:]]+)#\1=<redacted>#g; s#(password|secret)[^[:space:]]*#<redacted>#Ig' "$LOG" 2>/dev/null || true
+              echo '```'
+            } > ops/phone11-provisioning-self-test-status.md
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add ops/phone11-provisioning-self-test-status.md
+            if git diff --cached --quiet; then
+              echo 'No status file changes to commit.'
+            else
+              git commit -m "Update Phone11 provisioning self-test status"
+              git push
+            fi
+            exit "$STATUS"
+          }
+          trap finish EXIT
+
+          echo '=== Phone11 provisioning backend self-test ==='
+          if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+            echo 'ERROR: AWS credentials are not configured.'
+            STATUS=30
+            exit 30
+          fi
+
+          echo '--- Locate EC2 ---'
+          INSTANCE_JSON=$(aws ec2 describe-instances --filters "Name=ip-address,Values=$EC2_HOST" "Name=instance-state-name,Values=running" --query 'Reservations[0].Instances[0]' --output json)
+          if [ $? -ne 0 ]; then STATUS=31; exit 31; fi
+          INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId // empty')
+          AZ=$(echo "$INSTANCE_JSON" | jq -r '.Placement.AvailabilityZone // empty')
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = 'null' ]; then
+            echo "ERROR: EC2 instance not found for $EC2_HOST"
+            STATUS=32
+            exit 32
+          fi
+          echo "Found EC2 instance $INSTANCE_ID in $AZ"
+
+          echo '--- Connect and run server-side tests ---'
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -f ~/.ssh/phone11_temp_eic_key -C phone11-github-actions >/dev/null 2>&1
+          aws ec2-instance-connect send-ssh-public-key --instance-id "$INSTANCE_ID" --availability-zone "$AZ" --instance-os-user "$EC2_USER" --ssh-public-key "file://$HOME/.ssh/phone11_temp_eic_key.pub"
+          if [ $? -ne 0 ]; then STATUS=33; exit 33; fi
+
+          ssh -i ~/.ssh/phone11_temp_eic_key -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" "PILOT_USER_ID='$PILOT_USER_ID' bash -s" <<'REMOTE'
+          set +e
+          echo '--- Runtime containers ---'
+          docker ps --format '{{.Names}} {{.Image}} {{.Status}} {{.Ports}}' || exit 50
+          if ! docker inspect cp11-backend >/dev/null 2>&1; then
+            echo 'ERROR: cp11-backend container not found.'
+            exit 51
+          fi
+
+          echo '--- Public and local health ---'
+          curl -fsS http://127.0.0.1:3000/api/health || true
+          echo
+          curl -fsS --connect-timeout 5 --max-time 10 https://api.phone11.ai/api/health || true
+          echo
+
+          echo '--- Backend env keys, names only ---'
+          docker exec cp11-backend sh -lc 'env | awk -F= "/^(JWT_SECRET|VITE_APP_ID|DATABASE_URL|DB_HOST|DB_USER|DB_NAME|DB_PASSWORD|PG_HOST|PG_USER|PG_DATABASE|PG_PASSWORD|POSTGRES_HOST|POSTGRES_USER|POSTGRES_DB|POSTGRES_PASSWORD|SIP_DOMAIN|SIP_PORT)=/ {print \$1\"=<set>\"}" | sort' || exit 52
+
+          echo '--- Database and auth self-test ---'
+          docker exec -i -e PILOT_USER_ID="$PILOT_USER_ID" cp11-backend node --input-type=module - <<'NODE'
+          import crypto from 'node:crypto';
+          import pg from 'pg';
+
+          const firstEnv = (...keys) => keys.map((key) => process.env[key]).find(Boolean);
+          const pilotUserId = Number.parseInt(process.env.PILOT_USER_ID || '1', 10);
+          const cfg = {
+            host: firstEnv('PG_HOST', 'DB_HOST', 'POSTGRES_HOST'),
+            port: Number(firstEnv('PG_PORT', 'DB_PORT', 'POSTGRES_PORT') || 5432),
+            user: firstEnv('PG_USER', 'DB_USER', 'POSTGRES_USER'),
+            password: firstEnv('PG_PASSWORD', 'DB_PASSWORD', 'POSTGRES_PASSWORD'),
+            database: firstEnv('PG_DATABASE', 'DB_NAME', 'DB_DATABASE', 'POSTGRES_DB'),
+          };
+          const missing = Object.entries(cfg).filter(([key, value]) => key !== 'port' && !value).map(([key]) => key);
+          if (missing.length) throw new Error(`Missing backend DB env: ${missing.join(', ')}`);
+          const sslMode = firstEnv('PG_SSL', 'DB_SSL', 'POSTGRES_SSL', 'DATABASE_SSL')?.toLowerCase();
+          const ssl = sslMode === 'false' || sslMode === '0' || sslMode === 'disable' ? false : { rejectUnauthorized: false };
+          console.log(`DB env: host=${cfg.host}, user=<db-user>, database=${cfg.database}, ssl=${ssl ? 'enabled' : 'disabled'}, password=<set>`);
+
+          const pool = new pg.Pool({ ...cfg, ssl, max: 1, connectionTimeoutMillis: 5000 });
+          try {
+            const auth = await pool.query('select current_user, current_database()');
+            console.log(`DB login OK as ${auth.rows[0].current_user} on ${auth.rows[0].current_database}`);
+
+            const user = await pool.query('select id, "openId", name, email, role from users where id = $1', [pilotUserId]);
+            if (!user.rows.length) throw new Error(`No app user found with id ${pilotUserId}`);
+            const row = user.rows[0];
+            console.log(`User ${pilotUserId}: openId=${row.openId}, email=${row.email || '<none>'}, role=${row.role}`);
+
+            const ext = await pool.query(`
+              SELECT e.id, e.extension_number, e.display_name, e.sip_username, e.sip_domain, e.status,
+                     sa.sip_username AS account_sip_username, sa.sip_domain AS account_sip_domain, sa.status AS account_status,
+                     sa.secret_ciphertext IS NOT NULL AS has_encrypted_secret,
+                     COALESCE(e.sip_password, '') <> '' AS has_extension_password
+              FROM extensions e
+              LEFT JOIN user_extensions ue ON ue.extension_id = e.id AND ue.user_id = $1
+              LEFT JOIN sip_accounts sa ON sa.extension_id = e.id AND sa.deleted_at IS NULL
+              WHERE (ue.user_id = $1 OR e.user_id = $1 OR sa.user_id = $1)
+                AND COALESCE(e.status, 'active') = 'active'
+                AND e.deleted_at IS NULL
+              ORDER BY ue.is_primary DESC NULLS LAST, e.id ASC
+              LIMIT 1
+            `, [pilotUserId]);
+            if (!ext.rows.length) throw new Error(`No extension/SIP account found for user ${pilotUserId}`);
+            const e = ext.rows[0];
+            console.log(`Extension ready: number=${e.extension_number}, display=${e.display_name || '<none>'}, status=${e.status}`);
+            console.log(`SIP account: username=${e.account_sip_username || e.sip_username || e.extension_number}, domain=${e.account_sip_domain || e.sip_domain || process.env.SIP_DOMAIN || 'sip.phone11.ai'}, status=${e.account_status || '<none>'}, hasSecret=${e.has_encrypted_secret || e.has_extension_password}`);
+
+            const jwtSecret = process.env.JWT_SECRET;
+            const appId = process.env.VITE_APP_ID || '';
+            if (!jwtSecret) throw new Error('JWT_SECRET missing in backend env; cannot test API auth');
+            function base64url(value) {
+              return Buffer.from(value).toString('base64url');
+            }
+            const header = base64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
+            const payload = base64url(JSON.stringify({ openId: row.openId, appId, name: row.name || '', exp: Math.floor(Date.now() / 1000) + 600 }));
+            const signature = crypto.createHmac('sha256', jwtSecret).update(`${header}.${payload}`).digest('base64url');
+            const token = `${header}.${payload}.${signature}`;
+            console.log('Generated temporary server-side session token for user 1: <redacted>');
+            const me = await fetch('http://127.0.0.1:3000/api/auth/me', { headers: { Authorization: `Bearer ${token}` } });
+            console.log(`GET /api/auth/me with generated token: ${me.status}`);
+            const meText = await me.text();
+            console.log(`auth/me body: ${meText.replace(token, '<redacted>')}`);
+            if (!me.ok) throw new Error('Generated-token auth failed on backend');
+
+            const trpcBody = JSON.stringify({ json: null });
+            const pilot = await fetch('http://127.0.0.1:3000/api/trpc/phone.ensurePilotConfig', {
+              method: 'POST',
+              headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+              body: trpcBody,
+            });
+            console.log(`POST /api/trpc/phone.ensurePilotConfig with generated token: ${pilot.status}`);
+            const pilotText = await pilot.text();
+            console.log(`ensurePilotConfig body preview: ${pilotText.slice(0, 600)}`);
+            if (!pilot.ok) throw new Error('Protected phone.ensurePilotConfig failed with generated token');
+          } finally {
+            await pool.end();
+          }
+          NODE
+          test_status=$?
+          if [ "$test_status" != '0' ]; then
+            echo "ERROR: backend self-test failed with status $test_status"
+            docker logs --tail=120 cp11-backend || true
+            exit "$test_status"
+          fi
+          REMOTE
+          STATUS=$?

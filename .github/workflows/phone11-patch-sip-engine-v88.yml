@@ -1,0 +1,63 @@
+name: Phone11 Patch SIP Engine V88
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/phone11-mobile-pjsip-20260506
+    paths:
+      - .github/workflows/phone11-patch-sip-engine-v88.yml
+      - scripts/phone11_patch_sip_engine_v88.py
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    name: Patch SIP engine diagnostics and stuck registration
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: codex/phone11-mobile-pjsip-20260506
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+          pnpm --version
+
+      - name: Apply SIP engine patch
+        run: python3 scripts/phone11_patch_sip_engine_v88.py
+
+      - name: Show targeted diff
+        run: git diff -- lib/sip/engine.ts
+
+      - name: Check patch cleanliness
+        run: git diff --check -- lib/sip/engine.ts
+
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run test suite
+        run: pnpm test
+
+      - name: Commit patched SIP engine
+        run: |
+          if git diff --quiet -- lib/sip/engine.ts; then
+            echo "No SIP engine changes to commit."
+            exit 0
+          fi
+          git config user.name "phone11-actions"
+          git config user.email "actions@users.noreply.github.com"
+          git add lib/sip/engine.ts
+          git commit -m "Fix SIP registration stuck state diagnostics"
+          git push origin HEAD:codex/phone11-mobile-pjsip-20260506

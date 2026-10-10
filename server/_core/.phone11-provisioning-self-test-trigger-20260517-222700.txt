@@ -1,0 +1,1 @@
+Trigger provisioning self-test after Postgres auth DB fix and successful clean backend redeploy at 2026-05-17T15:27:00Z.

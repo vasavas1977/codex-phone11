@@ -1,0 +1,34 @@
+package com.oney.WebRTCModule;
+import java.util.*; import java.util.concurrent.*; import java.util.concurrent.atomic.*;
+/** Actual patched bridge method bodies; JNI-free Activity/SDK doubles. */
+public class Phone11ScreenCaptureBridge {
+ static final Set<String> cancelledOperations=Collections.synchronizedSet(new HashSet<>()), consumedOperations=Collections.synchronizedSet(new HashSet<>());
+ static final AtomicInteger nextRequest=new AtomicInteger(40000); static Phone11ScreenCaptureBridge custody;
+ static final Object OPERATIONS=new Object(); volatile boolean invalidated; final AtomicInteger hostGeneration=new AtomicInteger();
+ static class Promise {boolean resolved,rejected;void reject(String a,String b){rejected=true;}void resolve(Object x){resolved=true;}}
+ static class WritableMap {} static class Intent {}
+ static class Activity {boolean isFinishing(){return false;}boolean isDestroyed(){return false;}Object getSystemService(String x){return new MediaProjectionManager();}void startActivityForResult(Intent i,int n){}}
+ static class Context {static String MEDIA_PROJECTION_SERVICE="projection";Activity activity=new Activity();Runnable duringGet;Activity getCurrentActivity(){if(duringGet!=null){Runnable r=duringGet;duringGet=null;r.run();}return activity;}com.facebook.react.common.LifecycleState getLifecycleState(){return com.facebook.react.common.LifecycleState.RESUMED;}void removeLifecycleEventListener(Object x){}}
+ static class MediaProjectionManager {Intent createScreenCaptureIntent(){return new Intent();}}
+ static class ThreadUtils {static Queue<Runnable>q=new ArrayDeque<>();static void runOnExecutor(Runnable r){q.add(r);}static void drain(){int budget=100;while(!q.isEmpty()){if(--budget==0)throw new AssertionError("queue stuck");q.remove().run();}}}
+ static class UiThreadUtil {static void runOnUiThread(Runnable r){ThreadUtils.q.add(r);}}
+ Context context=new Context();Phone11ScreenTransaction<WritableMap>active;Resources resources;Activity consentActivity;int consentRequest;Intent consentResult;boolean awaitingChooser;Set<Integer>ownedRequests=new HashSet<>();int captures;
+ boolean enabled(){return true;} void stopOwnedTrack(){if(active!=null)retire(active);}void retire(Phone11ScreenTransaction<WritableMap>t){t.retire();stop(t,null);}void stop(Phone11ScreenTransaction<WritableMap>t,Promise p){t.stop().whenComplete((x,e)->{if(p!=null){if(e==null)p.resolve(null);else p.reject("stop","failed");}});}
+ class Resources implements Phone11ScreenTransaction.Resources<WritableMap>{Phone11ScreenTransaction<WritableMap>transaction;Resources(Activity a){}public CompletableFuture<Void>startForeground(){return CompletableFuture.completedFuture(null);}public WritableMap capture(){captures++;return new WritableMap();}public void disposeCapture(){}public CompletableFuture<Void>stopForeground(){return CompletableFuture.completedFuture(null);}}
+@@BEGIN@@
+@@CANCEL@@
+@@INVALIDATE@@
+@@DESTROY@@
+@@PAUSE@@
+ static void reset(){cancelledOperations.clear();consumedOperations.clear();custody=null;ThreadUtils.q.clear();}
+ static void grant(Phone11ScreenCaptureBridge b){if(b.active!=null)b.active.grantConsent();ThreadUtils.drain();}
+ static void check(boolean value){if(!value)throw new AssertionError("retired native request captured");}
+ public static void main(String[]a){
+  reset();Phone11ScreenCaptureBridge b=new Phone11ScreenCaptureBridge();Promise begin=new Promise(),cancel=new Promise();final Phone11ScreenCaptureBridge first=b;final Promise receipt=cancel;b.context.duringGet=()->first.cancel("race",receipt);b.begin("race","life",begin);ThreadUtils.drain();grant(b);check(cancel.resolved&&begin.rejected&&b.captures==0);System.out.println("PASS cancel during slot publication");
+  reset();b=new Phone11ScreenCaptureBridge();begin=new Promise();b.begin("queued","life",begin);b.invalidate();ThreadUtils.drain();grant(b);check(begin.rejected&&b.captures==0);System.out.println("PASS queued module invalidation");
+  reset();b=new Phone11ScreenCaptureBridge();begin=new Promise();final Phone11ScreenCaptureBridge replacement=b;b.context.duringGet=replacement::invalidate;b.begin("inside","life",begin);ThreadUtils.drain();grant(b);check(begin.rejected&&b.captures==0);System.out.println("PASS invalidation during slot publication");
+  reset();b=new Phone11ScreenCaptureBridge();begin=new Promise();b.begin("destroy","life",begin);b.onHostDestroy();ThreadUtils.drain();grant(b);check(begin.rejected&&b.captures==0);System.out.println("PASS queued Activity retirement");
+  reset();b=new Phone11ScreenCaptureBridge();begin=new Promise();b.begin("pause","life",begin);ThreadUtils.q.remove().run();b.onHostPause();ThreadUtils.drain();grant(b);check(begin.rejected&&b.captures==0);System.out.println("PASS background before actual chooser launch");
+  reset();b=new Phone11ScreenCaptureBridge();begin=new Promise();b.begin("valid","life",begin);ThreadUtils.drain();grant(b);check(begin.resolved&&b.captures==1);cancel=new Promise();b.cancel("valid",cancel);ThreadUtils.drain();check(cancel.resolved&&b.active.isRetired());System.out.println("PASS valid explicit capture and cancel");
+ }
+}

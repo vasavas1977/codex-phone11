@@ -1,5 +1,7 @@
 # phone11 — Codex Handoff Document
 
+> Historical May 2026 notes below. For current implementation evidence, the daily-use plan and remaining acceptance gates, start with the [September 2026 Zoom gap audit](docs/phone11-daily-use/ZOOM-GAP-AUDIT.md). The current mobile build uses a Siprix trial with a 60-second call limit; the older zero-licensing-cost and push-readiness claims below are not current production evidence.
+
 ## What Is Built
 
 phone11 is a converged Unified Communications & Collaboration (UCC) platform targeting SMB/enterprise markets. It competes with Zoom Phone, 8x8, and Vonage using a 100% open-source telecom stack with zero licensing costs.

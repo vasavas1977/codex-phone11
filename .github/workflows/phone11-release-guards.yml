@@ -1,0 +1,33 @@
+name: Phone11 release guard checks
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/phone11-release-guards.yml
+      - .github/workflows/docker-build.yml
+      - .github/workflows/deploy-eks.yml
+      - scripts/phone11-eks-release.py
+      - tests/phone11-eks-release.test.py
+      - scripts/phone11-mainline-release-start.py
+      - scripts/phone11-mainline-release-route.py
+      - scripts/phone11-chat-inbox-release-route.py
+      - scripts/phone11-parallel-api-pilot.py
+      - tests/phone11-mainline-release.test.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-release-guards:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test deployment and rollback failure paths without cloud access
+        run: python3 tests/phone11-eks-release.test.py
+      - name: Test EC2 candidate and route guards without host access
+        run: python3 tests/phone11-mainline-release.test.py

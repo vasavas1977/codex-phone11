@@ -1,0 +1,42 @@
+# Authenticated meeting adapter seam
+
+Source only. No deployed API, worker, credential, or handset acceptance is implied. `meetingsRouter` is mounted as `meetings` in the root tRPC router. Both routes require existing authenticated Phone11 context. The default is unavailable: the router composes a plain-video provider only when the server-only `PHONE11_CONNECT11_PLAIN_VIDEO_TENANTS` value parses as an explicit enabled tenant mapping. Missing, malformed, duplicate, disabled, insecure, or unknown-tenant configuration fails closed and cannot issue tokens. This repository contains no mapping or credential value.
+
+`createMeetingService` supports an explicitly injected provider and current repository membership. The interpretation path is `createConnect11MeetingProvider`, supplied with `createMeetingAdmissionResolver` and the versioned Connect11 facade. This is deliberately unmounted. Phone11 sends only trusted opaque meeting and participant references, a least-privilege profile, allowed language, and a fresh assertion backed by a durable interpreter-consent receipt. Connect11 derives the actual room and media identity. Tokens and upstream diagnostics must never be logged or persisted.
+
+Plain video uses `createConnect11PlainVideoTenantProvider`, `createPlainVideoAdmissionResolver`, and the `phone11-plain-video.v1` facade only after that server configuration is present. Initial authorization reads the same tenant-scoped durable room/member lifecycle. Before Connect11 issuance, the resolver records a pending lease with the active room and member revisions; after Connect11 responds, it locks and rechecks those revisions and the active admission predicates before a token can be returned. A token can therefore be returned only for an active tenant and identity, an open non-ended room, and an admitted non-revoked member that did not change during issuance. It sends opaque server-owned meeting and participant references only; it does not construct a Connect11 room, media identity, interpreter, consent assertion, worker, or agent. The service rejects an unsafe media endpoint and any supplied expiry that is not a future five-minute grant.
+
+The tenant provider accepts only explicitly injected `{ enabled: true, tenants: [...] }` configuration. Every tenant has its own positive Phone11 tenant ID, unique opaque customer key, HTTPS Connect11 facade URL, WSS media origin, and server-only credentials; malformed, disabled, duplicate, insecure, or unknown-tenant configuration fails closed. It selects the matching server tenant configuration and resolves durable admission before constructing a client, and never falls back to another tenant. The customer key remains a label in this seam: the reviewed Connect11 deployment must prove that each distinct join credential is actually bound to that customer scope and rejects cross-customer admission.
+
+An optional server-only `displayNameEnabled: true` on one tenant adds a presentation label to that tenant's plain-video token request. Omission is the default and keeps the original three-field body. The label comes only from `users.name` through the active tenant directory assignment during the pending-lease transaction. Invalid or missing names are omitted; email and phone are never substitutes. The label does not change the opaque participant ID, admission, eviction, or billing identity. This source seam must remain disabled until the matching Connect11 optional-field contract is reviewed and deployed; a failed request is never retried without the name.
+
+Before wiring the provider: preflight and apply the draft admission migration through the reviewed database procedure, provision rooms/members/receipts through authorized server workflows, and add atomic issuance leases that compare room/member/receipt revisions. Verify a dedicated LiveKit project or equivalent enforced isolation across ALL token issuers; the audited Alert11 arbitrary-room issuer must not grant Phone11 room access. Connect11 must also provide a verified eviction/revocation operation: with the current five-minute token, membership removal prevents reminting but cannot stop an already connected participant. Only then may capabilities change with production wiring.
+
+For plain video, separately preflight and apply `plain-video-admission-migration.sql` (which includes the issuance-lease table), and provision actual room/member records through an authorized server workflow. The source-level lease prevents a changed, revoked, or lobby-pending member from receiving a newly minted token, but cannot revoke an already-connected holder of a five-minute token. Prove Connect11's server-side tenant/issuer isolation and eviction behavior before activation.
+
+The plain-video removal lifecycle stays default-off. Protected host snapshot/request/status routes compose it only with explicitly reviewed server dependencies; normal router composition supplies no removal gate. Initial removal requires the exact snapshot participant, room and member revisions. Room-bound operation keys and the operation UUID written as the member's denial revision fence uncertain replay from replacement admissions; legacy unbound operations stay locally denied and unavailable to these controls. It writes the exact tenant-scoped member's `revoked_at`, revokes pending or issued local leases, and records a durable `pending` eviction operation before one POST to Connect11. That lifecycle can use only the server-side `phone11-plain-video.v1` facade eviction contract. A `202` is only receipt of that request; only a later bounded GET observation with `status: completed` proves provider acknowledgement. Failed or unconfirmed operations retain the local denial, so no future mint can be issued. The shared room's controls show admitted access separately from live media participants and never infer provider identities from names. A reviewed workflow must still schedule bounded reconciliation, apply the draft migration, and replay the full provider/device removal flow before activation. See [host removal contract](meeting-host-eviction-contract.md) for exact authority, membership assertion and default-off composition.
+
+AI interpretation, voice bot, recording and transcript storage remain unavailable pending existing backend discovery and separately verified consent, ownership and lifecycle contracts. This seam adds no duplicate AI worker and no invented live URL.
+
+Channel meeting creation is a separate fail-closed seam. It requires both
+`PHONE11_CHANNEL_MEETINGS_ENABLED=1` and an explicit
+`PHONE11_CHANNEL_MEETING_TENANT_IDS` allowlist, plus the reviewed
+`channel-meeting-migration.sql`. Each channel member's `can_start_meeting`
+permission defaults false and is never granted by application startup. A start
+transaction locks the current host and selected-member rows, checks active
+Phone11 identity and extension eligibility, creates one open admitted room for
+the host plus the exact selection, and writes recipient-only in-app invitation
+rows. Tenant+actor+request ID binds a canonical channel/selection fingerprint;
+exact retries return the same meeting and changed retries conflict. Starts are
+bounded to 50 invitees and five new meetings per actor per minute.
+
+Channel invitations are durable inbox records, not evidence of push delivery,
+and contain no media token. They expire after two hours. Every subsequent
+plain-video authorization and both sides of token issuance recheck the source
+expiry (including enough time for the maximum five-minute token) plus current
+membership in that exact channel; a membership deletion
+also revokes the corresponding admission revision. If the additive migration
+is absent, legacy admitted-room reads continue unchanged while channel meeting
+capabilities and invitations return unavailable.
+
+Run: `node_modules/.bin/vitest run server/meetings/meetings.test.ts`.

@@ -1,0 +1,78 @@
+name: Phone11 EAS iOS Dev Client
+
+on:
+  workflow_dispatch:
+    inputs:
+      eas_profile:
+        description: EAS build profile to use
+        required: true
+        default: development-simulator
+        type: choice
+        options:
+          - development-simulator
+          - development
+          - preview
+      wait_for_build:
+        description: Keep GitHub Actions running until the EAS build finishes
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  ios-dev-client:
+    name: Queue iOS development client build
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Require EXPO_TOKEN secret
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          if [ -z "$EXPO_TOKEN" ]; then
+            echo "Missing EXPO_TOKEN. Add an Expo access token in GitHub repository secrets before running this workflow."
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+          pnpm --version
+
+      - name: Setup Expo and EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+          packager: pnpm
+
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate Expo config
+        run: pnpm exec expo config --type public
+
+      - name: Confirm EAS account
+        run: eas whoami
+
+      - name: Build iOS development client
+        env:
+          EAS_PROFILE: ${{ inputs.eas_profile }}
+          WAIT_FOR_BUILD: ${{ inputs.wait_for_build }}
+        run: |
+          if [ "$WAIT_FOR_BUILD" = "true" ]; then
+            eas build --platform ios --profile "$EAS_PROFILE" --non-interactive
+          else
+            eas build --platform ios --profile "$EAS_PROFILE" --non-interactive --no-wait
+          fi
