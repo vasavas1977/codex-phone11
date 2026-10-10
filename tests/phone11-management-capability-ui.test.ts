@@ -49,7 +49,9 @@ describe("Phone11 management capability gates", () => {
     expect(dashboard).toContain("stats?.phoneNumbersAvailable === true");
     expect(dashboard).toContain('"Not available"');
     expect(phoneNumbers).toContain("Phone number management is unavailable");
-    expect(phoneNumbers).toContain("Phone-number inventory and routing actions are unavailable.");
+    expect(phoneNumbers).toMatch(
+      /Phone-number\s+inventory and routing actions are unavailable\./,
+    );
     expect(portal).toContain("phone_numbers_available");
     expect(portal).toContain("Number inventory is not available yet");
     expect(portal).toContain("disabled={!phoneNumbersAvailable}");
