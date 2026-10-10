@@ -98,9 +98,9 @@ before any later operator decision; an empty bounded history still proves no
 exhaustive absence.
 
 No exact next build number is predicted. Remote auto-increment is retained;
-the result must prove a number above121. After submission, separately bind the
+the result must prove a number above123. After submission, separately bind the
 safe source receipt to actual IPA bytes and run the current signed/native/trial
-gates. Preserve Build121 and rollback IPAs. No development launcher, store
+gates. Preserve Build123 and earlier rollback IPAs. No development launcher, store
 release, unrestricted license, artifact relabeling or handset replacement is
 authorized by this source.
 
