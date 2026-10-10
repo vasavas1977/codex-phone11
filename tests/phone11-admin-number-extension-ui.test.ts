@@ -144,11 +144,11 @@ describe("enterprise phone-number administration", () => {
     expect(phoneNumbers).toContain("assigned_route_id");
   });
 
-  it("keeps destination editing closed when the selected account has multiple workspaces", () => {
-    expect(phoneNumbers).toContain("const canEditRoutes = workspace.canUseImplicitTenant");
-    expect(phoneNumbers).toContain("disabled={routeMutation.isPending || !canEditRoutes}");
-    expect(phoneNumbers).toContain("if (!canEditRoutes) return;");
-    expect(phoneNumbers).toContain("Call destination editing is not available yet for accounts in multiple workspaces.");
+  it("requires separately admitted destination support and fresh reads for editing", () => {
+    expect(phoneNumbers).toContain("const canEditRoutes = workspace.canEditDidRoutes");
+    expect(phoneNumbers).toContain("disabled={routeMutation.isPending || !routesReady}");
+    expect(phoneNumbers).toMatch(/if\s*\([\s\S]*?!routesReady\s*\|\|[\s\S]*?liveEditor.current.scope !== scope[\s\S]*?!liveEditor.current.ready/);
+    expect(phoneNumbers.replace(/\s+/g, " ")).toContain("This server needs selected-workspace destination support before you can edit call destinations.");
     expect(phoneNumbers).toContain("tenantId: routeTenantId");
   });
 });

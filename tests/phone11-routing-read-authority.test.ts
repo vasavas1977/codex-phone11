@@ -14,6 +14,7 @@ vi.mock("../server/pbx/audit", () => ({ writeAuditLog: vi.fn() }));
 type Caller = ReturnType<typeof ivrRouter.createCaller>;
 const context = (user: { id: number } | null = { id: 9 }) => ({ user, req: { ip: "127.0.0.1", headers: {} }, res: {} }) as Parameters<typeof ivrRouter.createCaller>[0];
 const reads: [string, (caller: Caller) => Promise<unknown>][] = [
+  ["IVR list", c => c.ivr.list({ tenant_id: 7 })],
   ["ring groups list", c => c.ringGroups.list({ tenant_id: 7 })],
   ["ring groups get including members", c => c.ringGroups.get({ id: 4 })],
   ["queues list", c => c.queues.list({ tenant_id: 7 })],
@@ -26,6 +27,7 @@ const selectedReads: [string, (caller: Caller, tenantId: number) => Promise<unkn
   ["ring groups", (c, tenant_id) => c.ringGroups.list({ tenant_id })],
   ["queues", (c, tenant_id) => c.queues.list({ tenant_id })],
   ["business hours", (c, tenant_id) => c.timeConditions.list({ tenant_id })],
+  ["IVR", (c, tenant_id) => c.ivr.list({ tenant_id })],
 ];
 
 beforeEach(() => {
@@ -33,7 +35,10 @@ beforeEach(() => {
   state.memberships = [{ tenant_id: 7, role: "admin" }];
   state.cache.mockResolvedValue([{ userId: 9, tenantId: 7, role: "admin", tenantName: "Stale workspace", tenantStatus: "active" }]);
   state.capabilities.mockResolvedValue({ ivr: true, ringGroups: true, queues: true, businessHours: true });
-  state.query.mockImplementation(async sql => ({ rows: String(sql).includes("tenant_memberships") ? state.memberships : [{ id: 4, tenant_id: 7, marker: "normal result" }] }));
+  state.query.mockImplementation(async (sql, params) => ({ rows: String(sql).includes("tenant_memberships")
+    ? String(sql).includes("$2::bigint") && params[1] != null
+      ? state.memberships.filter(row => row.tenant_id === params[1]) : state.memberships
+    : [{ id: 4, tenant_id: 7, marker: "normal result" }] }));
 });
 
 const databaseUrl = process.env.PHONE11_ROUTING_AUTH_TEST_DATABASE_URL;
@@ -100,7 +105,7 @@ describe("routing reads require current administrator authority", () => {
       expect(state.query).toHaveBeenCalledTimes(1);
       expect(state.query.mock.calls[0][0]).toContain("tm.user_id = $1");
       expect(state.query.mock.calls[0][0]).toContain("tm.status = 'active' AND t.status = 'active'");
-      expect(state.query.mock.calls[0][1]).toEqual([9]);
+      expect(state.query.mock.calls[0][1]).toEqual(_name === "IVR list" ? [9, 7] : [9]);
       expect(state.capabilities).not.toHaveBeenCalled();
     });
   }
@@ -110,7 +115,7 @@ describe("routing reads require current administrator authority", () => {
       const result = await invoke(ivrRouter.createCaller(context()));
       expect(JSON.stringify(result)).toContain("normal result");
       expect(state.query.mock.calls[0][0]).toContain("tenant_memberships");
-      expect(state.query.mock.calls[0][1]).toEqual([9]);
+      expect(state.query.mock.calls[0][1]).toEqual(_name === "IVR list" ? [9, 7] : [9]);
       expect(state.cache).not.toHaveBeenCalled();
       expect(state.withTransaction).not.toHaveBeenCalled();
     });
@@ -122,7 +127,7 @@ describe("routing reads require current administrator authority", () => {
   it.each(selectedReads)("%s refuses a cached selected tenant without a current membership", async (_name, invoke) => {
     state.memberships = [{ tenant_id: 8, role: "admin" }];
     await expect(invoke(ivrRouter.createCaller(context()), 7)).rejects.toMatchObject({
-      code: "FORBIDDEN", message: "User does not have access to the requested tenant",
+      code: "FORBIDDEN", message: _name === "IVR" ? "FORBIDDEN" : "User does not have access to the requested tenant",
     });
     expect(state.query).toHaveBeenCalledTimes(1); expect(state.capabilities).not.toHaveBeenCalled();
   });

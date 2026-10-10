@@ -299,7 +299,7 @@ describe("PBX selected workspace reads", () => {
     db.query.mockResolvedValueOnce({ rows: memberships })
       .mockResolvedValueOnce({ rows: phoneNumberSchemaRows });
     await expect(pbxRouter.createCaller(context()).capabilities({ tenantId: 12 }))
-      .resolves.toMatchObject({ phoneNumbers: true, explicitTenantReads: true });
+      .resolves.toMatchObject({ phoneNumbers: true, explicitTenantReads: true, explicitDidRouteDirectories: true });
     expect(requireLiveTenantAdminMembership).toHaveBeenCalledWith(9, 12);
     expect(db.query.mock.calls[1][0]).toContain("information_schema.columns");
   });
@@ -389,6 +389,7 @@ describe("PBX management capabilities", () => {
       pbxRouter.createCaller(context()).capabilities(),
     ).resolves.toEqual({
       explicitTenantReads: true,
+      explicitDidRouteDirectories: true,
       phoneNumbers: false,
       sites: false,
       ringGroups: false,
@@ -1365,10 +1366,10 @@ describe("DID route assignment", () => {
     ["ivr", "ivr_menus", "is_active = true"],
     ["time_condition", "time_conditions", "tenant_id = $2"],
   ] as const)(
-    "accepts a tenant-owned %s destination",
+    "accepts a selected second-workspace %s destination with overlapping IDs",
     async (routeType, table, activeCondition) => {
       db.query
-        .mockResolvedValueOnce({ rows: [membership("admin")] })
+        .mockResolvedValueOnce({ rows: [membership("admin", 7), membership("owner", 12)] })
         .mockResolvedValueOnce({ rows: phoneNumberSchemaRows })
         .mockResolvedValueOnce({ rows: [{ id: 44 }] })
         .mockResolvedValueOnce({ rows: [{ role: "admin" }] })
@@ -1377,6 +1378,7 @@ describe("DID route assignment", () => {
 
       await expect(
         pbxRouter.createCaller(context("user")).phoneNumbers.assignRoute({
+          tenantId: 12,
           id: 44,
           assignedRouteType: routeType,
           assignedRouteId: 23,
@@ -1386,7 +1388,7 @@ describe("DID route assignment", () => {
       expect(db.query.mock.calls[4][0]).toContain(`FROM ${table}`);
       expect(db.query.mock.calls[4][0]).toContain(activeCondition);
       expect(db.query.mock.calls[4][0]).toContain("LIMIT 1 FOR SHARE");
-      expect(db.query.mock.calls[4][1]).toEqual([23, 7]);
+      expect(db.query.mock.calls[4][1]).toEqual([23, 12]);
       if (routeType === "extension") {
         expect(db.query.mock.calls[4][0]).toContain(
           "sa.tenant_id = e.tenant_id",
@@ -1396,18 +1398,18 @@ describe("DID route assignment", () => {
       }
       expect(db.query.mock.calls[3]).toEqual([
         expect.stringContaining("FOR UPDATE OF tm, t"),
-        [9, 7],
+        [9, 12],
       ]);
       expect(db.query.mock.calls[5]).toEqual([
         expect.stringContaining("WHERE id = $3 AND tenant_id = $4"),
-        [routeType, 23, 44, 7],
+        [routeType, 23, 44, 12],
       ]);
     },
   );
 
-  it("rejects a missing or cross-tenant destination before updating the DID", async () => {
+  it.each(["extension", "ring_group", "queue", "ivr", "time_condition"] as const)("rejects a missing/cross-tenant selected %s destination before updating the DID", async routeType => {
     db.query
-      .mockResolvedValueOnce({ rows: [membership("owner")] })
+      .mockResolvedValueOnce({ rows: [membership("admin", 7), membership("owner", 12)] })
       .mockResolvedValueOnce({ rows: phoneNumberSchemaRows })
       .mockResolvedValueOnce({ rows: [{ id: 44 }] })
       .mockResolvedValueOnce({ rows: [{ role: "owner" }] })
@@ -1415,11 +1417,13 @@ describe("DID route assignment", () => {
 
     await expect(
       pbxRouter.createCaller(context("user")).phoneNumbers.assignRoute({
+        tenantId: 12,
         id: 44,
-        assignedRouteType: "queue",
+        assignedRouteType: routeType,
         assignedRouteId: 99,
       }),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(db.query.mock.calls[4][1]).toEqual([99, 12]);
     expect(
       db.query.mock.calls.some(([sql]) =>
         String(sql).includes("UPDATE phone_numbers"),

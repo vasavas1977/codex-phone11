@@ -5,7 +5,7 @@
  * Number acquisition remains unavailable from this screen.
  */
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AdminWorkspaceBoundary } from "@/components/admin/admin-workspace-boundary";
 import {
   ActivityIndicator,
@@ -196,6 +196,14 @@ function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : "Please try again.";
 }
 
+function freshResult(query: {
+  isSuccess: boolean;
+  isFetching: boolean;
+  isError: boolean;
+}) {
+  return query.isSuccess && !query.isFetching && !query.isError;
+}
+
 export default function AdminDIDs() {
   return (
     <AdminWorkspaceBoundary>
@@ -222,32 +230,96 @@ function AdminDIDsContent() {
     1,
     100,
     tenantQuery.isSuccess && canManage && schemaPhoneNumbersAvailable,
+    true,
   );
   const phoneNumbersAvailable =
     schemaPhoneNumbersAvailable && numbersQuery.data?.available !== false;
-  // The destination directories still resolve an implicit tenant. Keep route
-  // editing closed for multi-workspace accounts until each list is explicit.
-  const canEditRoutes = workspace.canUseImplicitTenant;
+  // A distinct fresh contract covers all destination directories, not just tenant reads.
+  const canEditRoutes = workspace.canEditDidRoutes;
   const routeDestinationsEnabled =
     phoneNumbersAvailable && routeTenantId > 0 && canEditRoutes;
   const routeMutation = useAssignPhoneNumberRoute();
-  const extensionsQuery = useExtensions(1, 100, routeDestinationsEnabled);
+  const extensionsQuery = useExtensions(1, 100, routeDestinationsEnabled, true);
   const ringGroupsQuery = useRingGroups(
     routeTenantId,
     routeDestinationsEnabled && capabilitiesQuery.data?.ringGroups === true,
+    true,
   );
   const queuesQuery = useCallQueues(
     routeTenantId,
     routeDestinationsEnabled && capabilitiesQuery.data?.queues === true,
+    true,
   );
   const ivrMenusQuery = useIvrMenus(
     routeTenantId,
     routeDestinationsEnabled && capabilitiesQuery.data?.ivr === true,
+    true,
   );
   const timeConditionsQuery = useTimeConditions(
     routeTenantId,
     routeDestinationsEnabled && capabilitiesQuery.data?.businessHours === true,
+    true,
   );
+  const extensionsFresh = freshResult(extensionsQuery);
+  const ringGroupsFresh = freshResult(ringGroupsQuery);
+  const queuesFresh = freshResult(queuesQuery);
+  const ivrFresh = freshResult(ivrMenusQuery);
+  const hoursFresh = freshResult(timeConditionsQuery);
+  const routesReady =
+    routeDestinationsEnabled &&
+    freshResult(numbersQuery) &&
+    extensionsFresh &&
+    (capabilitiesQuery.data?.ringGroups !== true || ringGroupsFresh) &&
+    (capabilitiesQuery.data?.queues !== true || queuesFresh) &&
+    (capabilitiesQuery.data?.ivr !== true || ivrFresh) &&
+    (capabilitiesQuery.data?.businessHours !== true || hoursFresh);
+  // A monotonic local revision also retires equal-timestamp refreshes and
+  // replaced result objects; QueryClient timestamps alone are not identity.
+  const observation = [
+    workspace.admissionScope,
+    routesReady,
+    numbersQuery.dataUpdatedAt,
+    extensionsQuery.dataUpdatedAt,
+    ringGroupsQuery.dataUpdatedAt,
+    queuesQuery.dataUpdatedAt,
+    ivrMenusQuery.dataUpdatedAt,
+    timeConditionsQuery.dataUpdatedAt,
+    numbersQuery.data,
+    extensionsQuery.data,
+    ringGroupsQuery.data,
+    queuesQuery.data,
+    ivrMenusQuery.data,
+    timeConditionsQuery.data,
+  ];
+  const readRevision = useRef({ observation, revision: 0 });
+  if (
+    observation.some(
+      (value, index) => value !== readRevision.current.observation[index],
+    )
+  ) {
+    readRevision.current = {
+      observation,
+      revision: readRevision.current.revision + 1,
+    };
+  }
+  const scope =
+    workspace.admissionScope === null
+      ? null
+      : JSON.stringify([
+          workspace.admissionScope,
+          readRevision.current.revision,
+        ]);
+  const liveEditor = useRef({ scope, ready: routesReady });
+  liveEditor.current = { scope, ready: routesReady };
+  const saving = useRef(false);
+  const editingScope = useRef<string | null>(null);
+  useEffect(() => {
+    // StrictMode may replay setup/cleanup before another render.
+    liveEditor.current = { scope, ready: routesReady };
+    return () => {
+      liveEditor.current = { scope: null, ready: false };
+    };
+  }, [scope, routesReady]);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<NumberFilter>("all");
   const [editingNumber, setEditingNumber] = useState<PhoneNumberRow | null>(
@@ -265,28 +337,41 @@ function AdminDIDsContent() {
   );
   const allDestinations = useMemo<Record<RouteType, DestinationOption[]>>(
     () => ({
-      extension: ((extensionsQuery.data?.data || []) as DestinationRow[])
+      extension: (
+        (extensionsFresh
+          ? extensionsQuery.data?.data || []
+          : []) as DestinationRow[]
+      )
         .map((row) => destinationOption("extension", row))
         .filter((row): row is DestinationOption => row !== null),
-      ring_group: ((ringGroupsQuery.data || []) as DestinationRow[])
+      ring_group: (
+        (ringGroupsFresh ? ringGroupsQuery.data || [] : []) as DestinationRow[]
+      )
         .map((row) => destinationOption("ring_group", row))
         .filter((row): row is DestinationOption => row !== null),
-      queue: ((queuesQuery.data || []) as DestinationRow[])
+      queue: ((queuesFresh ? queuesQuery.data || [] : []) as DestinationRow[])
         .map((row) => destinationOption("queue", row))
         .filter((row): row is DestinationOption => row !== null),
-      ivr: ((ivrMenusQuery.data || []) as DestinationRow[])
+      ivr: ((ivrFresh ? ivrMenusQuery.data || [] : []) as DestinationRow[])
         .map((row) => destinationOption("ivr", row))
         .filter((row): row is DestinationOption => row !== null),
-      time_condition: ((timeConditionsQuery.data || []) as DestinationRow[])
+      time_condition: (
+        (hoursFresh ? timeConditionsQuery.data || [] : []) as DestinationRow[]
+      )
         .map((row) => destinationOption("time_condition", row))
         .filter((row): row is DestinationOption => row !== null),
     }),
     [
-      extensionsQuery.data?.data,
-      ivrMenusQuery.data,
-      queuesQuery.data,
+      extensionsQuery.data,
+      extensionsFresh,
       ringGroupsQuery.data,
+      ringGroupsFresh,
+      queuesQuery.data,
+      queuesFresh,
+      ivrMenusQuery.data,
+      ivrFresh,
       timeConditionsQuery.data,
+      hoursFresh,
     ],
   );
   const destinationOptions = useMemo<Record<RouteType, DestinationOption[]>>(
@@ -331,16 +416,23 @@ function AdminDIDsContent() {
           .toLowerCase()
           .includes(needle) ||
         inventoryRouteLabel(row, allDestinations, canEditRoutes)
-          .toLowerCase().includes(needle);
+          .toLowerCase()
+          .includes(needle);
       return matchesFilter && matchesSearch;
     });
   }, [allDestinations, canEditRoutes, filter, rows, search]);
 
   const openRouteEditor = (number: PhoneNumberRow) => {
-    if (!canEditRoutes) return;
+    if (
+      !routesReady ||
+      liveEditor.current.scope !== scope ||
+      !liveEditor.current.ready
+    )
+      return;
     const routeType = routeTypeLabel(number.assigned_route_type)
       ? (number.assigned_route_type as RouteType)
       : null;
+    editingScope.current = scope;
     setEditingNumber(number);
     setSelectedRouteType(routeType);
     setSelectedRouteId(
@@ -351,6 +443,7 @@ function AdminDIDsContent() {
 
   const closeRouteEditor = (force = false) => {
     if (routeMutation.isPending && !force) return;
+    editingScope.current = null;
     setEditingNumber(null);
     setSelectedRouteType(null);
     setSelectedRouteId(null);
@@ -364,7 +457,18 @@ function AdminDIDsContent() {
   };
 
   const saveRoute = async () => {
-    if (!editingNumber || !canEditRoutes || !routeTenantId) return;
+    if (
+      !editingNumber ||
+      !canEditRoutes ||
+      !routeTenantId ||
+      saving.current ||
+      !scope ||
+      editingScope.current !== scope ||
+      liveEditor.current.scope !== scope ||
+      !liveEditor.current.ready
+    )
+      return;
+    if (!rows.some((row) => row.id === editingNumber.id)) return;
     if (
       selectedRouteType &&
       !destinationOptions[selectedRouteType].some(
@@ -374,6 +478,7 @@ function AdminDIDsContent() {
       setRouteError("Choose an active destination in this workspace.");
       return;
     }
+    saving.current = true;
     try {
       await routeMutation.mutateAsync({
         tenantId: routeTenantId,
@@ -381,13 +486,19 @@ function AdminDIDsContent() {
         assignedRouteType: selectedRouteType,
         assignedRouteId: selectedRouteType ? selectedRouteId : null,
       });
+      if (liveEditor.current.scope !== scope || !liveEditor.current.ready)
+        return;
       closeRouteEditor(true);
       void numbersQuery.refetch().catch(() => undefined);
     } catch (error) {
+      if (liveEditor.current.scope !== scope || !liveEditor.current.ready)
+        return;
       setRouteError(
         errorMessage(error) ||
           "Destination could not be saved. Your selection is still here; try again.",
       );
+    } finally {
+      saving.current = false;
     }
   };
 
@@ -397,10 +508,12 @@ function AdminDIDsContent() {
     );
     return (
       <TouchableOpacity
-        accessibilityLabel={canEditRoutes
-          ? `Change destination for ${numberLabel(item)}`
-          : `Phone number ${numberLabel(item)}`}
-        disabled={routeMutation.isPending || !canEditRoutes}
+        accessibilityLabel={
+          canEditRoutes
+            ? `Change destination for ${numberLabel(item)}`
+            : `Phone number ${numberLabel(item)}`
+        }
+        disabled={routeMutation.isPending || !routesReady}
         onPress={() => openRouteEditor(item)}
         style={[
           styles.card,
@@ -491,7 +604,8 @@ function AdminDIDsContent() {
         Phone number management is unavailable
       </Text>
       <Text style={[styles.stateText, { color: colors.muted }]}>
-        This feature is not available for your workspace yet. Phone-number inventory and routing actions are unavailable.
+        This feature is not available for your workspace yet. Phone-number
+        inventory and routing actions are unavailable.
       </Text>
     </View>
   ) : numbersQuery.isError ? (
@@ -574,8 +688,14 @@ function AdminDIDsContent() {
       {canManage && phoneNumbersAvailable && (
         <>
           {!canEditRoutes ? (
-            <Text style={[styles.stateText, { color: colors.muted, marginHorizontal: 20 }]}>
-              Call destination editing is not available yet for accounts in multiple workspaces.
+            <Text
+              style={[
+                styles.stateText,
+                { color: colors.muted, marginHorizontal: 20 },
+              ]}
+            >
+              This server needs selected-workspace destination support before
+              you can edit call destinations.
             </Text>
           ) : null}
           <View
@@ -631,7 +751,7 @@ function AdminDIDsContent() {
       <Modal
         animationType="slide"
         transparent
-        visible={editingNumber !== null}
+        visible={editingNumber !== null && editingScope.current === scope}
         onRequestClose={() => closeRouteEditor()}
       >
         <View style={styles.modalOverlay}>
@@ -808,6 +928,12 @@ function AdminDIDsContent() {
                   Calls to this number will not have a PBX destination.
                 </Text>
               )}
+              {!routesReady ? (
+                <Text accessibilityRole="alert" style={{ color: colors.muted }}>
+                  Checking current destinations. Refresh the inventory to try
+                  again.
+                </Text>
+              ) : null}
               {routeError ? (
                 <Text
                   accessibilityRole="alert"
@@ -829,13 +955,14 @@ function AdminDIDsContent() {
                 </Text>
               </TouchableOpacity>
               <TouchableOpacity
-                disabled={routeMutation.isPending}
+                disabled={routeMutation.isPending || !routesReady}
+                accessibilityLabel="Save destination"
                 onPress={saveRoute}
                 style={[
                   styles.saveButton,
                   {
                     backgroundColor: colors.primary,
-                    opacity: routeMutation.isPending ? 0.65 : 1,
+                    opacity: routeMutation.isPending || !routesReady ? 0.65 : 1,
                   },
                 ]}
               >

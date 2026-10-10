@@ -20,6 +20,9 @@ const m = vi.hoisted(() => ({
   tenant: vi.fn(),
   cancel: vi.fn(),
   remove: vi.fn(),
+  directory: vi.fn(
+    (_label: string, _input: unknown, _options: unknown) => ({}),
+  ),
 }));
 vi.mock("../hooks/use-auth", () => ({
   useAuth: () => ({ user: m.user, loading: m.loading }),
@@ -32,7 +35,32 @@ vi.mock("../lib/_core/auth", () => ({
 }));
 vi.mock("../lib/trpc", () => ({
   trpc: {
-    pbx: { tenant: { memberships: { useQuery: () => m.memberships } } },
+    pbx: {
+      tenant: { memberships: { useQuery: () => m.memberships } },
+      extensions: {
+        list: {
+          useQuery: (input: unknown, options: unknown) =>
+            m.directory("extensions", input, options),
+        },
+      },
+      phoneNumbers: {
+        list: {
+          useQuery: (input: unknown, options: unknown) =>
+            m.directory("numbers", input, options),
+        },
+      },
+    },
+    ivr: Object.fromEntries(
+      ["ivr", "ringGroups", "queues", "timeConditions"].map((key) => [
+        key,
+        {
+          list: {
+            useQuery: (input: unknown, options: unknown) =>
+              m.directory(key, input, options),
+          },
+        },
+      ]),
+    ),
     useUtils: () => ({
       pbx: {
         capabilities: { fetch: m.capabilities },
@@ -54,6 +82,12 @@ import {
   AdminWorkspaceProvider,
   usePbxAdminWorkspace,
   useTenant,
+  useExtensions,
+  usePhoneNumbers,
+  useIvrMenus,
+  useRingGroups,
+  useCallQueues,
+  useTimeConditions,
   verifyAdminWorkspaceAdmission,
 } from "../hooks/use-pbx-admin";
 
@@ -321,5 +355,105 @@ describe("admin workspace API admission", () => {
       m.options.queryFn({ signal: new AbortController().signal }),
     ).rejects.toMatchObject({ code: "ACCESS_UNAVAILABLE" });
     expect(render()).toContain("NO_COMPANY_DATA");
+  });
+  it.each([undefined, false, "true", 1, true])(
+    "admits multi-workspace DID directories only on literal distinct capability %s",
+    async (bit) => {
+      const rows = [member(), member(12, "owner")];
+      m.memberships.data = rows;
+      m.capabilities.mockResolvedValue({
+        ...capabilities,
+        explicitTenantReads: true,
+        explicitDidRouteDirectories: bit,
+      });
+      m.tenant.mockResolvedValue(tenant(rows, 12, "owner"));
+      render();
+      m.workspace.chooseTenant(12);
+      render();
+      const data = await m.options.queryFn({
+        signal: new AbortController().signal,
+      });
+      m.admission = { data, isSuccess: true, isFetching: false };
+      render();
+      expect(m.workspace.canEditDidRoutes).toBe(bit === true);
+      expect(m.workspace.canUseImplicitTenant).toBe(false);
+      expect(m.workspace.admissionScope).not.toBeNull();
+      m.memberships.isFetching = true;
+      render();
+      expect(m.workspace.canEditDidRoutes).toBe(false);
+      expect(m.workspace.admissionScope).toBeNull();
+      m.memberships.isFetching = false;
+      m.memberships.dataUpdatedAt = 2;
+      render();
+      expect(m.workspace.canEditDidRoutes).toBe(false);
+      m.user = { id: 10 };
+      render();
+      expect(m.workspace.canEditDidRoutes).toBe(false);
+    },
+  );
+
+  it("preserves matched legacy single-workspace DID editing without either capability", async () => {
+    render();
+    const data = await m.options.queryFn({
+      signal: new AbortController().signal,
+    });
+    m.admission = { data, isSuccess: true, isFetching: false };
+    render();
+    expect(m.workspace.canEditDidRoutes).toBe(true);
+    m.memberships.data = [member(7, "user")];
+    render();
+    expect(m.workspace.canEditDidRoutes).toBe(false);
+  });
+
+  it("binds every directory to selected tenant input with fresh cancelable queries, not oldest membership", async () => {
+    function Directories() {
+      const workspace = usePbxAdminWorkspace();
+      const id = workspace.selectedTenantId ?? 0;
+      useExtensions(1, 100, workspace.canEditDidRoutes, true);
+      usePhoneNumbers(1, 100, workspace.isAdmitted, true);
+      useIvrMenus(id, workspace.canEditDidRoutes, true);
+      useRingGroups(id, workspace.canEditDidRoutes, true);
+      useCallQueues(id, workspace.canEditDidRoutes, true);
+      useTimeConditions(id, workspace.canEditDidRoutes, true);
+      return null;
+    }
+    const rows = [member(), member(12, "owner")];
+    m.memberships.data = rows;
+    m.capabilities.mockResolvedValue({
+      ...capabilities,
+      explicitTenantReads: true,
+      explicitDidRouteDirectories: true,
+    });
+    render();
+    for (const selected of [12, 7]) {
+      m.workspace.chooseTenant(selected);
+      render();
+      m.tenant.mockResolvedValue(
+        tenant(rows, selected, selected === 12 ? "owner" : "admin"),
+      );
+      const data = await m.options.queryFn({
+        signal: new AbortController().signal,
+      });
+      m.admission = { data, isSuccess: true, isFetching: false };
+      m.directory.mockClear();
+      renderToStaticMarkup(
+        createElement(AdminWorkspaceProvider, null, createElement(Directories)),
+      );
+      expect(m.directory).toHaveBeenCalledTimes(6);
+      for (const [label, input, options] of m.directory.mock.calls) {
+        expect(input).toMatchObject(
+          label === "numbers" || label === "extensions"
+            ? { tenantId: selected }
+            : { tenant_id: selected },
+        );
+        expect(options).toMatchObject({
+          enabled: true,
+          staleTime: 0,
+          gcTime: 0,
+          refetchOnMount: "always",
+          trpc: { abortOnUnmount: true },
+        });
+      }
+    }
   });
 });

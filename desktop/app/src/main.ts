@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog } from 'electron';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -51,7 +51,14 @@ async function bootstrap(): Promise<void> {
   meeting = new DesktopMeetingWindow(provider, helper, () => window);
   meeting.registerIpc();
   const handlers = createHandlers(provider, helper, () => generation, value => { generation = value; },
-    () => meeting?.blocksPhoneMedia() ?? false);
+    () => meeting?.blocksPhoneMedia() ?? false, async () => {
+      const owner = window;
+      if (!owner || owner.isDestroyed()) return false;
+      const answer = await dialog.showMessageBox(owner, { type: 'warning',
+        buttons: ['Cancel', 'Delete voicemail'], defaultId: 0, cancelId: 0,
+        message: 'Delete this voicemail?', detail: 'This cannot be undone.', noLink: true });
+      return window === owner && !owner.isDestroyed() && answer.response === 1;
+    });
   let accountQueue: Promise<void> = Promise.resolve();
   let accountCancellationEpoch = 0;
   cancelAccountWork = () => { accountCancellationEpoch++; };
@@ -86,6 +93,7 @@ async function bootstrap(): Promise<void> {
   ipcMain.handle(CHANNELS.historyList, checked(value => handlers.historyList(value)));
   ipcMain.handle(CHANNELS.directoryList, checked(value => handlers.directoryList(value)));
   ipcMain.handle(CHANNELS.voicemailAudio, checked(value => handlers.voicemailAudio(value)));
+  ipcMain.handle(CHANNELS.voicemailDelete, checked(value => handlers.voicemailDelete(value)));
   ipcMain.handle(CHANNELS.voicemailMarkRead, checked(value => handlers.voicemailMarkRead(value)));
   ipcMain.handle(CHANNELS.voicemailList, checked(value => handlers.voicemailList(value)));
   ipcMain.handle(CHANNELS.signOut, checked(() => {

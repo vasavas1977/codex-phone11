@@ -159,6 +159,25 @@ jobs:
           assert len(matches) == 1 and matches[0]['assertionResults'], 'Required PBX read-authority suite must run'
           assert all(case['status'] == 'passed' for case in matches[0]['assertionResults']), 'PBX read-authority cases must pass without skips'
           PYREAD
+      - name: Require selected-workspace DID editor and capability regressions
+        run: |
+          test -f tests/phone11-did-workspace-editor.test.tsx
+          pnpm exec vitest run \
+            tests/phone11-did-workspace-editor.test.tsx \
+            tests/phone11-admin-workspace-admission.test.tsx \
+            tests/phone11-pbx-admin-read-revocation.test.ts \
+            --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/phone11-did-workspace-results.json"
+          python3 - <<'PYDIDWORKSPACE'
+          import json, os
+          from pathlib import Path
+          report = json.loads((Path(os.environ['RUNNER_TEMP']) / 'phone11-did-workspace-results.json').read_text())
+          required = ['tests/phone11-did-workspace-editor.test.tsx', 'tests/phone11-admin-workspace-admission.test.tsx', 'tests/phone11-pbx-admin-read-revocation.test.ts']
+          assert report.get('success') is True, 'Selected-workspace DID source checks must succeed'
+          for name in required:
+              matches = [suite for suite in report['testResults'] if Path(suite['name']).resolve() == Path(name).resolve()]
+              assert len(matches) == 1 and matches[0]['assertionResults'], 'Required DID workspace suite must run exactly once'
+              assert all(case['status'] == 'passed' for case in matches[0]['assertionResults']), 'DID workspace cases must pass without skips'
+          PYDIDWORKSPACE
       - name: Require offline PBX clone adapter, import audit and selected entry regressions
         run: |
           test -f scripts/phone11-pbx-clone/real-pg-adapter.ts
@@ -495,6 +514,32 @@ jobs:
           npm --prefix desktop/app run typecheck
           pnpm exec tsc --noEmit --pretty false
           PHONE11_BUILD_PLATFORM=darwin npm --prefix desktop/app run build
+
+      - name: Require desktop owned-voicemail deletion regressions without skips
+        shell: bash
+        run: |
+          test -f desktop/tests/voicemail-delete.node.ts
+          test -f desktop/app/test/voicemail-deletion.test.ts
+          test -f desktop/app/test/voicemail-delete-ipc.test.ts
+          test -f desktop/app/test/renderer-voicemail-delete.test.ts
+          node --import tsx --test --test-reporter=tap desktop/tests/voicemail-delete.node.ts | tee "$RUNNER_TEMP/phone11-desktop-voicemail-provider.tap"
+          (cd desktop/app && node --import tsx --test --test-reporter=tap test/voicemail-deletion.test.ts) | tee "$RUNNER_TEMP/phone11-desktop-voicemail-retirement.tap"
+          (cd desktop/app && node --import tsx --test --test-reporter=tap test/voicemail-delete-ipc.test.ts) | tee "$RUNNER_TEMP/phone11-desktop-voicemail-ipc.tap"
+          (cd desktop/app && node --import tsx --test --test-reporter=tap test/renderer-voicemail-delete.test.ts) | tee "$RUNNER_TEMP/phone11-desktop-voicemail-renderer.tap"
+          python3 - <<'PYDESKTOPDELETE'
+          import os, re
+          from pathlib import Path
+          for filename in ('phone11-desktop-voicemail-provider.tap', 'phone11-desktop-voicemail-retirement.tap', 'phone11-desktop-voicemail-ipc.tap', 'phone11-desktop-voicemail-renderer.tap'):
+              tap = (Path(os.environ['RUNNER_TEMP']) / filename).read_text()
+              counts = {}
+              for name in ('tests', 'pass', 'fail', 'cancelled', 'skipped', 'todo'):
+                  values = re.findall(r'^# ' + name + r' (\d+)$', tap, re.M)
+                  assert len(values) == 1, f'Missing or duplicate TAP summary: {filename} {name}'
+                  counts[name] = int(values[0])
+              assert counts['tests'] > 0 and counts['pass'] == counts['tests'], counts
+              assert all(counts[name] == 0 for name in ('fail', 'cancelled', 'skipped', 'todo')), counts
+              assert not re.search(r'^not ok(?: |$)', tap, re.M), 'Failed desktop voicemail deletion case'
+          PYDESKTOPDELETE
 
       - name: Require desktop helper provenance regressions without skips
         shell: bash
