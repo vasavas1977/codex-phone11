@@ -1,8 +1,10 @@
 /** Clone-only connection seam. No target discovery, startup or output side effects. */
 import type pg from "pg";
+import { validateCloneCustodyV2 } from "./custody-v2";
 
 export const CLONE_SOCKET = "/run/phone11-pbx-clone/socket";
-export const CLONE_SOURCE = "cd2b317c01d27ee472dca969a097133bd8968464";
+// Source base for this distinct custody revision; not a historical bundle approval.
+export const CLONE_SOURCE = "61ab2991db78f02e6f970878a5052b2cdc27dddc";
 export const LIMITS = Object.freeze({ connect: 2000, query: 5000, transaction: 15000, lifetime: 60000, close: 3000 });
 const SOURCE_SYSTEM = "7638134557377753122";
 // No actual software/role/rollback admission exists yet. Bind only in a reviewed revision.
@@ -56,12 +58,12 @@ const admitted = new WeakMap<CloneAdmission, Validated>();
 const consumed = new WeakSet<CloneAdmission>();
 
 /** Bounded private JSON/memory input. Pins/observations must be verified by the external clone custodian first. */
-export function admitCloneConnectionInput(input: string): CloneAdmission {
+export function admitCloneConnectionInput(input: string, custodyObservation?: unknown): CloneAdmission {
   if (typeof input !== "string" || Buffer.byteLength(input, "utf8") > 8192) refuse("INPUT_REFUSED");
   let decoded: unknown;
   try { decoded = JSON.parse(input); } catch { refuse("INPUT_REFUSED"); }
   const root = record(decoded, ["schema", "attemptId", "purpose", "target", "source", "software", "custody", "role"]);
-  if (root.schema !== "phone11-pbx-clone-real-pg-admission/v1" || root.purpose !== "CLONE_HANDLER_REHEARSAL" || typeof root.attemptId !== "string" || !ID.test(root.attemptId)) refuse("ADMISSION_REFUSED");
+  if (root.schema !== "phone11-pbx-clone-real-pg-admission/v2" || root.purpose !== "CLONE_HANDLER_REHEARSAL" || typeof root.attemptId !== "string" || !ID.test(root.attemptId)) refuse("ADMISSION_REFUSED");
   const target = record(root.target, ["socketDirectory", "database", "port", "sourceSystemIdentifier", "cloneSystemIdentifier"]);
   if (target.socketDirectory !== CLONE_SOCKET || target.database !== "phone11ai" || target.port !== 5432 || target.sourceSystemIdentifier !== SOURCE_SYSTEM || typeof target.cloneSystemIdentifier !== "string" || !/^[1-9][0-9]{0,19}$/.test(target.cloneSystemIdentifier) || target.cloneSystemIdentifier === SOURCE_SYSTEM) refuse("ADMISSION_REFUSED");
   const source = record(root.source, ["candidateCommit", "rollbackArtifactSha256"]);
@@ -70,9 +72,9 @@ export function admitCloneConnectionInput(input: string): CloneAdmission {
   const software = record(root.software, ["workerImageId", "selectedManifest", "nodeRuntimeSha256", "nodeVersion", "driverBundleSha256"]);
   image(software.workerImageId); image(software.selectedManifest); digest(software.nodeRuntimeSha256); digest(software.driverBundleSha256);
   if (typeof software.nodeVersion !== "string" || !/^22\.[0-9]+\.[0-9]+$/.test(software.nodeVersion)) refuse("ADMISSION_REFUSED");
-  const custody = record(root.custody, ["observationSha256", "privateSocket", "networkNone", "noMounts", "ownedFreshClone"]);
-  digest(custody.observationSha256);
-  if ([custody.privateSocket, custody.networkNone, custody.noMounts, custody.ownedFreshClone].some(value => value !== true)) refuse("ADMISSION_REFUSED");
+  const custody = record(root.custody, ["observationSha256", "workerId", "privateSocket", "networkNone", "noExternalMounts", "ownedFreshClone"]);
+  try { validateCloneCustodyV2(custody, custodyObservation, { attemptId: root.attemptId, workerImageId: software.workerImageId as string }); }
+  catch { refuse("ADMISSION_REFUSED"); }
   const role = record(root.role, ["login", "password", "restrictedLoginObservationSha256", "restricted", "nonOwner", "noSchemaCreate", "noDatabaseCreate", "noPrivilegedMembership"]);
   if (role.login !== `p11_clone_runtime_${root.attemptId}` || typeof role.password !== "string" || !/^[a-f0-9]{64}$/.test(role.password) || /^([a-f0-9])\1+$/.test(role.password)) refuse("ADMISSION_REFUSED");
   digest(role.restrictedLoginObservationSha256);
