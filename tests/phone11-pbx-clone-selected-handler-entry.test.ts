@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { build } from "esbuild";
+import ts from "typescript";
+import { custodyObservation } from "./fixtures/phone11-pbx-clone-custody-v2";
 import type { CloneAdapter, ClonePool } from "../scripts/phone11-pbx-clone/real-pg-adapter";
 import { parseSelectedHandlerInput, runSelectedHandler, SELECTED_BUILD_CONTRACT, SELECTED_PRODUCT_PINS, SELECTED_LANES } from "../scripts/phone11-pbx-clone/selected-handler-entry";
 vi.mock("pg", () => { throw new Error("OFFLINE_DRIVER_IMPORT_FORBIDDEN"); });
@@ -17,6 +19,19 @@ const digest = (value: string | Uint8Array) => createHash("sha256").update(value
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
 describe("selected entry pure refusal; no real product or pg imports", () => {
+  it.each(SELECTED_LANES)("does not inspect separate custody observations while %s is unbound", async lane => {
+    const touch = vi.fn(() => { throw new Error("PRIVATE_OBSERVATION_MUST_NOT_ESCAPE"); });
+    const getter = Object.defineProperty({}, "schema", { enumerable: true, get: touch });
+    const proxy = new Proxy({}, { get: touch, ownKeys: touch, getPrototypeOf: touch, getOwnPropertyDescriptor: touch });
+    for (const observation of [undefined, null, custodyObservation(), {}, getter, proxy]) {
+      const result = await runSelectedHandler(JSON.stringify({ ...input(), lane }), new AbortController().signal, observation);
+      expect(result.code).toBe("ENTRY_BINDING_UNBOUND");
+      expect(result.outcome).toBe("REFUSED"); expect(result.adapterClosed).toBe(false);
+      expect(result.runtimeAcceptance).toBe(false); expect(result.productionAcceptance).toBe(false);
+      expect(JSON.stringify(result)).not.toContain("PRIVATE_OBSERVATION");
+    }
+    expect(touch).not.toHaveBeenCalled();
+  });
   it.each(SELECTED_LANES)("keeps %s execution unbound despite valid-shaped fake pins", async lane => {
     const value = { ...input(), lane };
     expect(() => parseSelectedHandlerInput(JSON.stringify(value))).toThrow("ENTRY_BINDING_UNBOUND");
@@ -169,5 +184,24 @@ describe("static build identities, never evaluate product modules or resulting b
     expect(source).toContain("true, input.tenantId, input.actorUserId");
     expect(source).not.toContain("createCloneAdapterForTests"); expect(source).not.toContain("appRouter"); expect(source).not.toContain("ensurePhoneProvisioningSchema");
     expect(source.indexOf("adapter = await createRealPgAdapter")).toBeLessThan(source.indexOf('await import("../../server/pbx/ivr-router")'));
+  });
+  it("forwards the separate optional observation directly to admission without serializing it", () => {
+    const file = ts.createSourceFile("entry.ts", readFileSync("scripts/phone11-pbx-clone/selected-handler-entry.ts", "utf8"), ts.ScriptTarget.Latest, true);
+    const entry = file.statements.find((node): node is ts.FunctionDeclaration => ts.isFunctionDeclaration(node) && node.name?.text === "runSelectedHandler");
+    expect(entry?.parameters).toHaveLength(3);
+    const observation = entry!.parameters[2];
+    expect(ts.isIdentifier(observation.name)).toBe(true);
+    expect(observation.questionToken).toBeDefined(); expect(observation.type?.kind).toBe(ts.SyntaxKind.UnknownKeyword);
+    const calls: ts.CallExpression[] = [];
+    const visit = (node: ts.Node): void => {
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "admitCloneConnectionInput") calls.push(node);
+      ts.forEachChild(node, visit);
+    };
+    visit(entry!);
+    expect(calls).toHaveLength(1); expect(calls[0].arguments).toHaveLength(2);
+    expect(calls[0].arguments[0].getText(file)).toBe("input.cloneAdmission");
+    const forwarded = calls[0].arguments[1];
+    expect(ts.isIdentifier(forwarded)).toBe(true);
+    expect((forwarded as ts.Identifier).text).toBe((observation.name as ts.Identifier).text);
   });
 });

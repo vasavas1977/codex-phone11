@@ -100,8 +100,8 @@ const SYNTHETIC_ENV = Object.freeze({
   SIP_PORT: "5060", SIP_DEK_SECRET: "phone11-clone-only-synthetic-dek-v1", REDIS_URL: LOCAL_REDIS_URL,
 });
 let used = false;
-/** No CLI/stdout startup. One call per future isolated process; safe statuses only. */
-export async function runSelectedHandler(text: string, signal: AbortSignal): Promise<Readonly<Record<string, string | boolean>>> {
+/** No CLI/stdout startup. Separate in-memory custody data is validated by the adapter, not authenticated here. */
+export async function runSelectedHandler(text: string, signal: AbortSignal, custodyObservation?: unknown): Promise<Readonly<Record<string, string | boolean>>> {
   let adapter: CloneAdapter | undefined;
   let envSet = false;
   let code: string = "UNCLASSIFIED";
@@ -116,7 +116,7 @@ export async function runSelectedHandler(text: string, signal: AbortSignal): Pro
     // Presence only: never read ambient SIP/Redis values or permit them to affect these selected lanes.
     if (Object.keys(process.env).some(key => /^(?:SIP_|REDIS)/i.test(key))) refuse("ENVIRONMENT_REFUSED");
     used = true;
-    adapter = await createRealPgAdapter(admitCloneConnectionInput(input.cloneAdmission), signal);
+    adapter = await createRealPgAdapter(admitCloneConnectionInput(input.cloneAdmission, custodyObservation), signal);
     bindSelectedResources(adapter, signal);
     for (const [key, value] of Object.entries(SYNTHETIC_ENV)) process.env[key] = value;
     envSet = true;
