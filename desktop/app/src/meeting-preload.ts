@@ -67,7 +67,7 @@ type ParticipantTile = {
 };
 const participantTiles = new Map<string, ParticipantTile>();
 const screenShares = new Map<string, { slot: MeetingVideoSlot; tile: HTMLElement; caption: HTMLElement }>();
-let layoutMode: 'gallery' | 'speaker' = 'gallery';
+let layoutMode: 'gallery' | 'speaker' = 'speaker';
 let activeSpeakerSid: string | null = null;
 const el = <T extends HTMLElement = HTMLElement>(id: string): T => document.getElementById(id) as T;
 const status = (message: string) => { el('status').textContent = message; };
@@ -797,7 +797,8 @@ function clearParticipantUi(): void {
   el('participant-list').replaceChildren();
   el('roster-count').textContent = '0';
   el('participant-count').textContent = 'You';
-  el('empty-stage').hidden = false;
+  layoutMode = 'speaker';
+  renderLayout();
 }
 
 function updateRoomUi(): void {

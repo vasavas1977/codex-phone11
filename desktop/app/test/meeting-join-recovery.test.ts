@@ -455,3 +455,46 @@ test('real preload connection-loss event permanently retires controls before imm
   assert.equal(h.calls.includes('phone11:meeting-remove-member'), false);
   await h.leave();
 });
+
+
+function assertLayout(h: Awaited<ReturnType<typeof harness>>, mode: 'speaker' | 'gallery'): void {
+  assert.equal(h.element('layout-speaker').attributes.get('aria-pressed'), String(mode === 'speaker'));
+  assert.equal(h.element('layout-gallery').attributes.get('aria-pressed'), String(mode === 'gallery'));
+  assert.equal(h.element('speaker-view').hidden, mode !== 'speaker');
+  assert.equal(h.element('gallery-grid').hidden, mode !== 'gallery');
+}
+
+test('desktop first connected display defaults to Speaker and keeps explicit Gallery in the same room', async () => {
+  const h = await harness(); h.setConnection(Promise.resolve()); await h.join();
+  assert.equal(h.element('room').hidden, false); assertLayout(h, 'speaker');
+  h.element('layout-gallery').click(); assertLayout(h, 'gallery');
+  const active = h.rooms[0];
+  for (const event of ['TrackMuted', 'TrackUnmuted', 'ParticipantConnected', 'ActiveSpeakersChanged']) {
+    active.emit(event, event === 'ActiveSpeakersChanged' ? [] : active.localParticipant);
+    assertLayout(h, 'gallery');
+  }
+  active.emit('Reconnected'); assertLayout(h, 'gallery');
+  assert.equal(active.microphoneCalls, 0); assert.equal(active.cameraCalls, 0);
+  assert.equal(active.disconnectCalls, 0);
+  h.element('layout-speaker').click(); assertLayout(h, 'speaker');
+});
+
+test('desktop teardown resets Gallery to Speaker and a rejoined window starts with Speaker', async () => {
+  const h = await harness(); h.setConnection(Promise.resolve()); await h.join();
+  h.element('layout-gallery').click(); assertLayout(h, 'gallery');
+  await h.leave(); assertLayout(h, 'speaker');
+  assert.equal(h.element('room').hidden, true);
+  assert.equal(h.rooms[0].disconnectCalls, 1);
+  // leave is terminal for an isolated meeting window. Rejoin creates another preload.
+  const rejoined = await harness(); rejoined.setConnection(Promise.resolve()); await rejoined.join();
+  assertLayout(rejoined, 'speaker');
+});
+
+test('desktop failed admission retries in the same window with the Speaker default', async () => {
+  const h = await harness(); await h.join();
+  assert.match(h.element('prejoin-error').textContent, /Could not join/);
+  assertLayout(h, 'speaker');
+  h.setConnection(Promise.resolve()); await h.join();
+  assert.equal(h.rooms.length, 2); assert.equal(h.element('room').hidden, false);
+  assertLayout(h, 'speaker');
+});

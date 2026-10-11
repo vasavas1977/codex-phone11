@@ -92,13 +92,11 @@ it("renders simultaneous cameras and screens with uncropped nonmirrored shares",
     trackSid: "local-screen-sid",
     videoTrack: { id: "local-screen" },
   });
-  active.remoteParticipants
-    .get("remote")
-    .videoTrackPublications.set("screen", {
-      source: "screen_share",
-      trackSid: "remote-screen-sid",
-      videoTrack: { id: "remote-screen" },
-    });
+  active.remoteParticipants.get("remote").videoTrackPublications.set("screen", {
+    source: "screen_share",
+    trackSid: "remote-screen-sid",
+    videoTrack: { id: "remote-screen" },
+  });
   const html = renderToStaticMarkup(
     createElement(NativeVideoStage, {
       room: active,
@@ -244,3 +242,54 @@ it("counts people receiving audio without counting one person's screen audio twi
   expect(html).toContain("Receiving audio from 1 participant");
   expect(html).not.toContain("Receiving audio from 2 participants");
 });
+
+it(
+  "renders supplied authenticated avatars only for camera-off tiles",
+  () => {
+    const active = room({ localVideo: true, remoteVideo: false });
+    const renderAvatar = vi.fn(({ name }: { name: string }) =>
+      createElement("span", { "data-avatar": name }),
+    );
+    const html = renderToStaticMarkup(
+      createElement(NativeVideoStage, {
+        room: active,
+        reconnecting: false,
+        receiveOnly: false,
+        renderAvatar,
+      }),
+    );
+    expect(html).toContain('data-avatar="Nadia"');
+    expect(renderAvatar).toHaveBeenCalledTimes(1);
+    expect(renderAvatar).toHaveBeenCalledWith({
+      identity: "remote",
+      local: false,
+      name: "Nadia",
+      size: 72,
+    });
+    const gallery = renderToStaticMarkup(
+      createElement(NativeVideoStage, {
+        room: active,
+        reconnecting: false,
+        receiveOnly: false,
+        layout: "gallery",
+        renderAvatar,
+      }),
+    );
+    expect(gallery).toContain('data-avatar="Nadia"');
+    active.remoteParticipants
+      .get("remote")
+      .videoTrackPublications.set("camera", {
+        videoTrack: { id: "remote-camera" },
+      });
+    renderAvatar.mockClear();
+    renderToStaticMarkup(
+      createElement(NativeVideoStage, {
+        room: active,
+        reconnecting: false,
+        receiveOnly: false,
+        renderAvatar,
+      }),
+    );
+    expect(renderAvatar).not.toHaveBeenCalled();
+  },
+);
