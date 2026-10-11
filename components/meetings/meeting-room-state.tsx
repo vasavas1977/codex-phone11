@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import {
   ActivityIndicator,
   Modal,
@@ -27,6 +27,7 @@ import {
   meetingAvatarTenant,
 } from "@/lib/meetings/participant-avatar";
 import { meetingParticipantDisplayName } from "@/lib/meetings/participant-display-name";
+import { meetingViewForRoom, type MeetingViewChoice, type MeetingVideoLayout } from "@/lib/meetings/video-layout";
 import {
   type BrowserMeetingSession,
   type BrowserRoom,
@@ -193,6 +194,18 @@ export function MeetingRoomState({
   const [panel, setPanel] = useState<"participants" | "more" | "audio" | null>(null);
   const [audioOutputs, setAudioOutputs] = useState<string[]>([]);
   const [busyAudioRoute, setBusyAudioRoute] = useState(false);
+  const [viewChoice, setViewChoice] = useState<MeetingViewChoice>({
+    layout: "speaker",
+  });
+  const videoLayout = meetingViewForRoom(viewChoice, nativeRoom);
+  useEffect(() => {
+    // Retire the choice on leave/replacement, including reuse of a previous Room object.
+    setViewChoice((choice) =>
+      choice.room === nativeRoom
+        ? choice
+        : { room: nativeRoom, layout: "speaker" },
+    );
+  }, [nativeRoom]);
   const sipInterrupted = isSipInterrupted?.() ?? false;
   const status = statusCopy(
     snapshot,
@@ -409,11 +422,35 @@ export function MeetingRoomState({
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
+        {nativeRoom && (
+          <View style={styles.viewPicker}>
+            {(["speaker", "gallery"] as const).map(
+              (layout: MeetingVideoLayout) => (
+                <Pressable
+                  key={layout}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${layout === "speaker" ? "Speaker" : "Gallery"} view`}
+                  accessibilityState={{ selected: videoLayout === layout }}
+                  onPress={() => setViewChoice({ room: nativeRoom, layout })}
+                  style={[
+                    styles.viewButton,
+                    videoLayout === layout && styles.viewButtonSelected,
+                  ]}
+                >
+                  <Text style={styles.viewButtonText}>
+                    {layout === "speaker" ? "Speaker" : "Gallery"}
+                  </Text>
+                </Pressable>
+              ),
+            )}
+          </View>
+        )}
         {nativeRoom ? (
           <NativeVideoStage
             room={nativeRoom}
             reconnecting={snapshot.status === "reconnecting"}
             receiveOnly={receiveOnly}
+            layout={videoLayout}
           />
         ) : (
           <View style={styles.stage}>
@@ -837,6 +874,21 @@ const styles = StyleSheet.create({
   status: { fontSize: 13, fontWeight: "600" },
   headerSpacer: { minWidth: 64 },
   content: { flexGrow: 1, padding: 16, gap: 14, paddingBottom: 18 },
+  viewPicker: {
+    flexDirection: "row",
+    alignSelf: "flex-end",
+    backgroundColor: "#232833",
+    padding: 3,
+    borderRadius: 12,
+  },
+  viewButton: {
+    minHeight: 44,
+    paddingHorizontal: 16,
+    justifyContent: "center",
+    borderRadius: 9,
+  },
+  viewButtonSelected: { backgroundColor: "#3B475B" },
+  viewButtonText: { color: "#FFFFFF", fontSize: 14, fontWeight: "600" },
   stage: {
     minHeight: 180,
     borderRadius: 24,
