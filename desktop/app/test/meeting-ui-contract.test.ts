@@ -10,10 +10,12 @@ const preload = readFileSync(resolve(source, 'meeting-preload.ts'), 'utf8');
 const meetingWindow = readFileSync(resolve(source, 'meeting-window.ts'), 'utf8');
 
 test('active desktop meeting has accessible gallery, speaker, and participant controls', () => {
-  assert.match(html, /id="layout-gallery"[^>]*aria-pressed="true"/);
-  assert.match(html, /id="layout-speaker"[^>]*aria-pressed="false"/);
+  assert.match(html, /id="layout-gallery"[^>]*aria-pressed="false"/);
+  assert.match(html, /id="layout-speaker"[^>]*aria-pressed="true"/);
   assert.match(html, /id="participant-roster" aria-label="Participants"/);
   assert.match(html, /id="participant-list" aria-live="polite"/);
+  assert.match(html, /id="gallery-grid" hidden/);
+  assert.match(html, /id="speaker-view"><div/);
   assert.match(html, /id="speaker-main"/);
   assert.match(html, /id="speaker-strip"/);
   assert.match(css, /#gallery-grid\s*\{[^}]*grid-template-columns:\s*repeat\(auto-fit/s);

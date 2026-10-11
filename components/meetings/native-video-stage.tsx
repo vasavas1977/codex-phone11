@@ -1,6 +1,6 @@
 import { VideoView } from "@livekit/react-native";
 import type { VideoTrack } from "livekit-client";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { StyleSheet, Text, View } from "react-native";
 
 import type { BrowserRoom } from "@/lib/meetings/browser-session";
@@ -98,11 +98,19 @@ export function NativeVideoStage({
   reconnecting,
   receiveOnly,
   layout = "speaker",
+  renderAvatar,
 }: {
   room?: BrowserRoom;
   reconnecting: boolean;
   receiveOnly: boolean;
   layout?: MeetingVideoLayout;
+  /** Profile media comes only from the owning authenticated workspace surface. */
+  renderAvatar?: (target: {
+    identity: string;
+    local: boolean;
+    name: string;
+    size: number;
+  }) => ReactNode;
 }) {
   const nativeRoom = room as NativeRoom | undefined;
   const localVideos = meetingVideoPublications(
@@ -249,6 +257,15 @@ export function NativeVideoStage({
               ]}
               testID="camera-off-participant"
             >
+              {renderAvatar?.({
+                identity: video.identity,
+                local: video.local,
+                name: video.label,
+                size:
+                  layout === "speaker" && !isProminent(video.identity)
+                    ? 40
+                    : 72,
+              })}
               <Text style={styles.placeholderName}>{video.label}</Text>
               <Text style={styles.cameraOffText}>Camera off</Text>
             </View>
