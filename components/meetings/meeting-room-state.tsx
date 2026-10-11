@@ -451,6 +451,21 @@ export function MeetingRoomState({
             reconnecting={snapshot.status === "reconnecting"}
             receiveOnly={receiveOnly}
             layout={videoLayout}
+            renderAvatar={target => {
+              const participant = snapshot.participants.find(entry => entry.identity === target.identity && entry.local === target.local);
+              if (!participant) return null;
+              const own = participant.local && ownPhoto?.userId === user?.id && meetingTenantId ? ownPhoto : undefined;
+              const person = participant.local ? undefined : meetingAvatarPerson(participant.identity, photoTenantId, photoPeople);
+              return <ProfileAvatar
+                name={participantLabels.get(participant.identity) ?? target.name}
+                photoUrl={own?.photoUrl ?? person?.photoUrl}
+                photoVersion={own?.photoVersion}
+                tenantId={participant.local ? meetingTenantId : photoTenantId}
+                userId={participant.local ? user?.id : person?.id}
+                size={target.size}
+                accessibilityLabel={`${participantLabels.get(participant.identity) ?? target.name} profile photo`}
+              />;
+            }}
           />
         ) : (
           <View style={styles.stage}>
