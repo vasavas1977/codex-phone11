@@ -104,7 +104,7 @@ it("renders camera and screen together with full-frame screen fitting and tracks
     remotePublications.delete("screen");
     room.localParticipant.videoTrackPublications.clear();
     expect(render()).not.toContain("<video");
-    expect(render()).toContain("Waiting for video");
+    expect(render()).toContain("Camera off");
   } finally { hooks.capture = false; hooks.effects = []; }
 });
 
@@ -121,5 +121,5 @@ it("ignores unavailable subscriptions even when their stale track remains presen
   } as any;
   const html = renderToStaticMarkup(createElement(NativeVideoStage, { room, reconnecting: false, receiveOnly: true }));
   expect(html).not.toContain("<video");
-  expect(html).toContain("listen-only membership");
+  expect(html).toContain("Listen-only membership");
 });
