@@ -54,6 +54,11 @@
       <div id="stage" aria-label="Meeting video">
         <section id="screen-shares" aria-label="Shared screens" hidden></section>
         <div id="gallery-grid" hidden></div>
+        <nav id="gallery-pages" aria-label="Gallery pages" hidden>
+          <button id="gallery-prev" type="button" aria-label="Previous gallery page" aria-controls="gallery-grid" disabled>Previous</button>
+          <span id="gallery-page-status" role="status" aria-live="polite" aria-atomic="true">Page 1 of 1</span>
+          <button id="gallery-next" type="button" aria-label="Next gallery page" aria-controls="gallery-grid" disabled>Next</button>
+        </nav>
         <div id="speaker-view"><div id="speaker-main"></div><div id="speaker-strip"></div></div>
         <div id="empty-stage" hidden>Waiting for another participant…</div>
       </div>
