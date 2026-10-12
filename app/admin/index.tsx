@@ -23,7 +23,7 @@ import { router } from "expo-router";
 import { ScreenContainer } from "@/components/screen-container";
 import { portalSignInRoute } from "@/constants/oauth";
 import { IconSymbol } from "@/components/ui/icon-symbol";
-import { useAuth } from "@/hooks/use-auth";
+import { useAdminAuthState } from "@/components/admin/use-admin-auth-state";
 import { useColors } from "@/hooks/use-colors";
 import {
   type PbxManagementCapabilities,
@@ -49,7 +49,12 @@ export default function AdminDashboard() {
   const wide = width >= 1000;
   const [refreshing, setRefreshing] = useState(false);
 
-  const { user } = useAuth({ autoFetch: false });
+  const {
+    user,
+    checking: authChecking,
+    unavailable: authUnavailable,
+    retry: retryAuth,
+  } = useAdminAuthState();
   const workspace = usePbxAdminWorkspace();
   const tenantQuery = useTenant(Boolean(user));
   const canManage = ["owner", "admin"].includes(
@@ -198,6 +203,27 @@ export default function AdminDashboard() {
         return "#9BA1A6";
     }
   };
+
+  if (authChecking) {
+    return (
+      <AdminAccessState
+        title="Checking your session"
+        detail="Phone11 is confirming your signed-in account."
+        loading
+      />
+    );
+  }
+
+  if (authUnavailable) {
+    return (
+      <AdminAccessState
+        title="Session verification unavailable"
+        detail="Phone11 could not verify your session. Try again."
+        actionLabel="Try again"
+        onAction={() => void retryAuth()}
+      />
+    );
+  }
 
   if (!user) {
     return (
