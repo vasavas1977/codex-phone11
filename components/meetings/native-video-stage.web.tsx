@@ -1,10 +1,12 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import type { AudioTrack, VideoTrack } from "livekit-client";
 
 import type { BrowserRoom } from "@/lib/meetings/browser-session";
 import { meetingParticipantDisplayName } from "@/lib/meetings/participant-display-name";
 import {
+  meetingGalleryColumns,
+  meetingGalleryPage,
   meetingSpeakerIdentity,
   orderMeetingVideoTiles,
   type MeetingVideoLayout,
@@ -267,8 +269,75 @@ export function NativeVideoStage({
     speaker,
   );
 
+  const [galleryWidth, setGalleryWidth] = useState(0);
+  const columns = meetingGalleryColumns(galleryWidth);
+  const gallerySize = {
+    width: `${100 / columns - (columns > 1 ? 0.7 : 0)}%` as `${number}%`,
+    height: 180,
+    flexBasis: `${100 / columns - (columns > 1 ? 0.7 : 0)}%` as `${number}%`,
+    flexGrow: 0,
+  };
+  const pageLifetime = useMemo(() => ({ room, layout }), [room, layout]);
+  const activePageLifetime = useRef<typeof pageLifetime | null>(null);
+  const [pageChoice, setPageChoice] = useState({
+    lifetime: pageLifetime,
+    index: 0,
+  });
+  const cameraTiles = tiles.filter((video) => !video.screenShare);
+  const gallery = meetingGalleryPage(
+    cameraTiles.length,
+    columns * 2,
+    pageChoice.lifetime === pageLifetime ? pageChoice.index : 0,
+  );
+  const visibleCameraKeys = new Set(
+    cameraTiles.slice(gallery.start, gallery.end).map((video) => video.key),
+  );
+  const pageHidden = (video: (typeof tiles)[number]) =>
+    layout === "gallery" &&
+    !video.screenShare &&
+    !visibleCameraKeys.has(video.key);
+  useEffect(() => {
+    activePageLifetime.current = pageLifetime;
+    return () => {
+      if (activePageLifetime.current === pageLifetime)
+        activePageLifetime.current = null;
+    };
+  }, [pageLifetime]);
+  useEffect(() => {
+    // Persist the clamp so a later roster expansion cannot revive an out-of-range page.
+    setPageChoice((current) =>
+      current.lifetime === pageLifetime && current.index !== gallery.index
+        ? { lifetime: pageLifetime, index: gallery.index }
+        : current,
+    );
+  }, [pageLifetime, gallery.index]);
+  const changePage = (delta: number) => {
+    if (
+      delta === 0 ||
+      layout !== "gallery" ||
+      activePageLifetime.current !== pageLifetime
+    )
+      return;
+    setPageChoice((current) => {
+      if (activePageLifetime.current !== pageLifetime) return current;
+      const index = current.lifetime === pageLifetime ? current.index : 0;
+      return {
+        lifetime: pageLifetime,
+        index: meetingGalleryPage(
+          cameraTiles.length,
+          columns * 2,
+          index + delta,
+        ).index,
+      };
+    });
+  };
+
   return (
-    <View style={styles.stage} testID="web-video-stage">
+    <View
+      style={styles.stage}
+      onLayout={(event) => setGalleryWidth(event.nativeEvent.layout.width)}
+      testID="web-video-stage"
+    >
       {tiles.length === 0 && (
         <View style={styles.empty}>
           <Text style={styles.emptyTitle}>
@@ -294,7 +363,12 @@ export function NativeVideoStage({
                 styles.thumbnailTile,
               video.screenShare && styles.screenTile,
               !video.track && styles.cameraOff,
+              layout === "gallery" && !video.screenShare && gallerySize,
+              pageHidden(video) && styles.pageHidden,
             ]}
+            pointerEvents={pageHidden(video) ? "none" : "auto"}
+            aria-hidden={pageHidden(video)}
+            {...{ inert: pageHidden(video) || undefined }}
             testID={
               video.screenShare
                 ? "shared-screen"
@@ -336,6 +410,35 @@ export function NativeVideoStage({
           </View>
         ))}
       </View>
+      {layout === "gallery" && cameraTiles.length > 0 && (
+        <View style={styles.pageControls}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Previous Gallery page"
+            accessibilityState={{ disabled: gallery.index === 0 }}
+            disabled={gallery.index === 0}
+            onPress={() => changePage(-1)}
+            style={styles.pageButton}
+          >
+            <Text style={styles.pageButtonText}>Previous</Text>
+          </Pressable>
+          <Text style={styles.pageCount} accessibilityLiveRegion="polite">
+            Gallery page {gallery.index + 1} of {gallery.pages}
+          </Text>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Next Gallery page"
+            accessibilityState={{
+              disabled: gallery.index === gallery.pages - 1,
+            }}
+            disabled={gallery.index === gallery.pages - 1}
+            onPress={() => changePage(1)}
+            style={styles.pageButton}
+          >
+            <Text style={styles.pageButtonText}>Next</Text>
+          </Pressable>
+        </View>
+      )}
       {receiveOnly && tiles.length > 0 && (
         <Text style={styles.membershipState}>Listen-only membership</Text>
       )}
@@ -379,7 +482,33 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     backgroundColor: "#191D26",
   },
-  grid: { flexDirection: "row", flexWrap: "wrap", gap: 2, minHeight: 250 },
+  grid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 2,
+    minHeight: 250,
+    position: "relative",
+  },
+  // Keep positive-sized media mounted in the grid viewport: opacity does not
+  // trigger the retained SDK's zero-size/offscreen adaptive visibility pause.
+  pageHidden: { position: "absolute", top: 0, left: 0, opacity: 0 },
+  pageControls: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    padding: 8,
+    gap: 8,
+  },
+  pageButton: {
+    minWidth: 64,
+    minHeight: 44,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 8,
+    backgroundColor: "#293244",
+  },
+  pageButtonText: { color: "#FFFFFF", fontSize: 14 },
+  pageCount: { color: "#FFFFFF", fontSize: 13 },
   tile: {
     minHeight: 180,
     flexBasis: "49%",

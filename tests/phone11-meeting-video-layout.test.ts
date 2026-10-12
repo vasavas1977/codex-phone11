@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  meetingGalleryColumns,
+  meetingGalleryPage,
+  meetingGallerySwipe,
   meetingSpeakerIdentity,
   meetingViewForRoom,
   orderMeetingVideoTiles,
@@ -101,4 +104,47 @@ describe("room-scoped local viewing", () => {
       expect(ordered).toHaveLength(tiles.length);
     },
   );
+});
+
+describe("bounded Gallery presentation", () => {
+  it("uses actual available width with bounded columns and safe fallback", () => {
+    expect([0, NaN, Infinity].map(meetingGalleryColumns)).toEqual([2, 2, 2]);
+    expect([150, 320, 360, 500, 800, 5000].map(meetingGalleryColumns)).toEqual([
+      1, 1, 2, 3, 4, 4,
+    ]);
+  });
+  it("clamps pages for empty, shrink and invalid numeric inputs", () => {
+    expect(meetingGalleryPage(11, 4, 9)).toEqual({
+      index: 2,
+      pages: 3,
+      start: 8,
+      end: 12,
+    });
+    expect(meetingGalleryPage(0, 4, 2)).toEqual({
+      index: 0,
+      pages: 1,
+      start: 0,
+      end: 4,
+    });
+    expect(meetingGalleryPage(NaN, NaN, NaN)).toEqual({
+      index: 0,
+      pages: 1,
+      start: 0,
+      end: 4,
+    });
+    expect(meetingGalleryPage(3, 4, -4).index).toBe(0);
+  });
+  it("requires horizontal distance/dominance, finite coordinates and a short completed touch", () => {
+    const start = { x: 100, y: 100, at: 1000 };
+    expect(meetingGallerySwipe(start, { x: 36, y: 100, at: 2000 })).toBe(1);
+    expect(meetingGallerySwipe(start, { x: 164, y: 100, at: 1001 })).toBe(-1);
+    for (const end of [
+      { x: 37, y: 100, at: 1100 },
+      { x: 0, y: 200, at: 1100 },
+      { x: 0, y: 100, at: 2001 },
+      { x: 0, y: 100, at: 999 },
+      { x: NaN, y: 100, at: 1100 },
+    ])
+      expect(meetingGallerySwipe(start, end)).toBe(0);
+  });
 });
