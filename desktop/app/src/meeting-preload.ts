@@ -68,6 +68,7 @@ type ParticipantTile = {
 const participantTiles = new Map<string, ParticipantTile>();
 const screenShares = new Map<string, { slot: MeetingVideoSlot; tile: HTMLElement; caption: HTMLElement }>();
 let layoutMode: 'gallery' | 'speaker' = 'speaker';
+let galleryPage = 0;
 let activeSpeakerSid: string | null = null;
 const el = <T extends HTMLElement = HTMLElement>(id: string): T => document.getElementById(id) as T;
 const status = (message: string) => { el('status').textContent = message; };
@@ -670,10 +671,33 @@ function renderLayout(): void {
   speakerButton.setAttribute('aria-pressed', String(layoutMode === 'speaker'));
   gallery.hidden = layoutMode !== 'gallery';
   speakerView.hidden = layoutMode !== 'speaker';
+  el('gallery-pages').hidden = layoutMode !== 'gallery' || tiles.length === 0;
   if (layoutMode === 'gallery') {
-    gallery.replaceChildren(...tiles.map(([, item]) => item.tile));
+    // Off-page cameras keep a positive-size attachment; SDK-owned adaptiveStream remains unchanged.
+    const columns = Math.min(4, Math.max(1, Math.floor(((gallery.clientWidth || 240) + 10) / 250)));
+    const rows = Math.min(3, Math.max(1, Math.floor(((gallery.clientHeight || 180) + 10) / 190)));
+    const capacity = columns * rows;
+    const pages = Math.max(1, Math.ceil(tiles.length / capacity));
+    galleryPage = Math.min(Math.max(0, galleryPage), pages - 1);
+    gallery.style.gridTemplateColumns = `repeat(${columns}, minmax(0, 1fr))`;
+    gallery.style.gridTemplateRows = `repeat(${rows}, minmax(0, 1fr))`;
+    el<HTMLButtonElement>('gallery-prev').disabled = galleryPage === 0;
+    el<HTMLButtonElement>('gallery-next').disabled = galleryPage === pages - 1;
+    el('gallery-page-status').textContent = `Page ${galleryPage + 1} of ${pages} · ${tiles.length} participant${tiles.length === 1 ? '' : 's'}`;
+    tiles.forEach(([, item], index) => {
+      if (item.tile.parentElement !== gallery) gallery.appendChild(item.tile);
+      const offPage = index < galleryPage * capacity || index >= (galleryPage + 1) * capacity;
+      item.tile.classList.toggle('gallery-offpage', offPage);
+      item.tile.inert = offPage;
+      item.tile.setAttribute('aria-hidden', String(offPage));
+    });
     el('stage').setAttribute('aria-label', 'Meeting video, gallery view');
   } else {
+    for (const [, item] of tiles) {
+      item.tile.classList.toggle('gallery-offpage', false);
+      item.tile.inert = false;
+      item.tile.setAttribute('aria-hidden', 'false');
+    }
     const main = el('speaker-main');
     const strip = el('speaker-strip');
     main.replaceChildren();
@@ -798,6 +822,7 @@ function clearParticipantUi(): void {
   el('roster-count').textContent = '0';
   el('participant-count').textContent = 'You';
   layoutMode = 'speaker';
+  galleryPage = 0;
   renderLayout();
 }
 
@@ -1450,6 +1475,19 @@ async function load(): Promise<void> {
   el<HTMLSelectElement>('audio-output').addEventListener('change', () => { void changeAudioOutput(); });
   navigator.mediaDevices?.addEventListener('devicechange', () => { if (room) void refreshAudioOutputs(); });
   window.addEventListener('beforeunload', stopPrejoinAudio, { once: true });
+  el<HTMLButtonElement>('gallery-prev').addEventListener('click', () => {
+    if (room && layoutMode === 'gallery') { galleryPage = Math.max(0, galleryPage - 1); renderLayout(); }
+  });
+  el<HTMLButtonElement>('gallery-next').addEventListener('click', () => {
+    if (room && layoutMode === 'gallery') { galleryPage++; renderLayout(); }
+  });
+  const resizeGallery = () => { if (room && layoutMode === 'gallery') renderLayout(); };
+  window.addEventListener('resize', resizeGallery);
+  if (typeof ResizeObserver !== 'undefined') {
+    const galleryResize = new ResizeObserver(resizeGallery);
+    galleryResize.observe(el('gallery-grid'));
+    window.addEventListener('beforeunload', () => galleryResize.disconnect(), { once: true });
+  }
   el<HTMLButtonElement>('layout-gallery').addEventListener('click', () => {
     layoutMode = 'gallery';
     if (room) renderLayout();

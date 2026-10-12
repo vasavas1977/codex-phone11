@@ -8,6 +8,7 @@ const { renderToStaticMarkup } = createRequire(import.meta.url)(
 ) as { renderToStaticMarkup(node: ReactNode): string };
 
 vi.mock("react-native", () => ({
+  Pressable: ({ children }: any) => createElement("button", null, children),
   View: ({ children, style, testID }: any) =>
     createElement(
       "div",
@@ -243,53 +244,48 @@ it("counts people receiving audio without counting one person's screen audio twi
   expect(html).not.toContain("Receiving audio from 2 participants");
 });
 
-it(
-  "renders supplied authenticated avatars only for camera-off tiles",
-  () => {
-    const active = room({ localVideo: true, remoteVideo: false });
-    const renderAvatar = vi.fn(({ name }: { name: string }) =>
-      createElement("span", { "data-avatar": name }),
-    );
-    const html = renderToStaticMarkup(
-      createElement(NativeVideoStage, {
-        room: active,
-        reconnecting: false,
-        receiveOnly: false,
-        renderAvatar,
-      }),
-    );
-    expect(html).toContain('data-avatar="Nadia"');
-    expect(renderAvatar).toHaveBeenCalledTimes(1);
-    expect(renderAvatar).toHaveBeenCalledWith({
-      identity: "remote",
-      local: false,
-      name: "Nadia",
-      size: 72,
-    });
-    const gallery = renderToStaticMarkup(
-      createElement(NativeVideoStage, {
-        room: active,
-        reconnecting: false,
-        receiveOnly: false,
-        layout: "gallery",
-        renderAvatar,
-      }),
-    );
-    expect(gallery).toContain('data-avatar="Nadia"');
-    active.remoteParticipants
-      .get("remote")
-      .videoTrackPublications.set("camera", {
-        videoTrack: { id: "remote-camera" },
-      });
-    renderAvatar.mockClear();
-    renderToStaticMarkup(
-      createElement(NativeVideoStage, {
-        room: active,
-        reconnecting: false,
-        receiveOnly: false,
-        renderAvatar,
-      }),
-    );
-    expect(renderAvatar).not.toHaveBeenCalled();
-  },
-);
+it("renders supplied authenticated avatars only for camera-off tiles", () => {
+  const active = room({ localVideo: true, remoteVideo: false });
+  const renderAvatar = vi.fn(({ name }: { name: string }) =>
+    createElement("span", { "data-avatar": name }),
+  );
+  const html = renderToStaticMarkup(
+    createElement(NativeVideoStage, {
+      room: active,
+      reconnecting: false,
+      receiveOnly: false,
+      renderAvatar,
+    }),
+  );
+  expect(html).toContain('data-avatar="Nadia"');
+  expect(renderAvatar).toHaveBeenCalledTimes(1);
+  expect(renderAvatar).toHaveBeenCalledWith({
+    identity: "remote",
+    local: false,
+    name: "Nadia",
+    size: 72,
+  });
+  const gallery = renderToStaticMarkup(
+    createElement(NativeVideoStage, {
+      room: active,
+      reconnecting: false,
+      receiveOnly: false,
+      layout: "gallery",
+      renderAvatar,
+    }),
+  );
+  expect(gallery).toContain('data-avatar="Nadia"');
+  active.remoteParticipants.get("remote").videoTrackPublications.set("camera", {
+    videoTrack: { id: "remote-camera" },
+  });
+  renderAvatar.mockClear();
+  renderToStaticMarkup(
+    createElement(NativeVideoStage, {
+      room: active,
+      reconnecting: false,
+      receiveOnly: false,
+      renderAvatar,
+    }),
+  );
+  expect(renderAvatar).not.toHaveBeenCalled();
+});
