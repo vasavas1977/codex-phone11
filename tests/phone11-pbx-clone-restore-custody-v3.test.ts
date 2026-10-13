@@ -23,7 +23,7 @@ function fixture() {
     archives: { backup: { ...archive("origin.dump", 123456), customerDataProtected: true, credentialMaterialMayBePresent: true }, roles: { ...archive("origin-roles.sql", 54321), rolePasswordsIncluded: false } },
     custody: { runDirectory: directory(ROOT, 0, 0), data: directory(`${ROOT}/data`), socket: directory(`${ROOT}/socket`), secrets: directory(`${ROOT}/secrets`), secretLeaves: ["password", "pgpass", "pg_hba.conf", "runtime-password"].map(name => ({ path: `${ROOT}/secrets/${name}`, uid: UID, gid: GID, mode: 0o400, regular: true, links: 1, cloneOnly: true })) },
     pg: engine(true), worker: engine(false),
-    semantics: { canonicalization: "phone11-catalog-semantics-without-oids/v1", comparisonPhase: "POST_RESTORE_PRE_RUNTIME_ROLE", excludedCustodian: `p11_clone_custodian_${ATTEMPT.slice(0, 16)}`, sourceAbsentBefore: true, sourceBefore: structuredClone(catalog), sourceAfter: structuredClone(catalog), restored: structuredClone(catalog) },
+    semantics: { canonicalization: "phone11-catalog-semantics-component-arrays/v2", comparisonPhase: "POST_RESTORE_PRE_RUNTIME_ROLE", excludedCustodian: `p11_clone_custodian_${ATTEMPT.slice(0, 16)}`, sourceAbsentBefore: true, sourceBefore: structuredClone(catalog), sourceAfter: structuredClone(catalog), restored: structuredClone(catalog) },
     sourceCensusRole: { login: "phone11ai", sourceSystemIdentifier: RESTORE_SOURCE_SYSTEM_V3, superuser: true, restricted: false },
     restrictedLogin: { attemptId: ATTEMPT, runId: RUN, cloneSystemIdentifier: "7638134557377753123", sessionUser: `p11_clone_runtime_${ATTEMPT}`, currentUser: `p11_clone_runtime_${ATTEMPT}`, loginObserved: true, authenticationMethod: "password", nonOwner: true, ownedObjectCount: 0, schemaCreate: false, databaseCreate: false, privilegedMembership: false, sourceLoginEquivalent: false, attributes: { login: true, superuser: false, bypassRls: false, createDb: false, createRole: false, replication: false, inherits: false }, memberships: [] as string[] },
   };
@@ -101,6 +101,19 @@ describe("restored clone v3 consistency only; mock observations confer no runtim
     ["preexisting source custodian", f => { f.observation.semantics.sourceAbsentBefore = false; }],
   ] as [string, (f: Fixture) => void][]) ("refuses %s despite an internally recomputed observation hash", (_label, mutate) => {
     const f = fixture(); mutate(f); rebind(f); expect(() => validate(f)).toThrow(/^RESTORE_CUSTODY_REFUSED$/);
+  });
+  it.each([
+    ["legacy v1", (f: Fixture) => { f.observation.semantics.canonicalization = "phone11-catalog-semantics-without-oids/v1"; }],
+    ["unknown version", (f: Fixture) => { f.observation.semantics.canonicalization = "phone11-catalog-semantics-component-arrays/v999"; }],
+    ["missing version", (f: Fixture) => { Reflect.deleteProperty(f.observation.semantics, "canonicalization"); }],
+  ] as const)("rejects %s canonicalization even with the observation digest repinned", (_label, mutate) => {
+    const f = fixture(); mutate(f); rebind(f);
+    expect(() => validate(f)).toThrow(/^RESTORE_CUSTODY_REFUSED$/);
+  });
+  it.each(["sourceAfter", "restored"] as const)("rejects mixed semantic digests on %s under the v2 tag", side => {
+    const f = fixture(); f.observation.semantics[side].memberships.sha256 = digest({ mockLegacyDelimiterMembershipRows: [["a.b.c.g", [true, false, true]]] });
+    rebind(f); expect(f.observation.semantics.canonicalization).toBe("phone11-catalog-semantics-component-arrays/v2");
+    expect(() => validate(f)).toThrow(/^RESTORE_CUSTODY_REFUSED$/);
   });
   it("rejects forged equal digest strings against separately pinned source semantics", () => {
     const f = fixture(); for (const catalog of [f.observation.semantics.sourceBefore, f.observation.semantics.sourceAfter, f.observation.semantics.restored]) catalog.functions.sha256 = H;
