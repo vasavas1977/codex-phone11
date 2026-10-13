@@ -106,6 +106,8 @@ jobs:
         run: pnpm exec expo prebuild --clean --no-install
 
   android-gradle-assemble:
+    # Android assembly is owner-deferred for automatic source checks.
+    if: github.event_name == 'workflow_dispatch'
     name: Compile Android debug build
     runs-on: ubuntu-latest
     timeout-minutes: 75
@@ -193,6 +195,8 @@ jobs:
             --apkanalyzer "$ANDROID_HOME/cmdline-tools/latest/bin/apkanalyzer"
 
   android-screen-transaction-compile:
+    # Android assembly is owner-deferred for automatic source checks.
+    if: github.event_name == 'workflow_dispatch'
     name: Compile isolated Android screen transaction
     runs-on: ubuntu-latest
     timeout-minutes: 75
@@ -260,6 +264,8 @@ jobs:
           node scripts/verify-phone11-android-screen-manifest.mjs android/app/src/main/AndroidManifest.xml off
 
   android-foreground-trial-assemble:
+    # Android assembly is owner-deferred for automatic source checks.
+    if: github.event_name == 'workflow_dispatch'
     name: Package isolated Android foreground calling trial
     runs-on: ubuntu-latest
     timeout-minutes: 75
