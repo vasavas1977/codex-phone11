@@ -53,6 +53,22 @@ beforeEach(() => {
 });
 
 describe("routing writes hold current administrator authority", () => {
+  it.each(cases.slice(0, 4))("%s invalidates tenant-scoped and legacy IVR XML only after commit", async (_name, invoke) => {
+    await invoke(ivrRouter.createCaller(context()));
+    expect(state.invalidate).toHaveBeenCalledWith("dialplan:ivr:7:4");
+    expect(state.invalidate).toHaveBeenCalledWith("dialplan:ivr:4");
+    expect(state.committed).toBe(true);
+  });
+  it("preserves both IVR cache entries when the write transaction fails to commit", async () => {
+    state.withTransaction.mockImplementationOnce(async fn => {
+      await fn({ query: state.transactionQuery });
+      throw new Error("synthetic commit refusal");
+    });
+    await expect(ivrRouter.createCaller(context()).ivr.update({ id: 4, name: "Menu" }))
+      .rejects.toThrow("synthetic commit refusal");
+    expect(state.invalidate).not.toHaveBeenCalled();
+    expect(state.committed).toBe(false);
+  });
   it.each([
     ["ivr", "IVR", cases[0][1]],
     ["ringGroups", "Ring groups", cases[4][1]],
@@ -250,5 +266,69 @@ describe.skipIf(!databaseUrl)("routing authority on an owned disposable PostgreS
       expect((await pool.query("SELECT count(*)::int count FROM ring_groups")).rows[0].count).toBe(1);
       await expect(create()).rejects.toMatchObject({ code: "FORBIDDEN" });
     } finally { release(); await revoker.query("ROLLBACK"); revoker.release(); }
+  });
+});
+
+
+describe("IVR retry exit destination writes", () => {
+  it.each(["transfer", "voicemail"] as const)("validates the %s exit extension in the write tenant", async exit_action => {
+    await ivrRouter.createCaller(context()).ivr.create({ tenant_id: 7, name: "Menu", exit_action, exit_target: " 3001 " });
+    const lookups = state.transactionQuery.mock.calls.filter(([sql]) => /FROM extensions/.test(String(sql)));
+    expect(lookups).toHaveLength(1);
+    expect(lookups[0][1]).toEqual([7, "3001"]);
+    expect(lookups[0][0]).toMatch(/status = 'active' AND deleted_at IS NULL/);
+    const insert = state.transactionQuery.mock.calls.find(([sql]) => /INSERT INTO ivr_menus/.test(String(sql)))!;
+    expect(insert[1][10]).toBe("3001");
+  });
+  it.each(["transfer", "voicemail"] as const)("rejects a foreign/inactive %s exit before writing", async exit_action => {
+    const original = state.transactionQuery.getMockImplementation()!;
+    state.transactionQuery.mockImplementation(async (sql, params) => /FROM extensions/.test(String(sql)) ? { rows: [] } : original(sql, params));
+    await expect(ivrRouter.createCaller(context()).ivr.create({ tenant_id: 7, name: "Menu", exit_action, exit_target: "3001" }))
+      .rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(state.transactionQuery.mock.calls.some(([sql]) => dml(sql))).toBe(false);
+    expect(state.invalidate).not.toHaveBeenCalled();
+  });
+  it.each([undefined, "", "3001 XML foreign", "${destination_number}"])("rejects an invalid transfer destination %s", async exit_target => {
+    await expect(ivrRouter.createCaller(context()).ivr.create({ tenant_id: 7, name: "Menu", exit_action: "transfer", exit_target }))
+      .rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(state.transactionQuery.mock.calls.some(([sql]) => dml(sql))).toBe(false);
+  });
+  it("validates a target-only update against the locked stored exit action", async () => {
+    const original = state.transactionQuery.getMockImplementation()!;
+    state.transactionQuery.mockImplementation(async (sql, params) => /SELECT exit_action, exit_target/.test(String(sql))
+      ? { rows: [{ exit_action: "voicemail", exit_target: "3001" }] } : /FROM extensions/.test(String(sql)) ? { rows: [] } : original(sql, params));
+    await expect(ivrRouter.createCaller(context()).ivr.update({ id: 4, exit_target: "4001" }))
+      .rejects.toMatchObject({ code: "BAD_REQUEST" });
+    const read = state.transactionQuery.mock.calls.find(([sql]) => /SELECT exit_action, exit_target/.test(String(sql)))!;
+    expect(read[0]).toContain("FOR UPDATE");
+    expect(read[1]).toEqual([4, 7]);
+    expect(state.transactionQuery.mock.calls.some(([sql]) => dml(sql))).toBe(false);
+  });
+  it("validates the existing destination when only the exit action changes", async () => {
+    const original = state.transactionQuery.getMockImplementation()!;
+    state.transactionQuery.mockImplementation(async (sql, params) => /SELECT exit_action, exit_target/.test(String(sql))
+      ? { rows: [{ exit_action: "voicemail", exit_target: "3001" }] } : original(sql, params));
+    await ivrRouter.createCaller(context()).ivr.update({ id: 4, exit_action: "transfer" });
+    expect(state.transactionQuery.mock.calls.find(([sql]) => /FROM extensions/.test(String(sql)))?.[1]).toEqual([7, "3001"]);
+  });
+  it("clears a previous destination when changing the exit to hangup", async () => {
+    const original = state.transactionQuery.getMockImplementation()!;
+    state.transactionQuery.mockImplementation(async (sql, params) => /SELECT exit_action, exit_target/.test(String(sql))
+      ? { rows: [{ exit_action: "voicemail", exit_target: "3001" }] } : original(sql, params));
+    await ivrRouter.createCaller(context()).ivr.update({ id: 4, exit_action: "hangup" });
+    const update = state.transactionQuery.mock.calls.find(([sql]) => /UPDATE ivr_menus/.test(String(sql)))!;
+    expect(update[0]).toContain("exit_target");
+    expect(update[1]).toContain(null);
+    expect(state.transactionQuery.mock.calls.some(([sql]) => /FROM extensions/.test(String(sql)))).toBe(false);
+  });
+  it("rejects a destination paired with a hangup exit", async () => {
+    await expect(ivrRouter.createCaller(context()).ivr.create({ tenant_id: 7, name: "Menu", exit_action: "hangup", exit_target: "3001" }))
+      .rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(state.transactionQuery.mock.calls.some(([sql]) => dml(sql))).toBe(false);
+  });
+  it.each(["name", "greeting_file", "greeting_tts", "invalid_sound"] as const)("rejects XML controls in %s before writes", async field => {
+    await expect(ivrRouter.createCaller(context()).ivr.create({ tenant_id: 7, name: "Menu", [field]: "bad\u0000value" }))
+      .rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(state.withTransaction).not.toHaveBeenCalled();
   });
 });

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type pg from "pg";
+import { custodyClaim, custodyObservation } from "./fixtures/phone11-pbx-clone-custody-v2";
 vi.mock("pg", () => { throw new Error("OFFLINE_PG_IMPORT_FORBIDDEN"); });
 import {
   admitCloneConnectionInput, assertNoAmbientConnectionKeys, CLONE_SOCKET, CLONE_SOURCE,
@@ -11,15 +12,15 @@ const H = "a1".repeat(32);
 const ATTEMPT = "a1".repeat(16);
 function input() {
   return {
-    schema: "phone11-pbx-clone-real-pg-admission/v1", purpose: "CLONE_HANDLER_REHEARSAL", attemptId: ATTEMPT,
+    schema: "phone11-pbx-clone-real-pg-admission/v2", purpose: "CLONE_HANDLER_REHEARSAL", attemptId: ATTEMPT,
     target: { socketDirectory: CLONE_SOCKET, database: "phone11ai", port: 5432, sourceSystemIdentifier: "7638134557377753122", cloneSystemIdentifier: "7638134557377753123" },
     source: { candidateCommit: CLONE_SOURCE, rollbackArtifactSha256: H },
     software: { workerImageId: `sha256:${H}`, selectedManifest: `sha256:${H}`, nodeRuntimeSha256: H, nodeVersion: "22.14.0", driverBundleSha256: H },
-    custody: { observationSha256: H, privateSocket: true, networkNone: true, noMounts: true, ownedFreshClone: true },
+    custody: custodyClaim(),
     role: { login: `p11_clone_runtime_${ATTEMPT}`, password: "a1".repeat(32), restrictedLoginObservationSha256: H, restricted: true, nonOwner: true, noSchemaCreate: true, noDatabaseCreate: true, noPrivilegedMembership: true },
   };
 }
-function token(value = input()) { return admitCloneConnectionInput(JSON.stringify(value)); }
+function token(value = input()) { return admitCloneConnectionInput(JSON.stringify(value), custodyObservation()); }
 function deferred<T>() {
   let resolve!: (value: T) => void; let reject!: (error: unknown) => void;
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
@@ -74,7 +75,7 @@ describe("pure clone admission (no actual driver connection)", () => {
     ["node unbound", (v: ReturnType<typeof input>) => { v.software.nodeVersion = ""; }],
     ["nonprivate socket", (v: ReturnType<typeof input>) => { v.custody.privateSocket = false; }],
     ["network", (v: ReturnType<typeof input>) => { v.custody.networkNone = false; }],
-    ["mounts", (v: ReturnType<typeof input>) => { v.custody.noMounts = false; }],
+    ["mounts", (v: ReturnType<typeof input>) => { v.custody.noExternalMounts = false; }],
     ["role substituted", (v: ReturnType<typeof input>) => { v.role.login = "phone11ai"; }],
     ["password unset", (v: ReturnType<typeof input>) => { v.role.password = ""; }],
     ["whitespace password", (v: ReturnType<typeof input>) => { v.role.password = " ".repeat(64); }],
