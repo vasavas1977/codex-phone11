@@ -7,12 +7,22 @@ import { query } from "./db";
 import { cacheGetOrSet } from "./redis";
 import { legacyVoicemailAction, protectedVoicemailAction, voicemailHookReady } from "./voicemail-dialplan";
 
+// XML 1.0 permits tab, LF and CR, but excludes other C0 controls, lone
+// surrogates and U+FFFE/U+FFFF. The Unicode flag preserves valid astral pairs.
+const invalidXmlCharacter = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\uD800-\uDFFF\uFFFE\uFFFF]/u;
+
+/** Preserve the attribute's literal value, including intentional FS expressions. */
+function escapeXmlAttribute(value: unknown): string {
+  return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // IVR Dialplan XML
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export async function generateIvrDialplan(menuId: number, tenantId: number): Promise<string> {
-  return cacheGetOrSet(`dialplan:ivr:${menuId}`, 300, async () => {
+  return cacheGetOrSet(`dialplan:ivr:${tenantId}:${menuId}`, 300, async () => {
     const menuRes = await query(`SELECT * FROM ivr_menus WHERE id = $1 AND tenant_id = $2`, [menuId, tenantId]);
     const menu = menuRes.rows[0];
     if (!menu) return generateNotFoundXml();
@@ -23,10 +33,23 @@ export async function generateIvrDialplan(menuId: number, tenantId: number): Pro
     );
     const actions = actionsRes.rows;
 
+    // Do not delete/replace invalid characters: that could change a stored
+    // destination. Legacy invalid data yields the existing safe hangup XML.
+    const xmlValues = [menu.name, menu.greeting_file, menu.greeting_tts,
+      menu.invalid_sound, menu.timeout_ms, menu.max_retries, menu.digit_timeout_ms,
+      ...actions.flatMap((action: any) => [action.digit, action.target])];
+    if (xmlValues.some(value => value != null && invalidXmlCharacter.test(String(value)))) {
+      return generateNotFoundXml();
+    }
+    // Retain the old four-digit collection window for shorter menus; accepted
+    // five-digit literal entries must also be reflected in the configuration.
+    const digitLength = actions.some((action: any) => /^[0-9*#]{5}$/.test(String(action.digit))) ? 5 : 4;
+    const exitInvocation = await getIvrExitInvocation(menu, tenantId);
+
     // Build IVR entries
     const entries = actions.map((a: any) => {
       const actionXml = getActionXml(a);
-      return `        <entry action="menu-exec-app" digits="${a.digit}" param="${actionXml}"/>`;
+      return `        <entry action="menu-exec-app" digits="${escapeXmlAttribute(a.digit)}" param="${escapeXmlAttribute(actionXml)}"/>`;
     }).join("\n");
 
     // Greeting
@@ -37,7 +60,7 @@ export async function generateIvrDialplan(menuId: number, tenantId: number): Pro
 <document type="freeswitch/xml">
   <section name="dialplan">
     <context name="default">
-      <extension name="ivr-${menu.name}">
+      <extension name="ivr-${escapeXmlAttribute(menu.name)}">
         <condition>
           <action application="answer"/>
           <action application="sleep" data="500"/>
@@ -51,14 +74,17 @@ export async function generateIvrDialplan(menuId: number, tenantId: number): Pro
     <configuration name="ivr.conf" description="IVR menus">
       <menus>
         <menu name="ivr_menu_${menuId}"
-              greet-long="${greetSound}"
-              greet-short="${greetSound}"
-              invalid-sound="${invalidSound}"
+              greet-long="${escapeXmlAttribute(greetSound)}"
+              greet-short="${escapeXmlAttribute(greetSound)}"
+              invalid-sound="${escapeXmlAttribute(invalidSound)}"
               exit-sound="voicemail/vm-goodbye.wav"
-              timeout="${menu.timeout_ms}"
-              max-failures="${menu.max_retries}"
-              inter-digit-timeout="${menu.digit_timeout_ms}"
-              digit-len="4"
+              timeout="${escapeXmlAttribute(menu.timeout_ms)}"
+              max-failures="${escapeXmlAttribute(menu.max_retries)}"
+              max-timeouts="${escapeXmlAttribute(menu.max_retries)}"
+              exec-on-max-failures="${escapeXmlAttribute(exitInvocation)}"
+              exec-on-max-timeouts="${escapeXmlAttribute(exitInvocation)}"
+              inter-digit-timeout="${escapeXmlAttribute(menu.digit_timeout_ms)}"
+              digit-len="${digitLength}"
               tts-engine="flite"
               tts-voice="kal">
 ${entries}
@@ -68,6 +94,21 @@ ${entries}
   </section>
 </document>`;
   });
+}
+
+async function getIvrExitInvocation(menu: any, tenantId: number): Promise<string> {
+  const hangup = "hangup NORMAL_CLEARING";
+  if (menu.exit_action !== "transfer" && menu.exit_action !== "voicemail") return hangup;
+  const target = typeof menu.exit_target === "string" ? menu.exit_target.trim() : "";
+  if (!/^\d{2,10}$/.test(target)) return hangup;
+  const destination = await query(
+    `SELECT 1 FROM extensions
+     WHERE tenant_id = $1 AND extension_number = $2
+       AND status = 'active' AND deleted_at IS NULL LIMIT 1`,
+    [tenantId, target],
+  );
+  if (destination.rows.length !== 1) return hangup;
+  return `transfer ${menu.exit_action === "voicemail" ? "*98" : ""}${target} XML default`;
 }
 
 function getActionXml(action: any): string {

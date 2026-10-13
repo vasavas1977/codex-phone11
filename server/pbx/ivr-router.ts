@@ -161,15 +161,19 @@ async function requireTenantExtensions(extensionIds: number[], tenantId: number,
 // IVR Menus
 // ═══════════════════════════════════════════════════════════════════════════════
 
+const ivrXmlText = z.string().refine(
+  value => !/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uD800-\uDFFF\uFFFE\uFFFF]/u.test(value),
+  "IVR text contains a character prohibited by XML 1.0",
+);
 const ivrMenuInput = z.object({
-  name: z.string().min(1).max(100),
+  name: ivrXmlText.refine(value => value.length >= 1 && value.length <= 100, "Name must be 1 to 100 characters"),
   description: z.string().optional(),
-  greeting_file: z.string().optional(),
-  greeting_tts: z.string().optional(),
+  greeting_file: ivrXmlText.optional(),
+  greeting_tts: ivrXmlText.optional(),
   timeout_ms: z.number().min(1000).max(30000).default(5000),
   max_retries: z.number().min(1).max(10).default(3),
   digit_timeout_ms: z.number().min(1000).max(10000).default(3000),
-  invalid_sound: z.string().optional(),
+  invalid_sound: ivrXmlText.optional(),
   exit_action: z.enum(["hangup", "transfer", "voicemail"]).default("hangup"),
   exit_target: z.string().optional(),
   is_active: z.boolean().default(true),
@@ -265,6 +269,30 @@ async function requireIvrActionTargets(
       invalidIvrAction(`The ${action.action_type} destination is unavailable in this workspace`);
     }
   }
+}
+
+/** Exit hooks can route calls, so admit only active extensions in this tenant. */
+async function requireIvrExitTarget(
+  action: unknown,
+  target: unknown,
+  tenantId: number,
+  client: { query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }> },
+) {
+  if (action === "hangup") {
+    if (target) invalidIvrAction("Hangup does not accept an exit destination");
+    return;
+  }
+  if (action !== "transfer" && action !== "voicemail") invalidIvrAction("The IVR exit action is invalid");
+  if (typeof target !== "string" || !/^\d{2,10}$/.test(target)) {
+    invalidIvrAction("The IVR exit destination must be a valid extension");
+  }
+  const destination = await client.query(
+    `SELECT 1 FROM extensions
+     WHERE tenant_id = $1 AND extension_number = $2
+       AND status = 'active' AND deleted_at IS NULL LIMIT 1`,
+    [tenantId, target],
+  );
+  if (destination.rows.length !== 1) invalidIvrAction("The IVR exit destination is unavailable in this workspace");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -538,6 +566,8 @@ export const ivrRouter = router({
       .mutation(async ({ ctx, input }) => {
         return withRoutingMutation(ctx, input.tenant_id, "ivr", async (tenant, client, { query, runInTransaction, auditAfterCommit, invalidateAfterCommit }) => {
           const { tenant_id: _tenantId, ...data } = input;
+          data.exit_target = data.exit_target?.trim() || undefined;
+          await requireIvrExitTarget(data.exit_action, data.exit_target, tenant.tenantId, client);
           const res = await query(
             `INSERT INTO ivr_menus (tenant_id, name, description, greeting_file, greeting_tts, timeout_ms, max_retries, digit_timeout_ms, invalid_sound, exit_action, exit_target, is_active)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
@@ -545,6 +575,7 @@ export const ivrRouter = router({
           );
           await auditAfterCommit({ tenantId: tenant.tenantId, actorUserId: ctx.user.id, action: "ivr_menu.created", resourceType: "ivr_menu", resourceId: String(res.rows[0].id), newValue: { name: data.name }, ipAddress: ctx.req.ip });
           await invalidateAfterCommit(`dialplan:ivr:${res.rows[0].id}`);
+          await invalidateAfterCommit(`dialplan:ivr:${tenant.tenantId}:${res.rows[0].id}`);
           return res.rows[0];
         });
       }),
@@ -554,7 +585,19 @@ export const ivrRouter = router({
       .mutation(async ({ ctx, input }) => {
         return withRoutingMutation(ctx, input.tenant_id, "ivr", async (tenant, client, { query, runInTransaction, auditAfterCommit, invalidateAfterCommit }) => {
           await requireTenantResource("ivr_menus", input.id, tenant.tenantId, client);
-          const { id, tenant_id: _tenantId, ...data } = input;
+          const { id, tenant_id: _tenantId, ...inputData } = input;
+          const data: Record<string, unknown> = { ...inputData };
+          if (input.exit_action !== undefined || input.exit_target !== undefined) {
+            const current = await query(
+              `SELECT exit_action, exit_target FROM ivr_menus WHERE id = $1 AND tenant_id = $2 FOR UPDATE`,
+              [id, tenant.tenantId],
+            );
+            const exitAction = input.exit_action ?? current.rows[0]?.exit_action ?? "hangup";
+            const exitTarget = input.exit_target !== undefined ? input.exit_target.trim()
+              : exitAction === "hangup" ? undefined : current.rows[0]?.exit_target?.trim();
+            await requireIvrExitTarget(exitAction, exitTarget, tenant.tenantId, client);
+            data.exit_target = exitAction === "hangup" ? null : exitTarget;
+          }
           const sets = Object.entries(data)
             .filter(([_, v]) => v !== undefined)
             .map(([k], i) => `${k} = $${i + 2}`);
@@ -567,6 +610,7 @@ export const ivrRouter = router({
           );
           await invalidateAfterCommit(`ivr:menu:${id}`);
           await invalidateAfterCommit(`dialplan:ivr:${id}`);
+          await invalidateAfterCommit(`dialplan:ivr:${tenant.tenantId}:${id}`);
           return res.rows[0];
         });
       }),
@@ -579,6 +623,7 @@ export const ivrRouter = router({
           await query(`DELETE FROM ivr_menus WHERE id = $1 AND tenant_id = $2`, [input.id, tenant.tenantId]);
           await invalidateAfterCommit(`ivr:menu:${input.id}`);
           await invalidateAfterCommit(`dialplan:ivr:${input.id}`);
+          await invalidateAfterCommit(`dialplan:ivr:${tenant.tenantId}:${input.id}`);
           return { ok: true };
         });
       }),
@@ -611,6 +656,7 @@ export const ivrRouter = router({
           });
           await invalidateAfterCommit(`ivr:menu:${input.menu_id}`);
           await invalidateAfterCommit(`dialplan:ivr:${input.menu_id}`);
+          await invalidateAfterCommit(`dialplan:ivr:${tenant.tenantId}:${input.menu_id}`);
           return { ok: true, count: input.actions.length };
         });
       }),
