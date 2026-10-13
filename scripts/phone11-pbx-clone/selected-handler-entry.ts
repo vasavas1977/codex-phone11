@@ -3,57 +3,9 @@ import type { TrpcContext } from "../../server/_core/context";
 import { admitCloneConnectionInput, createRealPgAdapter, safeCloneError, type CloneAdapter } from "./real-pg-adapter";
 import { bindSelectedResources, retireSelectedResources, LOCAL_REDIS_URL } from "./selected-resource-bridge";
 
-export const SELECTED_PRODUCT_SOURCE = "f2fa504dbad22d0966b9f1d43dae86865ef80158";
-export const SELECTED_PRODUCT_PINS = Object.freeze([
-  {
-    "path": "server/pbx/ivr-router.ts",
-    "sha256": "94f414fcfe8c9c6b3ef96789a7e4f3fe60d112e27a3346510c40317d77c7cb3c"
-  },
-  {
-    "path": "server/_core/trpc.ts",
-    "sha256": "0fd486ef9810a38b1d9f90df512846fc874553c8a17decf4a26fed006cd4c92b"
-  },
-  {
-    "path": "shared/const.ts",
-    "sha256": "d9fedf20dc67e22f79ee6c624e613fdbc16e2cc7db872201f89ffbad7f5c163b"
-  },
-  {
-    "path": "server/pbx/db.ts",
-    "sha256": "73c37d847f23b5a6d33507c62dc666dbc8e601a09f306ba539d1de333b5b3709"
-  },
-  {
-    "path": "server/pbx/audit.ts",
-    "sha256": "0b58fa8a75c534c6900140414af2f8e960b0f7ae6a4a25618a0f0788dfd8e94d"
-  },
-  {
-    "path": "server/pbx/redis.ts",
-    "sha256": "4717c592961c5065fdc8cd933897110c5ee9537850a791e15291bf26b1ddbf49"
-  },
-  {
-    "path": "server/pbx/tenant-middleware.ts",
-    "sha256": "d148fcd4425e09cbc04143f8dd853e162b6b65cb548aecd685ffb30d26fcd879"
-  },
-  {
-    "path": "server/pbx/schema-capabilities.ts",
-    "sha256": "508b38df0398f83fe6200f301d59db6c5f3a0939ea258cc3e864e4a47936fb29"
-  },
-  {
-    "path": "server/phone-provisioning.ts",
-    "sha256": "18513fafedae1e85baa07b386e55eb3f329ed5ecb4b620cc34cd947c63617ac0"
-  },
-  {
-    "path": "server/pbx/sip-secrets.ts",
-    "sha256": "dd848b73dfc8b566e2dc4d5cd32167be5b352a58ca6280c8cfe91053c6324859"
-  }
-].map(pin => Object.freeze(pin)));
-export const SELECTED_BUILD_CONTRACT = Object.freeze({
-  schema: "phone11-pbx-selected-build/v1",
-  sourceCommit: SELECTED_PRODUCT_SOURCE,
-  graphSha256: "b0ecf11d87b2f96e6efd57fbc1339415564a1c0edbfb19ce5f982983b7318cf6",
-  adapterSha256: "3a82401460aa46622b1a155f9b073b0e8ddbb1719ddcc7de665b358a548d8a08",
-  databaseAlias: "scripts/phone11-pbx-clone/selected-resource-bridge.ts",
-  redisTransportAlias: "scripts/phone11-pbx-clone/selected-resource-bridge.ts",
-});
+import { SELECTED_BUILD_CONTRACT } from "./selected-product-contract-v2";
+export { SELECTED_BUILD_CONTRACT, SELECTED_PRODUCT_SOURCE, SELECTED_PRODUCT_PINS } from "./selected-product-contract-v2";
+
 // A reviewed bundle/metafile + fixture custodian must bind these in a later revision.
 // JSON shape or a caller-supplied hash is not authenticated software/fixture admission.
 const BUILD_ADMISSION_SHA256: string | null = null;

@@ -164,6 +164,13 @@ describe("static build identities, never evaluate product modules or resulting b
       } }],
     });
     const inputs = Object.keys(result.metafile!.inputs).sort();
+    expect(inputs.filter(path => path.startsWith("scripts/"))).toEqual([
+      "scripts/phone11-pbx-clone/custody-v2.ts",
+      "scripts/phone11-pbx-clone/real-pg-adapter.ts",
+      "scripts/phone11-pbx-clone/selected-handler-entry.ts",
+      "scripts/phone11-pbx-clone/selected-product-contract-v2.ts",
+      "scripts/phone11-pbx-clone/selected-resource-bridge.ts",
+    ]);
     const product = inputs.filter(path => path.startsWith("server/") || path.startsWith("shared/"));
     expect(product).toEqual(SELECTED_PRODUCT_PINS.map(pin => pin.path).filter(path => path !== "server/pbx/db.ts").sort());
     expect(new Set(aliases.map(path => path.slice(process.cwd().length + 1)))).toEqual(new Set(["server/pbx/ivr-router.ts", "server/pbx/audit.ts", "server/pbx/tenant-middleware.ts", "server/pbx/schema-capabilities.ts", "server/phone-provisioning.ts", "server/pbx/redis.ts"]));
@@ -203,5 +210,52 @@ describe("static build identities, never evaluate product modules or resulting b
     const forwarded = calls[0].arguments[1];
     expect(ts.isIdentifier(forwarded)).toBe(true);
     expect((forwarded as ts.Identifier).text).toBe((observation.name as ts.Identifier).text);
+  });
+});
+
+
+describe("versioned selected product contract", () => {
+  it("binds the reviewed committed IVR source with a distinct v2 build identity", () => {
+    expect(SELECTED_BUILD_CONTRACT.schema).toBe("phone11-pbx-selected-build/v2");
+    expect(SELECTED_BUILD_CONTRACT.sourceCommit).toBe("5ee87227983d0d7dc039d148102d53b35f0821dd");
+    expect(SELECTED_BUILD_CONTRACT.graphSha256).toBe("e81ae5036b7b073d47b38fc15805c856ba5039f71f4d49e43ea5f3c40877f3c6");
+    expect(SELECTED_PRODUCT_PINS).toHaveLength(10);
+    expect(SELECTED_PRODUCT_PINS.find(pin => pin.path === "server/pbx/ivr-router.ts")?.sha256)
+      .toBe("c4346a33f2826bc37d52f916a3c37eaf31cf65955d2a5a70cd535347aad52eef");
+  });
+  it.each(SELECTED_LANES)("rejects the old v1 product contract before %s admission/imports", async lane => {
+    const legacyBuild = {
+      ...input().build, schema: "phone11-pbx-selected-build/v1",
+      sourceCommit: "f2fa504dbad22d0966b9f1d43dae86865ef80158",
+      graphSha256: "b0ecf11d87b2f96e6efd57fbc1339415564a1c0edbfb19ce5f982983b7318cf6",
+    };
+    const text = JSON.stringify({ ...input(), lane, build: legacyBuild });
+    expect(() => parseSelectedHandlerInput(text)).toThrow("BUILD_BINDING_REFUSED");
+    const status = await runSelectedHandler(text, new AbortController().signal);
+    expect(status.code).toBe("BUILD_BINDING_REFUSED");
+    expect(status.adapterClosed).toBe(false); expect(status.runtimeAcceptance).toBe(false);
+  });
+  it("keeps the additional contract module pure static metadata", () => {
+    const source = readFileSync("scripts/phone11-pbx-clone/selected-product-contract-v2.ts", "utf8");
+    const file = ts.createSourceFile("contract.ts", source, ts.ScriptTarget.Latest, true);
+    expect(file.statements.every(ts.isVariableStatement)).toBe(true);
+    const visit = (node: ts.Node): void => {
+      expect(ts.isImportDeclaration(node) || ts.isNewExpression(node) || ts.isAwaitExpression(node)).toBe(false);
+      if (ts.isCallExpression(node)) {
+        const freeze = node.expression.getText(file) === "Object.freeze";
+        const staticMap = ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "map"
+          && ts.isArrayLiteralExpression(node.expression.expression) && node.arguments.length === 1
+          && ts.isArrowFunction(node.arguments[0]);
+        expect(freeze || staticMap).toBe(true);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(file);
+    expect(source).not.toMatch(/\bprocess\b|\bfetch\b|\bconsole\b|\brequire\b/);
+    const entry = readFileSync("scripts/phone11-pbx-clone/selected-handler-entry.ts", "utf8");
+    const adapter = readFileSync("scripts/phone11-pbx-clone/real-pg-adapter.ts", "utf8");
+    expect(entry).toContain("const BUILD_ADMISSION_SHA256: string | null = null;");
+    expect(entry).toContain("const FIXTURE_ADMISSION_SHA256: string | null = null;");
+    expect(adapter).toContain("const EXECUTION_ADMISSION_SHA256: string | null = null;");
   });
 });
