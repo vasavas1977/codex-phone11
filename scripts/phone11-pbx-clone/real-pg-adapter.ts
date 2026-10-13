@@ -1,17 +1,20 @@
 /** Clone-only connection seam. No target discovery, startup or output side effects. */
 import type pg from "pg";
 import { validateCloneCustodyV2 } from "./custody-v2";
+import { assertCustodianEnvironment, consumeCustodianPermitForAdapter, isCustodianPermit, type CustodianPermit } from "./custodian-permit-v1";
 
 export const CLONE_SOCKET = "/run/phone11-pbx-clone/socket";
 // Source base for this distinct custody revision; not a historical bundle approval.
 export const CLONE_SOURCE = "61ab2991db78f02e6f970878a5052b2cdc27dddc";
 export const LIMITS = Object.freeze({ connect: 2000, query: 5000, transaction: 15000, lifetime: 60000, close: 3000 });
 const SOURCE_SYSTEM = "7638134557377753122";
-// No actual software/role/rollback admission exists yet. Bind only in a reviewed revision.
+// Historical synthetic-v2 sentinel remains NULL permanently; it cannot authorize a restored worker.
+// Restored execution uses the independent prebuild custodian anchor and fresh signed permit.
 const EXECUTION_ADMISSION_SHA256: string | null = null;
 const HASH = /^[a-f0-9]{64}$/;
 const ID = /^[a-f0-9]{32}$/;
 const PG_CODES = new Set(["23502", "23503", "23505", "23514", "40001", "40P01", "42501", "42P01", "42703", "28P01", "55P03", "57014", "55000", "25006", "25P02", "3D000", "08006", "57P01"]);
+const PERMIT_CODES = new Set(["PERMIT_UNBOUND", "PERMIT_INVALID", "PERMIT_EXPIRED", "PERMIT_REPLAY", "PERMIT_CANCELLED", "PERMIT_ENVIRONMENT", "PERMIT_TEST_ONLY", "PRIVATE_FD_REFUSED"]);
 const RPC_CODES = new Set(["FORBIDDEN", "UNAUTHORIZED", "BAD_REQUEST", "NOT_FOUND", "CONFLICT", "PRECONDITION_FAILED", "INTERNAL_SERVER_ERROR"]);
 export type Refusal = "INPUT_REFUSED" | "ADMISSION_REFUSED" | "EXECUTION_UNBOUND" | "ENVIRONMENT_REFUSED" | "RUNTIME_REFUSED" | "CLOSED" | "CANCELLED" | "CONNECT_TIMEOUT" | "QUERY_TIMEOUT" | "TRANSACTION_TIMEOUT" | "LIFETIME_TIMEOUT" | "POOL_ERROR" | "CLOSE_TIMEOUT" | "CLOSE_FAILED" | "QUERY_INTERFACE_REFUSED" | "UNSETTLED_QUERY";
 const REFUSALS = new Set<string>(["INPUT_REFUSED", "ADMISSION_REFUSED", "EXECUTION_UNBOUND", "ENVIRONMENT_REFUSED", "RUNTIME_REFUSED", "CLOSED", "CANCELLED", "CONNECT_TIMEOUT", "QUERY_TIMEOUT", "TRANSACTION_TIMEOUT", "LIFETIME_TIMEOUT", "POOL_ERROR", "CLOSE_TIMEOUT", "CLOSE_FAILED", "QUERY_INTERFACE_REFUSED", "UNSETTLED_QUERY"]);
@@ -27,6 +30,7 @@ export function safeCloneError(error: unknown): Readonly<{ kind: "adapter" | "po
     if (error && typeof error === "object") {
     const descriptor = Object.getOwnPropertyDescriptor(error, "code");
     const code: unknown = descriptor?.value;
+    if (typeof code === "string" && PERMIT_CODES.has(code)) return Object.freeze({ kind: "adapter", code });
     if (typeof code === "string" && PG_CODES.has(code)) return Object.freeze({ kind: "postgres", code });
     if (typeof code === "string" && RPC_CODES.has(code)) return Object.freeze({ kind: "handler", code });
     }
@@ -50,7 +54,7 @@ function image(value: unknown): string {
   digest(value.slice(7)); return value;
 }
 interface Validated {
-  attemptId: string; login: string; password: string; nodeVersion: string; observationSha256: string;
+  attemptId: string; login: string; password: string; nodeVersion: string; observationSha256?: string; lifetimeMs?: number;
 }
 declare const brand: unique symbol;
 export type CloneAdmission = Readonly<{ readonly [brand]: true }>;
@@ -59,6 +63,7 @@ const consumed = new WeakSet<CloneAdmission>();
 
 /** Bounded private JSON/memory input. Pins/observations must be verified by the external clone custodian first. */
 export function admitCloneConnectionInput(input: string, custodyObservation?: unknown): CloneAdmission {
+  if (process.env.NODE_ENV !== "test") refuse("RUNTIME_REFUSED");
   if (typeof input !== "string" || Buffer.byteLength(input, "utf8") > 8192) refuse("INPUT_REFUSED");
   let decoded: unknown;
   try { decoded = JSON.parse(input); } catch { refuse("INPUT_REFUSED"); }
@@ -129,19 +134,28 @@ function consume(token: CloneAdmission): Validated {
   if (!config || consumed.has(token)) refuse("ADMISSION_REFUSED");
   consumed.add(token); admitted.delete(token); return config;
 }
-export async function createRealPgAdapter(token: CloneAdmission, signal: AbortSignal): Promise<CloneAdapter> {
-  if (EXECUTION_ADMISSION_SHA256 === null) refuse("EXECUTION_UNBOUND");
-  const config = admitted.get(token);
-  if (!config || config.observationSha256 !== EXECUTION_ADMISSION_SHA256) refuse("ADMISSION_REFUSED");
-  assertNoAmbientConnectionKeys(Object.keys(process.env));
-  if (process.platform !== "linux" || process.arch !== "x64" || process.versions.node !== config.nodeVersion) refuse("RUNTIME_REFUSED");
+export async function createRealPgAdapter(token: CloneAdmission | CustodianPermit, signal: AbortSignal): Promise<CloneAdapter> {
+  if (!isCustodianPermit(token)) {
+    if (EXECUTION_ADMISSION_SHA256 !== null) refuse("ADMISSION_REFUSED");
+    refuse("EXECUTION_UNBOUND");
+  }
+  assertCustodianEnvironment(Object.keys(process.env));
   if (!(signal instanceof AbortSignal)) refuse("ADMISSION_REFUSED");
-  if (signal.aborted) refuse("CANCELLED");
-  const validated = consume(token);
-  // pg's entry consults NODE_PG_FORCE_NATIVE. Do not evaluate it before admission/env checks.
+  const validated = consumeCustodianPermitForAdapter(token, signal);
+  if (process.platform !== "linux" || process.arch !== "x64" || process.versions.node !== validated.nodeVersion) refuse("RUNTIME_REFUSED");
+  // Authentication, restored V4 consistency, one-use, expiry and abort all precede driver evaluation.
+  const started = performance.now();
   const driver = await import("pg");
-  assertNoAmbientConnectionKeys(Object.keys(process.env));
-  return create(validated, options => new driver.default.Pool(options), signal);
+  assertCustodianEnvironment(Object.keys(process.env));
+  if (signal.aborted) refuse("CANCELLED");
+  const remaining = validated.lifetimeMs - (performance.now() - started);
+  if (remaining <= 0) refuse("LIFETIME_TIMEOUT");
+  return create({ ...validated, lifetimeMs: remaining }, options => new driver.default.Pool(options), signal);
+}
+/** Test-mode signed TEST permit plus injected pool only; never accepts a production-mode permit. */
+export function createCustodianAdapterForTests(token: CustodianPermit, factory: (options: pg.PoolConfig) => TestTransportPool, signal: AbortSignal): CloneAdapter {
+  if (process.env.NODE_ENV !== "test") refuse("RUNTIME_REFUSED");
+  return create(consumeCustodianPermitForAdapter(token, signal, true), factory, signal);
 }
 /** Offline tests only. A production bundle must not call or expose this factory. */
 export function createCloneAdapterForTests(token: CloneAdmission, factory: (options: pg.PoolConfig) => TestTransportPool, signal: AbortSignal): CloneAdapter {
@@ -269,7 +283,7 @@ function create(config: Validated, factory: (options: pg.PoolConfig) => TestTran
     return closing;
   }
   const abort = () => stop("CANCELLED");
-  const lifetime = setTimeout(() => stop("LIFETIME_TIMEOUT"), LIMITS.lifetime);
+  const lifetime = setTimeout(() => stop("LIFETIME_TIMEOUT"), Math.min(LIMITS.lifetime, config.lifetimeMs ?? LIMITS.lifetime));
   signal.addEventListener("abort", abort, { once: true });
   pool.on("error", () => stop("POOL_ERROR"));
   const facade = Object.freeze({ connect, query });

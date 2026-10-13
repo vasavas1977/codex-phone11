@@ -1,12 +1,13 @@
 /** Selected clone entry: source preparation only; all execution admissions remain unbound. */
 import type { TrpcContext } from "../../server/_core/context";
 import { admitCloneConnectionInput, createRealPgAdapter, safeCloneError, type CloneAdapter } from "./real-pg-adapter";
+import { fixtureForCustodianPermit, assertCustodianEnvironment, type CustodianPermit } from "./custodian-permit-v1";
 import { bindSelectedResources, retireSelectedResources, LOCAL_REDIS_URL } from "./selected-resource-bridge";
 
 import { SELECTED_BUILD_CONTRACT } from "./selected-product-contract-v2";
 export { SELECTED_BUILD_CONTRACT, SELECTED_PRODUCT_SOURCE, SELECTED_PRODUCT_PINS } from "./selected-product-contract-v2";
 
-// A reviewed bundle/metafile + fixture custodian must bind these in a later revision.
+// Historical generic-v1 path stays permanently refused. Restored permits authenticate post-build/fixture receipts.
 // JSON shape or a caller-supplied hash is not authenticated software/fixture admission.
 const BUILD_ADMISSION_SHA256: string | null = null;
 const FIXTURE_ADMISSION_SHA256: string | null = null;
@@ -69,6 +70,66 @@ export async function runSelectedHandler(text: string, signal: AbortSignal, cust
     if (Object.keys(process.env).some(key => /^(?:SIP_|REDIS)/i.test(key))) refuse("ENVIRONMENT_REFUSED");
     used = true;
     adapter = await createRealPgAdapter(admitCloneConnectionInput(input.cloneAdmission, custodyObservation), signal);
+    bindSelectedResources(adapter, signal);
+    for (const [key, value] of Object.entries(SYNTHETIC_ENV)) process.env[key] = value;
+    envSet = true;
+    // This single-use isolated worker suppresses the selected wrappers' diagnostic console calls.
+    // The transport does not emit artificial network events or business results.
+    console.error = console.warn = console.log = () => undefined;
+    quiet = true;
+    if (signal.aborted) refuse("CANCELLED");
+    if (input.lane === "IVR_CREATE" || input.lane === "IVR_LIST") {
+      const { ivrRouter } = await import("../../server/pbx/ivr-router");
+      // Synthetic internal caller identity, not HTTP/JWT authentication. Held SQL checks remain authentic.
+      const ctx = { user: { id: input.actorUserId }, req: { ip: "127.0.0.1" }, res: {} } as TrpcContext;
+      const caller = ivrRouter.createCaller(ctx);
+      if (input.lane === "IVR_CREATE") await caller.ivr.create({ tenant_id: input.tenantId, name: "clone-rehearsal" });
+      else await caller.ivr.list({ tenant_id: input.tenantId });
+    } else {
+      const { createExtension, assignExtensionToUser } = await import("../../server/phone-provisioning");
+      if (input.lane === "PROVISION_CREATE") await createExtension({ orgId: input.tenantId, extensionNumber: input.extensionNumber, displayName: "clone-rehearsal", actorUserId: input.actorUserId });
+      else await assignExtensionToUser(input.assigneeUserId, input.extensionId, true, input.tenantId, input.actorUserId);
+    }
+    // Plaintext SIP material, rows and errors stay inside the private process and are never returned.
+    if (signal.aborted) refuse("CANCELLED");
+    completed = true;
+    code = "CALL_COMPLETED";
+  } catch (error) {
+    code = error instanceof EntryRefusal ? error.code : safeCloneError(error).code;
+  } finally {
+    if (adapter) retireSelectedResources();
+    if (adapter) {
+      try {
+        const result = await adapter.close();
+        ended = result.ended;
+        if (!result.ended) { completed = false; code = result.code; }
+      } catch { completed = false; code = "CLOSE_FAILED"; }
+    }
+    if (envSet) for (const key of Object.keys(SYNTHETIC_ENV)) delete process.env[key];
+    if (quiet) Object.assign(console, savedConsole);
+  }
+  return Object.freeze({ schema: "phone11-pbx-selected-handler-status/v1", outcome: completed ? "CALL_COMPLETED" : "REFUSED", code, adapterClosed: ended,
+    fixtureAssertionsProven: false, externalRedisProven: false, httpAuthenticationProven: false, runtimeAcceptance: false, productionAcceptance: false });
+}
+
+/** Authenticated private permit only; no unauthenticated input/custody dictionaries or HTTP/JWT admission. */
+export async function runCustodianSelectedHandler(permit: CustodianPermit, signal: AbortSignal): Promise<Readonly<Record<string, string | boolean>>> {
+  let adapter: CloneAdapter | undefined;
+  let envSet = false;
+  let code: string = "UNCLASSIFIED";
+  let completed = false;
+  let ended = false;
+  const savedConsole = { error: console.error, warn: console.warn, log: console.log };
+  let quiet = false;
+  try {
+    const input = fixtureForCustodianPermit(permit, signal);
+    assertCustodianEnvironment(Object.keys(process.env));
+    if (!(signal instanceof AbortSignal) || signal.aborted) refuse("CANCELLED");
+    if (used) refuse("ENTRY_USED");
+    // Presence only: never read ambient SIP/Redis values or permit them to affect these selected lanes.
+    if (Object.keys(process.env).some(key => /^(?:SIP_|REDIS)/i.test(key))) refuse("ENVIRONMENT_REFUSED");
+    used = true;
+    adapter = await createRealPgAdapter(permit, signal);
     bindSelectedResources(adapter, signal);
     for (const [key, value] of Object.entries(SYNTHETIC_ENV)) process.env[key] = value;
     envSet = true;

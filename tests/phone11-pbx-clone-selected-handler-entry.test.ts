@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { build } from "esbuild";
 import ts from "typescript";
+import { RESTORED_WORKER_SOURCE_CONTRACT } from "../scripts/phone11-pbx-clone/restored-worker-source-contract-v1";
 import { custodyObservation } from "./fixtures/phone11-pbx-clone-custody-v2";
 import type { CloneAdapter, ClonePool } from "../scripts/phone11-pbx-clone/real-pg-adapter";
 import { parseSelectedHandlerInput, runSelectedHandler, SELECTED_BUILD_CONTRACT, SELECTED_PRODUCT_PINS, SELECTED_LANES } from "../scripts/phone11-pbx-clone/selected-handler-entry";
@@ -145,7 +146,9 @@ describe("static build identities, never evaluate product modules or resulting b
   it("binds all ten inspected source files and real adapter bytes", () => {
     for (const pin of SELECTED_PRODUCT_PINS) expect(digest(readFileSync(pin.path))).toBe(pin.sha256);
     expect(digest(JSON.stringify(SELECTED_PRODUCT_PINS))).toBe(SELECTED_BUILD_CONTRACT.graphSha256);
-    expect(digest(readFileSync("scripts/phone11-pbx-clone/real-pg-adapter.ts"))).toBe(SELECTED_BUILD_CONTRACT.adapterSha256);
+    expect(SELECTED_BUILD_CONTRACT.adapterSha256).toBe("3a82401460aa46622b1a155f9b073b0e8ddbb1719ddcc7de665b358a548d8a08");
+    expect(digest(readFileSync("scripts/phone11-pbx-clone/real-pg-adapter.ts"))).toBe(RESTORED_WORKER_SOURCE_CONTRACT.adapterSha256);
+    expect(RESTORED_WORKER_SOURCE_CONTRACT.adapterSha256).not.toBe(SELECTED_BUILD_CONTRACT.adapterSha256);
   });
   it("compiles actual selected modules with only DB and ioredis transport aliases; excludes unrelated graph", async () => {
     const bridge = resolve(SELECTED_BUILD_CONTRACT.databaseAlias);
@@ -165,8 +168,11 @@ describe("static build identities, never evaluate product modules or resulting b
     });
     const inputs = Object.keys(result.metafile!.inputs).sort();
     expect(inputs.filter(path => path.startsWith("scripts/"))).toEqual([
+      "scripts/phone11-pbx-clone/bootstrap-restore-custody-v4.ts",
+      "scripts/phone11-pbx-clone/custodian-permit-v1.ts",
       "scripts/phone11-pbx-clone/custody-v2.ts",
       "scripts/phone11-pbx-clone/real-pg-adapter.ts",
+      "scripts/phone11-pbx-clone/restored-worker-source-contract-v1.ts",
       "scripts/phone11-pbx-clone/selected-handler-entry.ts",
       "scripts/phone11-pbx-clone/selected-product-contract-v2.ts",
       "scripts/phone11-pbx-clone/selected-resource-bridge.ts",
@@ -177,9 +183,9 @@ describe("static build identities, never evaluate product modules or resulting b
     expect(inputs).not.toContain("server/pbx/db.ts"); expect(inputs).not.toContain("server/_core/context.ts");
     expect(inputs.some(path => /routers\.ts|pbx-router|profile\/|sdk\.ts|auth\/|cloud-record|gemini/i.test(path))).toBe(false);
     const externals = Object.values(result.metafile!.inputs).flatMap(value => value.imports.filter(item => item.external).map(item => item.path));
-    expect([...new Set(externals)].sort()).toEqual(["@trpc/server", "crypto", "pg", "superjson", "zod"]);
+    expect([...new Set(externals)].sort()).toEqual(["@trpc/server", "crypto", "node:crypto", "node:fs", "node:util", "pg", "superjson", "zod"]);
     const code = result.outputFiles![0].text;
-    expect(code).not.toContain("createCloneAdapterForTests"); expect(code).not.toContain("buildPgConfig"); expect(code).not.toContain("new Redis(");
+    expect(code).not.toContain("createCloneAdapterForTests"); expect(code).not.toContain("createCustodianAdapterForTests"); expect(code).not.toContain("createCustodianVerifierForTests"); expect(code).not.toContain("issueCustodianPermitFromPrivateFds"); expect(code).not.toContain("buildPgConfig"); expect(code).not.toContain("new Redis(");
     expect(code).toContain("ENTRY_BINDING_UNBOUND"); expect(code).toContain("EXECUTION_UNBOUND");
     // Only hashes, not source/rows/results, are emitted into the retained validation log.
     console.info(`SELECTED_COMPILE_ONLY bundleSha256=${digest(code)} metafileSha256=${digest(JSON.stringify(result.metafile))} localInputs=${inputs.length}`);
