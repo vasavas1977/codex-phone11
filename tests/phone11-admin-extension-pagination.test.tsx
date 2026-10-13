@@ -45,6 +45,7 @@ vi.mock("react-native", () => ({
 }));
 vi.mock("../components/screen-container", () => ({ ScreenContainer: element }));
 vi.mock("../components/admin/admin-workspace-boundary", () => ({ AdminWorkspaceBoundary: element }));
+vi.mock("../components/admin/use-admin-action-scope", () => ({ useAdminActionScope: () => ({ current: () => true, busy: () => false }) }));
 vi.mock("../components/profile/profile-avatar", () => ({ ProfileAvatar: () => null }));
 vi.mock("../components/profile/profile-card-provider", () => ({ ProfileCardProvider: element }));
 vi.mock("../components/ui/icon-symbol", () => ({ IconSymbol: () => null }));
@@ -65,6 +66,7 @@ vi.mock("../hooks/use-pbx-admin", () => ({
         pagination: { page, total: 101, totalPages: 2, hasPrev: page > 1, hasNext: page < 2 },
       },
       isFetching: m.fetching,
+      isSuccess: true,
     };
   },
   useTenantPeople: () => ({ data: [] }),
