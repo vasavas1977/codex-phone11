@@ -27,6 +27,13 @@ function body() {
 function frame(v = body(), password = PASSWORD) { const payload = Buffer.from(canonical(v)); return canonical({ schema: "phone11-restored-custodian-private-frame/v1", payload: payload.toString("base64url"), signature: sign(null, Buffer.concat([Buffer.from("PHONE11_RESTORED_CUSTODIAN_PERMIT_V1\0"), payload]), KEY).toString("base64url"), password }); }
 function verifier() { return createCustodianVerifierForTests(PUBLIC, NONCE, "IVR_LIST"); }
 const signal = () => new AbortController().signal;
+// Isolate TEST-mode refusal from launcher-injected connection keys. The actual
+// environment guard is exercised separately and remains active in production.
+function clearFixtureConnectionEnvironment() {
+  for (const key of Object.keys(process.env)) {
+    if (/^(?:PG|POSTGRES|DATABASE|DB_|NODE_PG_|NODE_OPTIONS|NODE_PATH|SIP_|REDIS)/i.test(key)) vi.stubEnv(key, undefined);
+  }
+}
 afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); vi.restoreAllMocks(); });
 describe("authenticated noncircular restored-worker seam; RFC vector mocks only", () => {
   it("accepts cryptographic test scope only as opaque one-use token", () => {
@@ -70,9 +77,19 @@ describe("authenticated noncircular restored-worker seam; RFC vector mocks only"
     const token = verifier().verify(frame(), signal()), abort = new AbortController(), factory = vi.fn(); abort.abort(); expect(() => createCustodianAdapterForTests(token, factory, abort.signal)).toThrow("PERMIT_CANCELLED"); expect(factory).not.toHaveBeenCalled(); expect(() => consumeCustodianPermitForAdapter(token, signal(), true)).toThrow("PERMIT_REPLAY");
   });
   it("test tokens cannot authorize the real adapter even outside test mode", async () => {
+    clearFixtureConnectionEnvironment();
     const token = verifier().verify(frame(), signal()); vi.stubEnv("NODE_ENV", "production"); await expect(createRealPgAdapter(token, signal())).rejects.toMatchObject({ code: "PERMIT_TEST_ONLY" }); expect(() => verifier()).toThrow("PERMIT_TEST_ONLY");
   });
+  it("launcher connection keys refuse before TEST-mode consumption or real driver imports", async () => {
+    clearFixtureConnectionEnvironment();
+    const token = verifier().verify(frame(), signal());
+    vi.stubEnv("NODE_PATH", "TEST_LAUNCHER_SCOPE_ONLY");
+    await expect(createRealPgAdapter(token, signal())).rejects.toMatchObject({ code: "PERMIT_ENVIRONMENT" });
+    expect(await runCustodianSelectedHandler(token, signal())).toMatchObject({ code: "PERMIT_ENVIRONMENT", outcome: "REFUSED", adapterClosed: false, productionAcceptance: false });
+    expect(consumeCustodianPermitForAdapter(token, signal(), true).login).toBe(`p11_clone_runtime_${body().attemptId}`);
+  });
   it("entry rejects forged handles and TEST permits before real imports without exposing custody", async () => {
+    clearFixtureConnectionEnvironment();
     const forged = await runCustodianSelectedHandler({} as Parameters<typeof runCustodianSelectedHandler>[0], signal()); expect(forged).toMatchObject({ code: "PERMIT_REPLAY", outcome: "REFUSED", runtimeAcceptance: false });
     const token = verifier().verify(frame(), signal()); const result = await runCustodianSelectedHandler(token, signal()); expect(result).toMatchObject({ code: "PERMIT_TEST_ONLY", outcome: "REFUSED", adapterClosed: false, productionAcceptance: false }); expect(JSON.stringify(result)).not.toContain(PASSWORD);
   });
