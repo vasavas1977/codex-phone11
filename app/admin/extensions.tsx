@@ -694,7 +694,7 @@ function AdminExtensionsContent() {
                     <TouchableOpacity
                       key={person.id}
                       accessibilityRole="radio"
-                      accessibilityState={{ selected }}
+                      aria-checked={selected}
                       accessibilityLabel={`Assign ${person.name || person.email || `member ${person.id}`}${existingAssignments.length ? `. Currently assigned to ${existingAssignments.join(", ")}` : ""}`}
                       onPress={() => {
                         setSelectedPersonId(person.id);

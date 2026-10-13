@@ -53,7 +53,12 @@ vi.mock("react-native", () => ({
   TouchableOpacity: (props: any) => {
     const label = props.accessibilityLabel || props.children?.props?.children;
     if (typeof label === "string") m.presses.set(label, props);
-    return createElement("button", { disabled: props.disabled }, props.children);
+    return createElement("button", {
+      disabled: props.disabled,
+      role: props.accessibilityRole,
+      "aria-label": props.accessibilityLabel,
+      "aria-checked": props["aria-checked"],
+    }, props.children);
   },
 }));
 vi.mock("../components/screen-container", () => ({ ScreenContainer: element }));
@@ -308,4 +313,59 @@ it.each(["create", "assign"] as const)("rechecks scope between %s refreshes", as
   await save();
   expect(m.rowsRefresh).toHaveBeenCalledTimes(1); expect(m.peopleRefresh).not.toHaveBeenCalled();
   expect(m.statsRefresh).not.toHaveBeenCalled(); expect(m.alerts).not.toHaveBeenCalled();
+});
+
+
+describe("extension assignment radio checked semantics", () => {
+  const expectChecked = (markup: string, person: string, checked: boolean) => {
+    const button = markup.match(/<button[^>]*>/g)?.find((tag) =>
+      tag.includes(`aria-label="Assign ${person}"`));
+    expect(button, `Assign ${person} radio`).toBeDefined();
+    expect(button).toContain('role="radio"');
+    expect(button).toContain(`aria-checked="${checked}"`);
+  };
+  const openEditor = async (assigned = false) => {
+    m.people.push({ id: 22, name: "Som" });
+    if (assigned) m.rows[0].user_id = 11;
+    render();
+    await press(`${assigned ? "Change" : "Assign"} person for extension 3005`);
+    return render();
+  };
+  const expectNoAssignmentWrite = () => expect(m.update).not.toHaveBeenCalled();
+
+  it("exposes every person unchecked for an unassigned extension", async () => {
+    const markup = await openEditor();
+    expectChecked(markup, "Nok", false); expectChecked(markup, "Som", false);
+    expectNoAssignmentWrite();
+  });
+  it("exposes the existing assignee checked when the editor opens", async () => {
+    const markup = await openEditor(true);
+    expectChecked(markup, "Nok", true); expectChecked(markup, "Som", false);
+    expectNoAssignmentWrite();
+  });
+  it("checks the chosen person without submitting the assignment", async () => {
+    await openEditor(); await press("Assign Nok"); const markup = render();
+    expectChecked(markup, "Nok", true); expectChecked(markup, "Som", false);
+    expectNoAssignmentWrite();
+  });
+  it("moves checked state to the newly chosen person", async () => {
+    await openEditor(); await press("Assign Nok"); render();
+    await press("Assign Som"); const markup = render();
+    expectChecked(markup, "Nok", false); expectChecked(markup, "Som", true);
+    expectNoAssignmentWrite();
+  });
+  it("clears every person checked state after choosing Unassign", async () => {
+    await openEditor(); await press("Assign Nok"); render();
+    await press("Unassign"); const markup = render();
+    expectChecked(markup, "Nok", false); expectChecked(markup, "Som", false);
+    expect(m.presses.has("Save unassigned extension")).toBe(true);
+    expectNoAssignmentWrite();
+  });
+  it("restores the existing assignee checked state after closing an unsaved choice", async () => {
+    await openEditor(true); await press("Assign Som"); render();
+    await press("Close assignment editor"); render();
+    await press("Change person for extension 3005"); const markup = render();
+    expectChecked(markup, "Nok", true); expectChecked(markup, "Som", false);
+    expectNoAssignmentWrite();
+  });
 });
