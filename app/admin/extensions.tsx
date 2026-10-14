@@ -30,6 +30,7 @@ import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
 import { useAuth } from "@/hooks/use-auth";
 import { useDirectory } from "@/hooks/use-directory";
+import { lastRegistrationLabel } from "@/lib/pbx/registration-history";
 import {
   useCreateExtension,
   useExtensions,
@@ -290,10 +291,7 @@ function AdminExtensionsContent() {
 
   const renderExtension = ({ item }: { item: ExtensionRow }) => {
     const assigned = Boolean(item.user_id);
-    const registration =
-      item.sip_status === "active" && item.last_registered_at
-        ? "Registered"
-        : "Not registered";
+    const registration = lastRegistrationLabel(item.last_registered_at);
     const personName = item.user_name || item.display_name || "Unassigned extension";
     const assignmentAction = (
       <TouchableOpacity
@@ -328,7 +326,6 @@ function AdminExtensionsContent() {
             </View>
           </View>
           <View style={[styles.registrationColumn, styles.desktopCell]}>
-            <View style={[styles.registrationDot, { backgroundColor: registration === "Registered" ? "#00A876" : colors.border }]} />
             <Text style={[styles.cellText, { color: colors.foreground }]}>{registration}</Text>
           </View>
           <View style={[styles.assignmentColumn, styles.desktopCell]}>
@@ -350,7 +347,7 @@ function AdminExtensionsContent() {
           <Text style={[styles.number, { color: colors.foreground }]}>{extensionNumber(item)}</Text>
           <Text style={[styles.name, { color: colors.muted }]}>{personName}</Text>
           <Text style={[styles.meta, { color: colors.muted }]}>
-            {assigned ? item.user_email || "Assigned to a workspace member" : "No person assigned"} · {registration}
+            {assigned ? item.user_email || "Assigned to a workspace member" : "No person assigned"} · Last registration: {registration}
           </Text>
         </View>
         <View style={[styles.badge, { backgroundColor: assigned ? "#00C89620" : "#FF950020" }]}>
@@ -436,7 +433,7 @@ function AdminExtensionsContent() {
           <View style={[styles.tableHeader, { backgroundColor: colors.background, borderBottomColor: colors.border }]}>
             <Text style={[styles.extensionColumn, styles.tableHeading, { color: colors.muted }]}>Extension</Text>
             <Text style={[styles.personColumn, styles.tableHeading, { color: colors.muted }]}>Person</Text>
-            <Text style={[styles.registrationColumn, styles.tableHeading, { color: colors.muted }]}>Registration</Text>
+            <Text style={[styles.registrationColumn, styles.tableHeading, { color: colors.muted }]}>Last registration</Text>
             <Text style={[styles.assignmentColumn, styles.tableHeading, { color: colors.muted }]}>Assignment</Text>
             <Text style={[styles.actionColumn, styles.tableHeading, { color: colors.muted }]}>Actions</Text>
           </View>
@@ -829,7 +826,6 @@ const styles = StyleSheet.create({
   assignmentColumn: { flex: 1.3, minWidth: 110 },
   actionColumn: { flex: 1, minWidth: 85, justifyContent: "flex-end" },
   cellText: { fontSize: 13, fontWeight: "500" },
-  registrationDot: { width: 8, height: 8, borderRadius: 4 },
   card: {
     flexDirection: "row",
     alignItems: "center",
