@@ -25,9 +25,23 @@ other nonplain prototype values retain the existing redaction behavior. These ar
 change summaries, not complete configuration backups.
 
 `insertAuditLog(execute, entry)` is strict. `writeAuditLog(entry)` retains its
-legacy best-effort semantics for callers outside the IVR router. The PBX router
-still has postcommit/best-effort and missing-audit paths; this change makes no
-global atomic-audit claim about those endpoints.
+legacy best-effort semantics for other callers. The nine existing audit-producing
+PBX-router admin operations also use strict insertion on their transaction client:
+workspace timezone, membership update, extension create/update/delete, SIP
+password reset, number creation/route assignment and fraud-control update.
+Their existing audit actions, payloads, secret redaction and authorization checks
+are preserved. Workspace timezone uses its existing conditional membership-locking
+UPSERT inside the transaction, keeping that authority lock through the audit and
+COMMIT. A timezone request with no change field remains a no-op. This is not a
+claim that every endpoint in the product produces an audit.
+
+The PBX operations use fixed messages for audit and unknown transaction failures;
+controlled authorization and validation errors retain their codes. Cache work
+stays after an acknowledged commit. Failure there, loss of a COMMIT response or
+release failure does not prove that the business change rolled back. Client
+retries must not assume otherwise. The tests cover these boundaries with injected
+transports; actual audit storage and runtime permissions still require the
+separate admission below.
 
 ## Existing storage that must be verified before runtime admission
 

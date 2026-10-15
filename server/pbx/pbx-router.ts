@@ -9,7 +9,7 @@ import { TRPCError } from "@trpc/server";
 import type { PoolClient } from "pg";
 import { router, protectedProcedure } from "../_core/trpc";
 import { query, withTransaction } from "./db";
-import { writeAuditLog, queryAuditLogs } from "./audit";
+import { insertAuditLog, queryAuditLogs, type AuditEntry } from "./audit";
 import { createSipCredentials, regenerateSipCredentials } from "./sip-secrets";
 import { normalizeToE164 } from "./e164";
 import {
@@ -122,6 +122,32 @@ async function getTenantAdminMutationCtx(ctx: any, requestedTenantId?: number) {
   // Recheck every PBX admin mutation against the current database role.
   const liveRole = await requireLiveTenantAdminMembership(ctx.user!.id, tenant.tenantId);
   return { ...tenant, role: liveRole };
+}
+
+/** Business writes and their required audit share the already leased client.
+ * Keep the existing operation's lock order; only acknowledged commits reach caches. */
+async function withPbxMutation<T>(
+  tenantId: number,
+  actorUserId: number,
+  operation: (client: PoolClient, audit: (entry: AuditEntry) => Promise<void>) => Promise<T>,
+): Promise<T> {
+  let auditFailed = false;
+  return withTransaction(async client => operation(client, async entry => {
+    try {
+      await insertAuditLog((sql, parameters) => client.query(sql, parameters), {
+        ...entry, tenantId, actorUserId,
+      });
+    } catch {
+      auditFailed = true;
+      throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Could not record PBX change" });
+    }
+  })).catch(error => {
+    // A failed COMMIT/rollback/release does not prove rollback or expose pg details.
+    if (auditFailed) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Could not record PBX change" });
+    if (error instanceof TRPCError && error.cause === undefined &&
+      ["FORBIDDEN", "NOT_FOUND", "PRECONDITION_FAILED", "BAD_REQUEST", "CONFLICT"].includes(error.code)) throw error;
+    throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Could not complete PBX change" });
+  });
 }
 
 /** Hold the actor's admin role through a PBX write's transaction commit. */
@@ -500,38 +526,41 @@ export const pbxRouter = router({
           throw tenantSettingsUnavailable();
         }
 
-        if (input.businessHoursTimezone === undefined) return { success: true };
+        const businessHoursTimezone = input.businessHoursTimezone;
+        if (businessHoursTimezone === undefined) return { success: true };
 
         // Recheck and lock the membership inside the write statement so a
         // concurrent revocation cannot race an already-resolved request.
-        const saved = await upsertBusinessHoursTimezone(
-          query,
-          tc.tenantId,
-          ctx.user!.id,
-          input.businessHoursTimezone,
-        );
-        if (saved.rows.length !== 1) {
-          throw new TRPCError({
-            code: "FORBIDDEN",
-            message:
-              "Workspace administrator access changed before the setting was saved",
+        return withPbxMutation(tc.tenantId, ctx.user!.id, async (client, audit) => {
+          const saved = await upsertBusinessHoursTimezone(
+            (sql, parameters) => client.query(sql, parameters),
+            tc.tenantId,
+            ctx.user!.id,
+            businessHoursTimezone,
+          );
+          if (saved.rows.length !== 1) {
+            throw new TRPCError({
+              code: "FORBIDDEN",
+              message:
+                "Workspace administrator access changed before the setting was saved",
+            });
+          }
+
+          await audit({
+            tenantId: tc.tenantId,
+            actorUserId: ctx.user!.id,
+            action: "update",
+            resourceType: "tenant_settings",
+            resourceId: String(tc.tenantId),
+            newValue: input,
+            ipAddress: ctx.req.ip,
           });
-        }
 
-        await writeAuditLog({
-          tenantId: tc.tenantId,
-          actorUserId: ctx.user!.id,
-          action: "update",
-          resourceType: "tenant_settings",
-          resourceId: String(tc.tenantId),
-          newValue: input,
-          ipAddress: ctx.req.ip,
+          return {
+            success: true,
+            businessHoursTimezone: saved.rows[0].business_hours_timezone,
+          };
         });
-
-        return {
-          success: true,
-          businessHoursTimezone: saved.rows[0].business_hours_timezone,
-        };
       }),
 
     /** List user's tenant memberships */
@@ -677,7 +706,7 @@ export const pbxRouter = router({
         const tc = await getTenantAdminMutationCtx(ctx, input.tenantId);
         const actorUserId = ctx.user!.id;
 
-        const result = await withTransaction(async (client) => {
+        const result = await withPbxMutation(tc.tenantId, ctx.user!.id, async (client, audit) => {
           // Serialize membership changes for this workspace so two concurrent
           // admin edits cannot remove the final active administrator.
           await client.query("SELECT pg_advisory_xact_lock($1)", [tc.tenantId]);
@@ -772,6 +801,20 @@ export const pbxRouter = router({
           );
           if (!updated.rows[0]) throw new TRPCError({ code: "NOT_FOUND" });
 
+          await audit({
+            tenantId: tc.tenantId,
+            actorUserId,
+            action: "update",
+            resourceType: "tenant_membership",
+            resourceId: String(input.userId),
+            oldValue: {
+              userId: member.user_id,
+              role: member.role,
+              status: member.status,
+            },
+            newValue: updated.rows[0],
+            ipAddress: ctx.req.ip,
+          });
           return { oldValue: member, member: updated.rows[0] };
         });
 
@@ -779,20 +822,6 @@ export const pbxRouter = router({
           invalidateCache(`tenant:memberships:${input.userId}`),
           invalidateCache(`directory:${tc.tenantId}:*`),
         ]);
-        await writeAuditLog({
-          tenantId: tc.tenantId,
-          actorUserId,
-          action: "update",
-          resourceType: "tenant_membership",
-          resourceId: String(input.userId),
-          oldValue: {
-            userId: result.oldValue.user_id,
-            role: result.oldValue.role,
-            status: result.oldValue.status,
-          },
-          newValue: result.member,
-          ipAddress: ctx.req.ip,
-        });
 
         return { success: true, member: result.member };
       }),
@@ -1037,7 +1066,7 @@ export const pbxRouter = router({
         if (!hasRole(tc.role, "admin"))
           throw new TRPCError({ code: "FORBIDDEN" });
 
-        const created = await withTransaction(async (client) => {
+        const created = await withPbxMutation(tc.tenantId, ctx.user!.id, async (client, audit) => {
           await lockLivePbxAdmin(client, ctx.user!.id, tc.tenantId, "SIP account");
           if (input.userId !== undefined) {
             await requireAssignableTenantMember(
@@ -1092,7 +1121,7 @@ export const pbxRouter = router({
 
           // Create extension
           const extResult = await client.query(
-            `INSERT INTO extensions (tenant_id, user_id, extension_number, display_name, type, 
+            `INSERT INTO extensions (tenant_id, user_id, extension_number, display_name, type,
                                      sip_username, sip_domain, sip_password, caller_id_name, caller_id_number, transport, status)
              VALUES ($1, $2, $3, $4, $5, $6, $7, NULL, $8, $9, $10, 'active')
              RETURNING *`,
@@ -1113,7 +1142,7 @@ export const pbxRouter = router({
           if (!ext?.id) throw new TRPCError({ code: "CONFLICT", message: "Extension could not be created" });
 
           await client.query(
-            `INSERT INTO sip_accounts 
+            `INSERT INTO sip_accounts
               (tenant_id, extension_id, user_id, sip_username, sip_domain, ha1, ha1b,
                secret_ciphertext, secret_iv, secret_tag, dek_id, transport_preference, status)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'active')`,
@@ -1152,6 +1181,16 @@ export const pbxRouter = router({
             );
           }
 
+          await audit({
+            tenantId: tc.tenantId,
+            actorUserId: ctx.user!.id,
+            action: "create",
+            resourceType: "extension",
+            resourceId: String(ext.id),
+            newValue: { extensionNumber: input.extensionNumber, type: input.type },
+            ipAddress: ctx.req.ip,
+          });
+
           // Provisioning supplies credentials only to the assigned user.
           const { sip_password, password: legacyPassword, ...safeExtension } = ext;
           return {
@@ -1163,15 +1202,7 @@ export const pbxRouter = router({
             },
           };
         });
-        await writeAuditLog({
-          tenantId: tc.tenantId,
-          actorUserId: ctx.user!.id,
-          action: "create",
-          resourceType: "extension",
-          resourceId: String(created.id),
-          newValue: { extensionNumber: input.extensionNumber, type: input.type },
-          ipAddress: ctx.req.ip,
-        });
+
         return created;
       }),
 
@@ -1229,7 +1260,7 @@ export const pbxRouter = router({
         const hasAssignmentChange = input.userId !== undefined;
         const assignedUserId = input.userId;
 
-        const oldValue = await withTransaction(async (client) => {
+        await withPbxMutation(tc.tenantId, ctx.user!.id, async (client, audit) => {
           await lockLivePbxAdmin(client, ctx.user!.id, tc.tenantId, "extension update");
           const execute: SqlQuery = (sql, parameters) => client.query(sql, parameters);
           // Fetch and lock the tenant-owned source row before changing grants.
@@ -1362,22 +1393,21 @@ export const pbxRouter = router({
             }
           }
 
+          await audit({
+            tenantId: tc.tenantId,
+            actorUserId: ctx.user!.id,
+            action: "update",
+            resourceType: "extension",
+            resourceId: String(input.id),
+            oldValue: oldExtension.old_value,
+            newValue: input,
+            ipAddress: ctx.req.ip,
+          });
           return oldExtension.old_value;
         });
 
         // Invalidate cache
         await invalidateCache(`directory:${tc.tenantId}:*`);
-
-        await writeAuditLog({
-          tenantId: tc.tenantId,
-          actorUserId: ctx.user!.id,
-          action: "update",
-          resourceType: "extension",
-          resourceId: String(input.id),
-          oldValue,
-          newValue: input,
-          ipAddress: ctx.req.ip,
-        });
 
         return { success: true };
       }),
@@ -1387,7 +1417,7 @@ export const pbxRouter = router({
       .input(z.object({ id: z.number(), tenantId: z.number().int().positive().optional() }))
       .mutation(async ({ ctx, input }) => {
         const tc = await getTenantAdminMutationCtx(ctx, input.tenantId);
-        await withTransaction(async (client) => {
+        await withPbxMutation(tc.tenantId, ctx.user!.id, async (client, audit) => {
           await lockLivePbxAdmin(client, ctx.user!.id, tc.tenantId, "extension deletion");
           await revokeExtensionSipAuth(client, input.id, tc.tenantId);
           // Soft delete extension
@@ -1403,18 +1433,17 @@ export const pbxRouter = router({
              WHERE extension_id = $1 AND tenant_id = $2 AND deleted_at IS NULL`,
             [input.id, tc.tenantId],
           );
+          await audit({
+            tenantId: tc.tenantId,
+            actorUserId: ctx.user!.id,
+            action: "delete",
+            resourceType: "extension",
+            resourceId: String(input.id),
+            ipAddress: ctx.req.ip,
+          });
         });
 
         await invalidateCache(`directory:${tc.tenantId}:*`);
-
-        await writeAuditLog({
-          tenantId: tc.tenantId,
-          actorUserId: ctx.user!.id,
-          action: "delete",
-          resourceType: "extension",
-          resourceId: String(input.id),
-          ipAddress: ctx.req.ip,
-        });
 
         return { success: true };
       }),
@@ -1424,7 +1453,7 @@ export const pbxRouter = router({
       .input(z.object({ extensionId: z.number(), tenantId: z.number().int().positive().optional() }))
       .mutation(async ({ ctx, input }) => {
         const tc = await getTenantAdminMutationCtx(ctx, input.tenantId);
-        const reset = await withTransaction(async (client) => {
+        const reset = await withPbxMutation(tc.tenantId, ctx.user!.id, async (client, audit) => {
           await lockLivePbxAdmin(client, ctx.user!.id, tc.tenantId, "SIP password");
           const saResult = await client.query(
             `SELECT sa.*, e.sip_username AS extension_sip_username,
@@ -1508,6 +1537,14 @@ export const pbxRouter = router({
             throw new TRPCError({ code: "CONFLICT", message: "The SIP credential update could not complete" });
           }
 
+          await audit({
+            tenantId: tc.tenantId,
+            actorUserId: ctx.user!.id,
+            action: "reset_password",
+            resourceType: "sip_account",
+            resourceId: String(sa.id),
+            ipAddress: ctx.req.ip,
+          });
           return {
             accountId: sa.id,
             sipCredentials: {
@@ -1517,14 +1554,7 @@ export const pbxRouter = router({
           };
         });
         await invalidateCache(`directory:${tc.tenantId}:*`);
-        await writeAuditLog({
-          tenantId: tc.tenantId,
-          actorUserId: ctx.user!.id,
-          action: "reset_password",
-          resourceType: "sip_account",
-          resourceId: String(reset.accountId),
-          ipAddress: ctx.req.ip,
-        });
+
         return { sipCredentials: reset.sipCredentials };
       }),
   }),
@@ -1610,9 +1640,9 @@ export const pbxRouter = router({
         }
         const normalized = normalizeToE164(input.number);
 
-        const result = await withTransaction(async (client) => {
+        const result = await withPbxMutation(tc.tenantId, ctx.user!.id, async (client, audit) => {
           await lockLivePbxAdmin(client, ctx.user!.id, tc.tenantId);
-          return client.query(
+          const inserted = await client.query(
             `INSERT INTO phone_numbers (tenant_id, number_e164, number_display, country, number_type, provider, status)
              VALUES ($1, $2, $3, $4, $5, $6, 'pending')
              RETURNING *`,
@@ -1625,16 +1655,16 @@ export const pbxRouter = router({
               input.provider,
             ],
           );
-        });
-
-        await writeAuditLog({
-          tenantId: tc.tenantId,
-          actorUserId: ctx.user!.id,
-          action: "create",
-          resourceType: "phone_number",
-          resourceId: String(result.rows[0].id),
-          newValue: { number: normalized.e164, type: input.numberType, status: "pending" },
-          ipAddress: ctx.req.ip,
+          await audit({
+            tenantId: tc.tenantId,
+            actorUserId: ctx.user!.id,
+            action: "create",
+            resourceType: "phone_number",
+            resourceId: String(inserted.rows[0].id),
+            newValue: { number: normalized.e164, type: input.numberType, status: "pending" },
+            ipAddress: ctx.req.ip,
+          });
+          return inserted;
         });
 
         return result.rows[0];
@@ -1683,7 +1713,7 @@ export const pbxRouter = router({
         ) {
           throw new TRPCError({ code: "NOT_FOUND" });
         }
-        await withTransaction(async (client) => {
+        await withPbxMutation(tc.tenantId, ctx.user!.id, async (client, audit) => {
           await lockLivePbxAdmin(client, ctx.user!.id, tc.tenantId);
           if (input.assignedRouteType && input.assignedRouteId) {
             // Lock every referenced destination row, including the SIP account
@@ -1707,22 +1737,21 @@ export const pbxRouter = router({
             ],
           );
           if (!updated.rows[0]) throw new TRPCError({ code: "NOT_FOUND" });
+          await audit({
+            tenantId: tc.tenantId,
+            actorUserId: ctx.user!.id,
+            action: "assign_route",
+            resourceType: "phone_number",
+            resourceId: String(input.id),
+            newValue: {
+              routeType: input.assignedRouteType,
+              routeId: input.assignedRouteId,
+            },
+            ipAddress: ctx.req.ip,
+          });
         });
 
         await invalidateCache(`routing:${tc.tenantId}:*`);
-
-        await writeAuditLog({
-          tenantId: tc.tenantId,
-          actorUserId: ctx.user!.id,
-          action: "assign_route",
-          resourceType: "phone_number",
-          resourceId: String(input.id),
-          newValue: {
-            routeType: input.assignedRouteType,
-            routeId: input.assignedRouteId,
-          },
-          ipAddress: ctx.req.ip,
-        });
 
         return { success: true };
       }),
@@ -1892,22 +1921,21 @@ export const pbxRouter = router({
         sets.push(`updated_at = NOW()`);
         vals.push(tc.tenantId);
 
-        await withTransaction(async (client) => {
+        await withPbxMutation(tc.tenantId, ctx.user!.id, async (client, audit) => {
           await lockLivePbxAdmin(client, ctx.user!.id, tc.tenantId, "fraud controls");
           await client.query(
             `UPDATE fraud_controls SET ${sets.join(", ")} WHERE tenant_id = $${idx}`,
             vals,
           );
-        });
-
-        await writeAuditLog({
-          tenantId: tc.tenantId,
-          actorUserId: ctx.user!.id,
-          action: "update",
-          resourceType: "fraud_controls",
-          resourceId: String(tc.tenantId),
-          newValue: input,
-          ipAddress: ctx.req.ip,
+          await audit({
+            tenantId: tc.tenantId,
+            actorUserId: ctx.user!.id,
+            action: "update",
+            resourceType: "fraud_controls",
+            resourceId: String(tc.tenantId),
+            newValue: input,
+            ipAddress: ctx.req.ip,
+          });
         });
 
         return { success: true };
@@ -1968,7 +1996,7 @@ export const pbxRouter = router({
 
         const [dataResult, countResult] = await Promise.all([
           query(
-            `SELECT cr.*, 
+            `SELECT cr.*,
                     (SELECT COUNT(*) FROM call_legs cl WHERE cl.call_record_id = cr.id) as leg_count
              FROM call_records cr
              WHERE ${where}

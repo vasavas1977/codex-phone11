@@ -30,7 +30,7 @@ vi.mock("../server/pbx/tenant-middleware", async (importOriginal) => ({
   requireLiveTenantAdminMembership: vi.fn(async () => db.lastRole),
 }));
 vi.mock("../server/pbx/audit", () => ({
-  writeAuditLog: vi.fn(),
+  insertAuditLog: vi.fn(),
   queryAuditLogs: vi.fn(),
 }));
 vi.mock("../server/pbx/sip-secrets", () => ({
@@ -54,7 +54,7 @@ import { getCallStats, getVoicemails } from "../server/pbx/cdr-processor";
 // eslint-disable-next-line import/first
 import { createSipCredentials, regenerateSipCredentials } from "../server/pbx/sip-secrets";
 // eslint-disable-next-line import/first
-import { writeAuditLog } from "../server/pbx/audit";
+import { insertAuditLog } from "../server/pbx/audit";
 // eslint-disable-next-line import/first
 import { profilePhotoDescriptors } from "../server/profile/photo";
 // eslint-disable-next-line import/first
@@ -887,9 +887,9 @@ describe("admin SIP credential writes", () => {
       return undefined;
     });
     await expect(pbxRouter.createCaller(context()).extensions.create({ extensionNumber: "3101", userId: 88 }))
-      .rejects.toThrow("SIP account write failed");
+      .rejects.toMatchObject({ code: "INTERNAL_SERVER_ERROR", message: "Could not complete PBX change", cause: undefined });
     expect(db.withTransaction).toHaveBeenCalledOnce();
-    expect(writeAuditLog).not.toHaveBeenCalled();
+    expect(insertAuditLog).not.toHaveBeenCalled();
     expect(db.query.mock.calls.some(([sql]) => String(sql).includes("INSERT INTO user_extensions"))).toBe(false);
   });
 
@@ -947,7 +947,7 @@ describe("admin SIP credential writes", () => {
       .rejects.toMatchObject({ code: "CONFLICT" });
     expect(regenerateSipCredentials).not.toHaveBeenCalled();
     expect(db.query.mock.calls.some(([sql]) => String(sql).includes("UPDATE sip_accounts SET ha1"))).toBe(false);
-    expect(writeAuditLog).not.toHaveBeenCalled();
+    expect(insertAuditLog).not.toHaveBeenCalled();
   });
 
   it("does not insert a replacement during a missing-subscriber reset", async () => {
@@ -959,7 +959,7 @@ describe("admin SIP credential writes", () => {
     await expect(pbxRouter.createCaller(context()).extensions.resetPassword({ extensionId: 44 }))
       .rejects.toMatchObject({ code: "CONFLICT" });
     expect(db.query.mock.calls.some(([sql]) => String(sql).includes("INSERT INTO subscriber"))).toBe(false);
-    expect(writeAuditLog).not.toHaveBeenCalled();
+    expect(insertAuditLog).not.toHaveBeenCalled();
   });
 
   it("aborts reset if the subscriber write fails after the account update", async () => {
@@ -968,10 +968,10 @@ describe("admin SIP credential writes", () => {
       return undefined;
     });
     await expect(pbxRouter.createCaller(context()).extensions.resetPassword({ extensionId: 44 }))
-      .rejects.toThrow("subscriber write failed");
+      .rejects.toMatchObject({ code: "INTERNAL_SERVER_ERROR", message: "Could not complete PBX change", cause: undefined });
     expect(db.withTransaction).toHaveBeenCalledOnce();
     expect(db.query.mock.calls.some(([sql]) => String(sql).includes("UPDATE sip_accounts SET ha1"))).toBe(true);
-    expect(writeAuditLog).not.toHaveBeenCalled();
+    expect(insertAuditLog).not.toHaveBeenCalled();
   });
 });
 
@@ -1011,6 +1011,7 @@ describe.skipIf(!credentialTestDatabaseUrl)("admin SIP credentials on isolated P
           status text, deleted_at timestamptz, updated_at timestamptz
         );
         CREATE TABLE subscriber(
+          id serial PRIMARY KEY,
           username text, domain text, password text, ha1 text, ha1b text,
           UNIQUE(username, domain)
         );
@@ -1060,7 +1061,7 @@ describe.skipIf(!credentialTestDatabaseUrl)("admin SIP credentials on isolated P
       expect(JSON.stringify(listed)).not.toContain("legacy-secret");
       expect(JSON.stringify(detail)).not.toContain("legacy-secret");
       await pbxRouter.createCaller(context()).extensions.update({ id: extensionId, displayName: "Renamed" });
-      expect(writeAuditLog).toHaveBeenCalledWith(expect.objectContaining({
+      expect(insertAuditLog).toHaveBeenCalledWith(expect.any(Function), expect.objectContaining({
         resourceType: "extension", oldValue: expect.not.objectContaining({ sip_password: "legacy-secret" }),
       }));
 
@@ -1116,9 +1117,14 @@ describe.skipIf(!credentialTestDatabaseUrl)("admin SIP credentials on isolated P
         secretIv: Buffer.from("recovered-iv"), secretTag: Buffer.from("recovered-tag"), dekId: "dek-v1",
       });
       await expect(pbxRouter.createCaller(context()).extensions.resetPassword({ extensionId }))
-        .resolves.toMatchObject({ sipCredentials: { username: "3101" } });
-      expect((await database.query("SELECT password FROM subscriber WHERE username='3101'")).rows[0].password)
-        .toBe("recovered-reset");
+        .rejects.toMatchObject({ code: "CONFLICT" });
+      expect((await database.query("SELECT password FROM subscriber WHERE username='3101'")).rows).toHaveLength(0);
+      expect((await database.query("SELECT ha1 FROM sip_accounts WHERE extension_id=$1", [extensionId])).rows[0].ha1)
+        .toBe("rotated-ha1");
+      // Restore the previously matched fixture row for the independent transfer
+      // checks below; password reset must never adopt an absent subscriber.
+      await database.query(`INSERT INTO subscriber(username,domain,password,ha1,ha1b)
+        VALUES('3101','sip.phone11.ai','rotated-reset','rotated-ha1','rotated-ha1b')`);
 
       vi.mocked(regenerateSipCredentials).mockReturnValue({
         sipUsername: "3101", sipDomain: "sip.phone11.ai", plaintextPassword: "transfer-secret",
@@ -1180,7 +1186,7 @@ describe.skipIf(!credentialTestDatabaseUrl)("admin SIP credentials on isolated P
 
       await database.query("UPDATE subscriber SET ha1='foreign-ha1' WHERE username='3101'");
       await expect(pbxRouter.createCaller(context()).extensions.delete({ id: extensionId }))
-        .rejects.toThrow("do not match");
+        .rejects.toMatchObject({ code: "INTERNAL_SERVER_ERROR", message: "Could not complete PBX change", cause: undefined });
       expect((await database.query("SELECT status FROM extensions WHERE id=$1", [extensionId])).rows[0].status)
         .toBe("active");
       await database.query("UPDATE subscriber SET ha1='transfer-ha1' WHERE username='3101'");
