@@ -403,6 +403,26 @@ function AdminUsersContent() {
     void save(request);
   };
 
+  const invitations = canManage ? (
+    <AdminInvitations
+      tenantId={tenantId ?? null}
+      actorRole={actorRole}
+      userId={typeof user?.id === "number" ? user.id : null}
+      workspaceValid={Boolean(
+        tenantId &&
+        workspace.selectedTenantId === tenantId &&
+        workspace.membershipsQuery.isSuccess &&
+        !workspace.membershipsQuery.isFetching &&
+        Auth.getAuthSnapshot().user?.id === user?.id,
+      )}
+    />
+  ) : null;
+  const showPeopleTable =
+    !tenantQuery.isLoading &&
+    !tenantQuery.isError &&
+    canManage &&
+    !membersQuery.isLoading &&
+    !membersQuery.isError;
   const body = tenantQuery.isLoading ? (
     <View style={styles.state}>
       <ActivityIndicator color={colors.primary} />
@@ -487,6 +507,7 @@ function AdminUsersContent() {
     </View>
   ) : (
     <AdminPeopleTable
+      header={Platform.OS === "web" ? invitations : undefined}
       members={members}
       tenantId={tenantId}
       directoryPhotos={directoryPhotos}
@@ -549,22 +570,16 @@ function AdminUsersContent() {
         </TouchableOpacity>
       </View>
 
-      {canManage ? (
-        <AdminInvitations
-          tenantId={tenantId ?? null}
-          actorRole={actorRole}
-          userId={typeof user?.id === "number" ? user.id : null}
-          workspaceValid={Boolean(
-            tenantId &&
-            workspace.selectedTenantId === tenantId &&
-            workspace.membershipsQuery.isSuccess &&
-            !workspace.membershipsQuery.isFetching &&
-            Auth.getAuthSnapshot().user?.id === user?.id,
-          )}
-        />
-      ) : null}
+      {Platform.OS !== "web" ? invitations : null}
 
-      {body}
+      {Platform.OS === "web" && !showPeopleTable ? (
+        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ flexGrow: 1 }}>
+          {invitations}
+          {body}
+        </ScrollView>
+      ) : (
+        body
+      )}
 
       <Modal
         visible={Boolean(editing) && canManage}
