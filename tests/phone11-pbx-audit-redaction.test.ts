@@ -5,11 +5,29 @@ vi.mock("../server/pbx/db", () => ({ query: db.query }));
 
 // The audit module must load after the database wrapper is mocked.
 // eslint-disable-next-line import/first
-import { queryAuditLogs, redactAuditRow, redactAuditValue, writeAuditLog } from "../server/pbx/audit";
+import { queryAuditLogs, redactAuditRow, redactAuditValue, writeAuditLog, insertAuditLog } from "../server/pbx/audit";
 
-beforeEach(() => db.query.mockReset());
+beforeEach(() => { db.query.mockReset(); });
 
 describe("PBX audit credential redaction", () => {
+  it("strict insertion uses only the supplied executor and preserves redaction", async () => {
+    const execute = vi.fn().mockResolvedValue({ rows: [] });
+    await insertAuditLog(execute, { tenantId: 7, action: "update", resourceType: "ivr_menu", oldValue: { token: "PRIVATE_TOKEN", nested: { password: "PRIVATE_PASSWORD", count: 2 } } });
+    expect(db.query).not.toHaveBeenCalled();
+    expect(JSON.parse(execute.mock.calls[0][1][5])).toEqual({ token: "[redacted]", nested: { password: "[redacted]", count: 2 } });
+  });
+  it("strict insertion propagates storage failure, while legacy insertion remains best effort and logs no private error", async () => {
+    const failure = new Error("PRIVATE_PG_PAYLOAD");
+    const execute = vi.fn().mockRejectedValue(failure);
+    await expect(insertAuditLog(execute, { tenantId: 7, action: "update", resourceType: "ivr_menu" })).rejects.toBe(failure);
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      db.query.mockRejectedValue(failure);
+      await expect(writeAuditLog({ tenantId: 7, action: "update", resourceType: "other" })).resolves.toBeUndefined();
+      expect(log).toHaveBeenCalledWith("[Audit] Failed to write log");
+      expect(JSON.stringify(log.mock.calls)).not.toContain("PRIVATE_");
+    } finally { log.mockRestore(); }
+  });
   it("scrubs nested credentials from a new audit write", async () => {
     db.query.mockResolvedValue({ rows: [] });
     await writeAuditLog({
