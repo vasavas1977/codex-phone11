@@ -6,6 +6,7 @@ import { build } from "esbuild";
 import ts from "typescript";
 import { RESTORED_WORKER_SOURCE_CONTRACT } from "../scripts/phone11-pbx-clone/restored-worker-source-contract-v1";
 import { custodyObservation } from "./fixtures/phone11-pbx-clone-custody-v2";
+import { ATOMIC_AUDIT_SOURCE_FIXTURE } from "./fixtures/phone11-atomic-audit-source-v1";
 import type { CloneAdapter, ClonePool } from "../scripts/phone11-pbx-clone/real-pg-adapter";
 import { parseSelectedHandlerInput, runSelectedHandler, SELECTED_BUILD_CONTRACT, SELECTED_PRODUCT_PINS, SELECTED_LANES } from "../scripts/phone11-pbx-clone/selected-handler-entry";
 vi.mock("pg", () => { throw new Error("OFFLINE_DRIVER_IMPORT_FORBIDDEN"); });
@@ -143,12 +144,31 @@ describe("injected transport bridge only; not actual handler or driver execution
 });
 
 describe("static build identities, never evaluate product modules or resulting bundle", () => {
-  it("binds all ten inspected source files and real adapter bytes", () => {
-    for (const pin of SELECTED_PRODUCT_PINS) expect(digest(readFileSync(pin.path))).toBe(pin.sha256);
+  it("binds the exact two-file atomic delta and all eight unchanged historical source pins", () => {
+    expect(ATOMIC_AUDIT_SOURCE_FIXTURE.sourceRevision).toBe("e9f5831de8d3ef27f628cfdeb4ad57369ba01dc9");
+    expect(ATOMIC_AUDIT_SOURCE_FIXTURE.runtimeAuthority).toBe(false);
+    expect(ATOMIC_AUDIT_SOURCE_FIXTURE.updates.map(pin => pin.path).sort()).toEqual(["server/pbx/audit.ts", "server/pbx/ivr-router.ts"]);
+    const currentPins = SELECTED_PRODUCT_PINS.map(pin => {
+      const update = ATOMIC_AUDIT_SOURCE_FIXTURE.updates.find(item => item.path === pin.path);
+      if (update) expect(pin.sha256).toBe(update.historicalSha256);
+      const expected = update?.sha256 ?? pin.sha256;
+      expect(digest(readFileSync(pin.path))).toBe(expected);
+      return { path: pin.path, sha256: expected };
+    });
+    expect(currentPins.filter((pin, index) => pin.sha256 !== SELECTED_PRODUCT_PINS[index].sha256)).toHaveLength(2);
+    expect(digest(JSON.stringify(currentPins))).toBe(ATOMIC_AUDIT_SOURCE_FIXTURE.graphSha256);
+    expect(ATOMIC_AUDIT_SOURCE_FIXTURE.graphSha256).not.toBe(SELECTED_BUILD_CONTRACT.graphSha256);
     expect(digest(JSON.stringify(SELECTED_PRODUCT_PINS))).toBe(SELECTED_BUILD_CONTRACT.graphSha256);
     expect(SELECTED_BUILD_CONTRACT.adapterSha256).toBe("3a82401460aa46622b1a155f9b073b0e8ddbb1719ddcc7de665b358a548d8a08");
     expect(digest(readFileSync("scripts/phone11-pbx-clone/real-pg-adapter.ts"))).toBe(RESTORED_WORKER_SOURCE_CONTRACT.adapterSha256);
     expect(RESTORED_WORKER_SOURCE_CONTRACT.adapterSha256).not.toBe(SELECTED_BUILD_CONTRACT.adapterSha256);
+  });
+  it.each(SELECTED_LANES)("refuses the current atomic source graph as a historical %s build before imports", async lane => {
+    const current = { ...input(), lane, build: { ...input().build, graphSha256: ATOMIC_AUDIT_SOURCE_FIXTURE.graphSha256 } };
+    expect(() => parseSelectedHandlerInput(JSON.stringify(current))).toThrow("BUILD_BINDING_REFUSED");
+    expect((await runSelectedHandler(JSON.stringify(current), new AbortController().signal)).code).toBe("BUILD_BINDING_REFUSED");
+    // Supplying the unchanged historical identity does not admit the changed source either.
+    expect(() => parseSelectedHandlerInput(JSON.stringify({ ...input(), lane }))).toThrow("ENTRY_BINDING_UNBOUND");
   });
   it("compiles actual selected modules with only DB and ioredis transport aliases; excludes unrelated graph", async () => {
     const bridge = resolve(SELECTED_BUILD_CONTRACT.databaseAlias);

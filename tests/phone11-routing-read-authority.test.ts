@@ -57,7 +57,7 @@ describe.skipIf(!databaseUrl)("current routing read admission on an owned dispos
     expect(Number(identity.rows[0].version)).toBeGreaterThanOrEqual(170000); expect(Number(identity.rows[0].version)).toBeLessThan(180000);
   });
   beforeEach(async () => {
-    await pool.query("DELETE FROM ring_groups; DELETE FROM tenant_memberships; DELETE FROM tenants; INSERT INTO tenants(id,status) VALUES(7,'active'),(8,'active'); INSERT INTO tenant_memberships(user_id,tenant_id,role,status,created_at) VALUES(9,7,'admin','active','2026-01-01')");
+    await pool.query("DELETE FROM audit_logs; DELETE FROM ring_groups; DELETE FROM tenant_memberships; DELETE FROM tenants; INSERT INTO tenants(id,status) VALUES(7,'active'),(8,'active'); INSERT INTO tenant_memberships(user_id,tenant_id,role,status,created_at) VALUES(9,7,'admin','active','2026-01-01')");
     // Only admission SQL executes in this minimal fixture. Resource results
     // retain the normal router fixture; this does not claim PBX data acceptance.
     state.query.mockImplementation(async (sql, parameters) => String(sql).includes("tenant_memberships")

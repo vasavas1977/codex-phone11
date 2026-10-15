@@ -650,6 +650,11 @@ jobs:
                 created_at timestamptz,PRIMARY KEY(user_id,tenant_id));
               CREATE TABLE extensions(
                 id integer PRIMARY KEY,tenant_id integer NOT NULL REFERENCES tenants(id),deleted_at timestamptz);
+              -- Disposable audit storage for the real strict transaction insert.
+              CREATE TABLE audit_logs(
+                id bigserial PRIMARY KEY,tenant_id integer NOT NULL REFERENCES tenants(id),
+                actor_user_id integer,action text NOT NULL,resource_type text NOT NULL,resource_id text,
+                old_value jsonb,new_value jsonb,ip_address inet,user_agent text,request_id text,session_id text);
               SET phone11.expected_database='phone11_routing_auth_test';
               SET phone11.expected_schema='p11_routing_auth_test';
             `);
