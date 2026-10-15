@@ -13,7 +13,7 @@ import {
 import { Pool } from "pg";
 
 const db = vi.hoisted(() => ({ query: vi.fn(), withTransaction: vi.fn() }));
-const audit = vi.hoisted(() => ({ writeAuditLog: vi.fn() }));
+const audit = vi.hoisted(() => ({ insertAuditLog: vi.fn() }));
 
 vi.mock("../server/pbx/db", () => db);
 vi.mock("../server/pbx/tenant-middleware", async (importOriginal) => ({
@@ -25,7 +25,7 @@ vi.mock("../server/pbx/redis", () => ({
   invalidateCache: vi.fn(),
 }));
 vi.mock("../server/pbx/audit", () => ({
-  writeAuditLog: audit.writeAuditLog,
+  insertAuditLog: audit.insertAuditLog,
   queryAuditLogs: vi.fn(),
 }));
 vi.mock("../server/pbx/sip-secrets", () => ({
@@ -128,7 +128,8 @@ describe("workspace setting API", () => {
     expect(String(db.query.mock.calls[2][0])).toContain(
       "ON CONFLICT (tenant_id)",
     );
-    expect(audit.writeAuditLog).toHaveBeenCalledWith(
+    expect(audit.insertAuditLog).toHaveBeenCalledWith(
+      expect.any(Function),
       expect.objectContaining({
         tenantId: 7,
         actorUserId: 9,
@@ -176,7 +177,7 @@ describe("workspace setting API", () => {
         businessHoursTimezone: "UTC",
       }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
-    expect(audit.writeAuditLog).not.toHaveBeenCalled();
+    expect(audit.insertAuditLog).not.toHaveBeenCalled();
   });
 
   it("keeps an incomplete table unavailable before an upsert can reference it", async () => {
@@ -193,7 +194,7 @@ describe("workspace setting API", () => {
       }),
     ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
     expect(db.query).toHaveBeenCalledTimes(2);
-    expect(audit.writeAuditLog).not.toHaveBeenCalled();
+    expect(audit.insertAuditLog).not.toHaveBeenCalled();
   });
 });
 
