@@ -260,7 +260,7 @@ describe("enterprise PBX admin screen source contracts", () => {
   });
 
   it("does not render dashboard data before sign-in and workspace authorization resolve", () => {
-    expect(dashboard).toContain("useAuth({ autoFetch: false })");
+    expect(dashboard).toContain("useAdminAuthState()");
     expect(dashboard).toContain("useTenant(Boolean(user))");
     expect(dashboard).toContain("Sign in to use workspace administration");
     expect(dashboard).toContain("Checking workspace access");

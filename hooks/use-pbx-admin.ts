@@ -549,20 +549,22 @@ export function useExtension(id: number) {
   );
 }
 
-export function useCreateExtension() {
+export function useCreateExtension(invalidateOnSuccess: boolean = true) {
   const utils = trpc.useUtils();
   return trpc.pbx.extensions.create.useMutation({
     onSuccess: () => {
+      if (!invalidateOnSuccess) return;
       utils.pbx.extensions.list.invalidate();
       utils.pbx.dashboard.stats.invalidate();
     },
   });
 }
 
-export function useUpdateExtension() {
+export function useUpdateExtension(invalidateOnSuccess: boolean = true) {
   const utils = trpc.useUtils();
   return trpc.pbx.extensions.update.useMutation({
     onSuccess: () => {
+      if (!invalidateOnSuccess) return;
       utils.pbx.extensions.list.invalidate();
       utils.pbx.tenant.people.invalidate();
     },

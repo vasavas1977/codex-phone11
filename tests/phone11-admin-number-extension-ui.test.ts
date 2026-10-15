@@ -30,8 +30,8 @@ describe("enterprise extension administration", () => {
   });
 
   it("creates validated extensions and assigns them through tenant-scoped APIs", () => {
-    expect(extensions).toContain("useCreateExtension()");
-    expect(extensions).toContain("useUpdateExtension()");
+    expect(extensions).toContain("useCreateExtension(false)");
+    expect(extensions).toContain("useUpdateExtension(false)");
     expect(extensions).toContain("useTenantPeople(tenantQuery.isSuccess && canManage)");
     expect(extensions).toContain("/^\\d{2,10}$/");
     expect(extensions).toContain('type: "user"');
@@ -47,7 +47,7 @@ describe("enterprise extension administration", () => {
   it("closes successful assignment editing before best-effort refresh and retains failed selections", () => {
     expect(extensions).toContain("closeAssignmentEditor();");
     expect(extensions).toContain(
-      "void extensionsQuery.refetch().catch(() => undefined);",
+      "void actions.utils.pbx.extensions.list.invalidate({",
     );
     expect(extensions).toContain("setAssignmentError(errorMessage(error));");
   });

@@ -9,7 +9,7 @@ import {
 import { router } from "expo-router";
 
 import { ScreenContainer } from "@/components/screen-container";
-import { useAuth } from "@/hooks/use-auth";
+import { useAdminAuthState } from "./use-admin-auth-state";
 import { useColors } from "@/hooks/use-colors";
 import { usePbxAdminWorkspace } from "@/hooks/use-pbx-admin";
 
@@ -22,16 +22,31 @@ export function AdminWorkspaceBoundary({
   requiresImplicitTenant?: boolean;
 }) {
   const colors = useColors();
-  const { user } = useAuth({ autoFetch: false });
+  const {
+    user,
+    checking: authChecking,
+    unavailable: authUnavailable,
+    retry: retryAuth,
+  } = useAdminAuthState();
   const workspace = usePbxAdminWorkspace();
 
   let title = "";
   let detail = "";
   let loading = false;
-  if (!user) {
+  if (authChecking) {
+    title = "Checking your session";
+    detail = "Phone11 is confirming your signed-in account.";
+    loading = true;
+  } else if (authUnavailable) {
+    title = "Session verification unavailable";
+    detail = "Phone11 could not verify your session. Try again.";
+  } else if (!user) {
     title = "Sign in to manage Phone11";
     detail = "Open the admin portal after signing in.";
-  } else if (workspace.membershipsQuery.isLoading || workspace.admissionChecking) {
+  } else if (
+    workspace.membershipsQuery.isLoading ||
+    workspace.admissionChecking
+  ) {
     title = "Checking workspace access";
     detail = "Phone11 is confirming your workspace membership.";
     loading = true;
@@ -78,13 +93,20 @@ export function AdminWorkspaceBoundary({
         >
           {detail}
         </Text>
-        {workspace.membershipsQuery.isError ||
-        workspace.admissionError ||
-        workspace.updateRequired ? (
+        {!authChecking &&
+        (authUnavailable ||
+          (user &&
+            (workspace.membershipsQuery.isError ||
+              workspace.admissionError ||
+              workspace.updateRequired))) ? (
           <TouchableOpacity
             accessibilityRole="button"
             accessibilityLabel="Try again"
-            onPress={() => void workspace.membershipsQuery.refetch()}
+            onPress={() =>
+              void (authUnavailable
+                ? retryAuth()
+                : workspace.membershipsQuery.refetch())
+            }
             style={[styles.button, { borderColor: colors.primary }]}
           >
             <Text style={{ color: colors.primary }}>Try again</Text>
