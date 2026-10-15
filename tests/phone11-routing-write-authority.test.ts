@@ -9,11 +9,14 @@ const state = vi.hoisted(() => ({
 }));
 vi.mock("../server/pbx/db", () => ({ query: state.query, withTransaction: state.withTransaction }));
 vi.mock("../server/pbx/redis", () => ({ cacheGetOrSet: state.cacheGetOrSet, invalidateCache: state.invalidate }));
-vi.mock("../server/pbx/audit", () => ({ writeAuditLog: state.audit }));
+vi.mock("../server/pbx/audit", async importOriginal => ({
+  ...await importOriginal<typeof import("../server/pbx/audit")>(),
+  insertAuditLog: state.audit,
+}));
 vi.mock("../server/pbx/schema-capabilities", () => ({ readManagementCapabilities: state.capabilities }));
 
 type Caller = ReturnType<typeof ivrRouter.createCaller>;
-const context = () => ({ user: { id: 9 }, req: { ip: "127.0.0.1", headers: {} }, res: {} }) as Parameters<typeof ivrRouter.createCaller>[0];
+const context = (ip = "127.0.0.1") => ({ user: { id: 9 }, req: { ip, headers: {} }, res: {} }) as Parameters<typeof ivrRouter.createCaller>[0];
 const cases: [string, (caller: Caller) => Promise<unknown>][] = [
   ["IVR create", c => c.ivr.create({ tenant_id: 7, name: "Menu" })],
   ["IVR update", c => c.ivr.update({ id: 4, name: "Menu" })],
@@ -36,7 +39,7 @@ const cases: [string, (caller: Caller) => Promise<unknown>][] = [
 ];
 const dml = (sql: unknown) => /\b(?:INSERT INTO|UPDATE|DELETE FROM)\b/.test(String(sql)) && !String(sql).includes("FOR UPDATE");
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.clearAllMocks(); state.committed = false; state.actor = [{ tenant_id: 7, role: "admin" }];
   // A setup failure must not leave an unconsumed actual-reader one-shot for
   // another test. clearAllMocks clears calls, but preserves queued implementations.
@@ -48,7 +51,11 @@ beforeEach(() => {
   state.query.mockImplementation(async sql => ({ rows: String(sql).includes("tenant_memberships") ? [{ tenant_id: 7, role: "admin" }] : [{ id: 4, tenant_id: 7 }] }));
   state.transactionQuery.mockImplementation(async sql => ({ rows: String(sql).includes("tenant_memberships") ? state.actor : [{ id: 4, tenant_id: 7, fallback_action: "hangup", overflow_action: "hangup" }] }));
   state.withTransaction.mockImplementation(async fn => { const result = await fn({ query: state.transactionQuery }); state.committed = true; return result; });
-  state.audit.mockImplementation(async () => { expect(state.committed).toBe(true); });
+  const actualAudit = await vi.importActual<typeof import("../server/pbx/audit")>("../server/pbx/audit");
+  state.audit.mockReset().mockImplementation(async (execute, entry) => {
+    expect(state.committed).toBe(false);
+    await actualAudit.insertAuditLog(execute, entry);
+  });
   state.invalidate.mockImplementation(async () => { expect(state.committed).toBe(true); });
 });
 
@@ -65,7 +72,7 @@ describe("routing writes hold current administrator authority", () => {
       throw new Error("synthetic commit refusal");
     });
     await expect(ivrRouter.createCaller(context()).ivr.update({ id: 4, name: "Menu" }))
-      .rejects.toThrow("synthetic commit refusal");
+      .rejects.toMatchObject({ code: "INTERNAL_SERVER_ERROR", message: "Could not complete routing change", cause: undefined });
     expect(state.invalidate).not.toHaveBeenCalled();
     expect(state.committed).toBe(false);
   });
@@ -98,6 +105,9 @@ describe("routing writes hold current administrator authority", () => {
     expect(state.transactionQuery.mock.calls[0][1][0]).toBe(9);
     expect(state.transactionQuery.mock.calls.some(([sql]) => dml(sql))).toBe(true);
     expect(state.withTransaction).toHaveBeenCalledTimes(1);
+    expect(state.audit).toHaveBeenCalledTimes(1);
+    const audits = state.transactionQuery.mock.calls.filter(([sql]) => String(sql).includes("INSERT INTO audit_logs"));
+    expect(audits).toHaveLength(1); expect(audits[0][1].slice(0, 2)).toEqual([7, 9]);
     expect(state.query).not.toHaveBeenCalled(); expect(state.cacheGetOrSet).not.toHaveBeenCalled();
   });
   it("runs the actual capability reader on the held write client", async () => {
@@ -133,19 +143,34 @@ describe("routing writes hold current administrator authority", () => {
     expect(state.transactionQuery.mock.calls[1][0]).toContain("tenant_id = $2 FOR UPDATE");
     expect(state.transactionQuery.mock.calls[1][1]).toEqual([4, 7]);
   });
-  it("has no audit/cache effects when the write transaction fails", async () => {
-    state.withTransaction.mockImplementationOnce(async fn => { await fn({ query: state.transactionQuery }); throw Error("commit failed"); });
-    await expect(ivrRouter.createCaller(context()).queues.create({ tenant_id: 7, name: "Queue" })).rejects.toThrow("commit failed");
-    expect(state.audit).not.toHaveBeenCalled(); expect(state.invalidate).not.toHaveBeenCalled();
+  it("attempts audit on the held client but withholds cache/result when commit fails", async () => {
+    state.withTransaction.mockImplementationOnce(async fn => { await fn({ query: state.transactionQuery }); throw Error("PRIVATE_COMMIT_DETAIL"); });
+    const error = await ivrRouter.createCaller(context()).queues.create({ tenant_id: 7, name: "Queue" }).catch(value => value);
+    expect(error).toMatchObject({ code: "INTERNAL_SERVER_ERROR", message: "Could not complete routing change", cause: undefined });
+    expect(JSON.stringify(error)).not.toContain("PRIVATE_COMMIT_DETAIL");
+    expect(state.audit).toHaveBeenCalledTimes(1);
+    expect(state.transactionQuery.mock.calls.some(([sql]) => String(sql).includes("INSERT INTO audit_logs"))).toBe(true);
+    expect(state.committed).toBe(false); expect(state.invalidate).not.toHaveBeenCalled();
   });
-  it.each(["audit", "cache"])("reports postcommit %s failure without undoing the committed write", async effect => {
-    const failure = Error("postcommit effect failed");
-    if (effect === "audit") state.audit.mockRejectedValueOnce(failure);
-    else state.invalidate.mockRejectedValueOnce(failure);
+  it("refuses audit storage failure before commit and preserves a private-error boundary", async () => {
+    const original = state.transactionQuery.getMockImplementation()!;
+    state.transactionQuery.mockImplementation(async (sql, parameters) => {
+      if (String(sql).includes("INSERT INTO audit_logs")) throw Error("PRIVATE_AUDIT_STORAGE_DETAIL");
+      return original(sql, parameters);
+    });
+    const error = await ivrRouter.createCaller(context()).queues.create({ tenant_id: 7, name: "Queue" }).catch(value => value);
+    expect(error).toMatchObject({ code: "INTERNAL_SERVER_ERROR", message: "Could not record routing change", cause: undefined });
+    expect(JSON.stringify(error)).not.toContain("PRIVATE_AUDIT_STORAGE_DETAIL");
+    expect(state.audit).toHaveBeenCalledTimes(1); expect(state.withTransaction).toHaveBeenCalledTimes(1);
+    expect(state.committed).toBe(false); expect(state.invalidate).not.toHaveBeenCalled();
+  });
+  it("reports postcommit cache failure after the routing and audit writes commit", async () => {
+    state.invalidate.mockRejectedValueOnce(Error("postcommit effect failed"));
     await expect(ivrRouter.createCaller(context()).queues.create({ tenant_id: 7, name: "Queue" })).rejects.toThrow("postcommit effect failed");
     expect(state.committed).toBe(true);
-    expect(state.withTransaction).toHaveBeenCalledTimes(1);
+    expect(state.audit).toHaveBeenCalledTimes(1); expect(state.withTransaction).toHaveBeenCalledTimes(1);
     expect(state.transactionQuery.mock.calls.some(([sql]) => String(sql).includes("INSERT INTO call_queues"))).toBe(true);
+    expect(state.transactionQuery.mock.calls.some(([sql]) => String(sql).includes("INSERT INTO audit_logs"))).toBe(true);
   });
   it("preserves IVR's explicit-selection rule for multiple memberships", async () => {
     state.actor = [{ tenant_id: 7, role: "admin" }, { tenant_id: 8, role: "admin" }];
@@ -169,7 +194,7 @@ describe.skipIf(!databaseUrl)("routing authority on an owned disposable PostgreS
     expect(Number(identity.rows[0].version)).toBeGreaterThanOrEqual(170000); expect(Number(identity.rows[0].version)).toBeLessThan(180000);
   });
   beforeEach(async () => {
-    await pool.query("DELETE FROM ring_groups; DELETE FROM tenant_memberships; DELETE FROM tenants; INSERT INTO tenants(id,status) VALUES(7,'active'),(8,'active'); INSERT INTO tenant_memberships(user_id,tenant_id,role,status,created_at) VALUES(9,7,'admin','active',now())");
+    await pool.query("DELETE FROM audit_logs; DELETE FROM ring_groups; DELETE FROM tenant_memberships; DELETE FROM tenants; INSERT INTO tenants(id,status) VALUES(7,'active'),(8,'active'); INSERT INTO tenant_memberships(user_id,tenant_id,role,status,created_at) VALUES(9,7,'admin','active',now())");
     state.query.mockImplementation((sql, parameters) => pool.query(sql, parameters));
     state.withTransaction.mockImplementation(async fn => { const client = await pool.connect(); try { await client.query("BEGIN"); const result = await fn(client); await client.query("COMMIT"); state.committed = true; return result; } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); } });
   });
@@ -220,6 +245,40 @@ describe.skipIf(!databaseUrl)("routing authority on an owned disposable PostgreS
   });
   it("rejects a foreign tenant even with a current admin membership elsewhere", async () => {
     await expect(ivrRouter.createCaller(context()).ringGroups.create({ tenant_id: 8, name: "Foreign" })).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+  it("rolls back the routing row when actual audit storage rejects its address", async () => {
+    const ctx = context("PRIVATE_INVALID_AUDIT_ADDRESS");
+    const error = await ivrRouter.createCaller(ctx).ringGroups.create({ tenant_id: 7, name: "Private address", fallback_action: "hangup" }).catch(value => value);
+    expect(error).toMatchObject({ code: "INTERNAL_SERVER_ERROR", message: "Could not record routing change", cause: undefined });
+    expect(JSON.stringify(error)).not.toContain("PRIVATE_INVALID_AUDIT_ADDRESS");
+    expect(state.committed).toBe(false); expect(state.invalidate).not.toHaveBeenCalled();
+    expect((await pool.query("SELECT count(*)::int count FROM ring_groups")).rows[0].count).toBe(0);
+    expect((await pool.query("SELECT count(*)::int count FROM audit_logs")).rows[0].count).toBe(0);
+  });
+  it("keeps both routing and audit rows invisible until the same COMMIT", async () => {
+    let release!: () => void; const paused = new Promise<void>(resolve => { release = resolve; });
+    let reached!: () => void; const atAudit = new Promise<void>(resolve => { reached = resolve; });
+    state.withTransaction.mockImplementationOnce(async fn => {
+      const client = await pool.connect(); await client.query("BEGIN");
+      const held = { query: async (sql: string, parameters?: unknown[]) => {
+        const result = await client.query(sql, parameters);
+        if (sql.includes("INSERT INTO audit_logs")) { reached(); await paused; }
+        return result;
+      } } as unknown as PoolClient;
+      try { const result = await fn(held); await client.query("COMMIT"); state.committed = true; return result; }
+      catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+    });
+    const write = create();
+    try {
+      await Promise.race([atAudit, write.then(() => { throw Error("Missing precommit audit pause"); }, error => { throw error; })]);
+      expect((await pool.query("SELECT count(*)::int count FROM ring_groups")).rows[0].count).toBe(0);
+      expect((await pool.query("SELECT count(*)::int count FROM audit_logs")).rows[0].count).toBe(0);
+      expect(state.invalidate).not.toHaveBeenCalled();
+      release(); await write;
+      expect((await pool.query("SELECT count(*)::int count FROM ring_groups")).rows[0].count).toBe(1);
+      expect((await pool.query("SELECT tenant_id,actor_user_id,action,resource_type FROM audit_logs")).rows).toEqual([{ tenant_id: 7, actor_user_id: 9, action: "ring_group.created", resource_type: "ring_group" }]);
+      expect(state.committed).toBe(true); expect(state.invalidate).toHaveBeenCalled();
+    } finally { release(); await write.catch(() => undefined); }
   });
   const untilBlocked = async (client: PoolClient) => {
     const blocker = Number((await client.query("SELECT pg_backend_pid() pid")).rows[0].pid);

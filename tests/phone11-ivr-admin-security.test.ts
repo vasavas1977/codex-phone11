@@ -43,6 +43,7 @@ const membership = (role: "owner" | "admin" | "manager" | "user" = "admin") => (
 
 beforeEach(() => {
   vi.clearAllMocks();
+  db.query.mockReset().mockResolvedValue({ rows: [] });
   capabilities.readManagementCapabilities.mockResolvedValue({
     phoneNumbers: true,
     sites: true,
@@ -211,7 +212,7 @@ describe("PBX voice application administration", () => {
     expect(db.withTransaction).toHaveBeenCalledTimes(1);
     expect(db.query.mock.calls.some(([sql]) => /^\s*(INSERT|UPDATE|DELETE)\b/.test(String(sql)))).toBe(false);
 
-    db.query.mockReset();
+    db.query.mockReset().mockResolvedValue({ rows: [] });
     db.query
       .mockResolvedValueOnce({ rows: [membership("admin")] })
       .mockResolvedValueOnce({ rows: [{ id: 4 }] });
@@ -223,7 +224,7 @@ describe("PBX voice application administration", () => {
     expect(db.withTransaction).toHaveBeenCalledTimes(1);
     expect(db.query.mock.calls.some(([sql]) => /^\s*(INSERT|UPDATE|DELETE)\b/.test(String(sql)))).toBe(false);
 
-    db.query.mockReset();
+    db.query.mockReset().mockResolvedValue({ rows: [] });
     db.query
       .mockResolvedValueOnce({ rows: [membership("admin")] })
       .mockResolvedValueOnce({ rows: [{ id: 4 }] })
@@ -281,7 +282,7 @@ describe("PBX voice application administration", () => {
     expect(db.withTransaction).toHaveBeenCalledTimes(1);
     expect(db.query.mock.calls.some(([sql]) => /^\s*(INSERT|UPDATE|DELETE)\b/.test(String(sql)))).toBe(false);
 
-    db.query.mockReset();
+    db.query.mockReset().mockResolvedValue({ rows: [] });
     db.query
       .mockResolvedValueOnce({ rows: [membership("admin")] })
       .mockResolvedValueOnce({ rows: [{ id: 4 }] })
@@ -293,7 +294,7 @@ describe("PBX voice application administration", () => {
     expect(db.withTransaction).toHaveBeenCalledTimes(2);
     expect(db.query.mock.calls.some(([sql]) => /^\s*(INSERT|UPDATE|DELETE)\b/.test(String(sql)))).toBe(false);
 
-    db.query.mockReset();
+    db.query.mockReset().mockResolvedValue({ rows: [] });
     db.query
       .mockResolvedValueOnce({ rows: [membership("admin")] })
       .mockResolvedValueOnce({ rows: [{ id: 4 }] })
@@ -333,7 +334,7 @@ describe("PBX voice application administration", () => {
       strategy: "ring_all",
       overflow_action: "callback" as any,
     })).rejects.toMatchObject({ code: "BAD_REQUEST" });
-    db.query.mockReset();
+    db.query.mockReset().mockResolvedValue({ rows: [] });
     await expect(caller.queues.create({
       tenant_id: 7,
       name: "Support",
@@ -359,7 +360,7 @@ describe("PBX voice application administration", () => {
     })).rejects.toMatchObject({ code: "BAD_REQUEST" });
     expect(db.query.mock.calls.some(([sql]) => String(sql).includes("UPDATE call_queues"))).toBe(false);
 
-    db.query.mockReset();
+    db.query.mockReset().mockResolvedValue({ rows: [] });
     db.query
       .mockResolvedValueOnce({ rows: [membership("admin")] })
       .mockResolvedValueOnce({ rows: [{ id: 4 }] })
@@ -403,7 +404,7 @@ describe("PBX voice application administration", () => {
     await caller.queues.agentLogin({ queue_id: 4, extension_id: 10 });
     expect(cache.invalidateCache).toHaveBeenCalledWith("dialplan:queue:7:4");
 
-    db.query.mockReset();
+    db.query.mockReset().mockResolvedValue({ rows: [] });
     cache.invalidateCache.mockClear();
     db.query
       .mockResolvedValueOnce({ rows: [membership("admin")] })

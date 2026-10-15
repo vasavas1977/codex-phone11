@@ -60,29 +60,38 @@ export interface AuditEntry {
 }
 
 /**
- * Write an audit log entry
+ * Strict insertion on the caller's executor. Atomic callers supply their
+ * transaction client and must let errors abort that transaction.
  */
+export async function insertAuditLog(
+  execute: typeof query,
+  entry: AuditEntry,
+): Promise<void> {
+  await execute(
+    `INSERT INTO audit_logs
+      (tenant_id, actor_user_id, action, resource_type, resource_id,
+       old_value, new_value, ip_address, user_agent, request_id, session_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+    [
+      entry.tenantId,
+      entry.actorUserId || null,
+      entry.action,
+      entry.resourceType,
+      entry.resourceId || null,
+      entry.oldValue ? JSON.stringify(redactAuditValue(entry.oldValue)) : null,
+      entry.newValue ? JSON.stringify(redactAuditValue(entry.newValue)) : null,
+      entry.ipAddress || null,
+      entry.userAgent || null,
+      entry.requestId || null,
+      entry.sessionId || null,
+    ]
+  );
+}
+
+/** Best-effort legacy callers; atomic mutations use insertAuditLog instead. */
 export async function writeAuditLog(entry: AuditEntry): Promise<void> {
   try {
-    await query(
-      `INSERT INTO audit_logs 
-        (tenant_id, actor_user_id, action, resource_type, resource_id, 
-         old_value, new_value, ip_address, user_agent, request_id, session_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-      [
-        entry.tenantId,
-        entry.actorUserId || null,
-        entry.action,
-        entry.resourceType,
-        entry.resourceId || null,
-        entry.oldValue ? JSON.stringify(redactAuditValue(entry.oldValue)) : null,
-        entry.newValue ? JSON.stringify(redactAuditValue(entry.newValue)) : null,
-        entry.ipAddress || null,
-        entry.userAgent || null,
-        entry.requestId || null,
-        entry.sessionId || null,
-      ]
-    );
+    await insertAuditLog(query, entry);
   } catch {
     // Audit logging should never break the main operation
     // A database error can include row details; never log an audit payload.
