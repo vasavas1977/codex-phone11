@@ -1,10 +1,14 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { SymbolWeight, SymbolViewProps } from "expo-symbols";
-import { ComponentProps } from "react";
-import { OpaqueColorValue, type StyleProp, type TextStyle } from "react-native";
+import { ComponentProps, useSyncExternalStore } from "react";
+import { OpaqueColorValue, Platform, Text, type StyleProp, type TextStyle } from "react-native";
 
 type IconMapping = Record<SymbolViewProps["name"], ComponentProps<typeof MaterialIcons>["name"]>;
 type IconSymbolName = keyof typeof MAPPING;
+
+const subscribeToHydration = () => () => {};
+const clientSnapshot = () => true;
+const serverSnapshot = () => false;
 
 const MAPPING = {
   // Navigation tabs
@@ -133,5 +137,9 @@ export function IconSymbol({
   style?: StyleProp<TextStyle>;
   weight?: SymbolWeight;
 }) {
+  const hydrated = useSyncExternalStore(subscribeToHydration, clientSnapshot, serverSnapshot);
+  // Expo renders empty Text on the server; its font cache can be warm before
+  // a later Suspense boundary hydrates. Keep that boundary's first render equal.
+  if (Platform.OS === "web" && !hydrated) return <Text />;
   return <MaterialIcons color={color} size={size} name={MAPPING[name]} style={style} />;
 }
