@@ -992,6 +992,7 @@ jobs:
           tests/phone11-pbx-advanced-migration.test.ts
           tests/phone11-pbx-schema-preflight.test.ts
           tests/phone11-time-condition-postgres.test.ts
+          tests/phone11-pbx-core-postgres-atomicity.test.ts
           --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/phone11-pbx-base-prerequisite-results.json"
       - name: Require executed PBX base-prerequisite PostgreSQL regressions
         run: |
@@ -1008,6 +1009,22 @@ jobs:
               assert cases and all(case["status"] == "passed" for case in cases), name
               print(f"{name}: {len(cases)} passed, zero skips")
           PYPBX
+      - name: Require all 18 core PBX atomicity PostgreSQL regressions
+        run: |
+          python3 - <<'PYCORE'
+          import json, os
+          from pathlib import Path
+          report = json.loads((Path(os.environ["RUNNER_TEMP"]) / "phone11-pbx-base-prerequisite-results.json").read_text())
+          assert report["success"] is True
+          name = "tests/phone11-pbx-core-postgres-atomicity.test.ts"
+          assert Path(name).is_file(), name
+          matches = [suite for suite in report["testResults"] if Path(suite["name"]).resolve() == Path(name).resolve()]
+          assert len(matches) == 1, name
+          cases = matches[0]["assertionResults"]
+          assert len(cases) == 18 and all(case["status"] == "passed" for case in cases), name
+          assert len({case["fullName"] for case in cases}) == 18, name
+          print(f"{name}: 18 passed, zero skips")
+          PYCORE
 
   chat-postgres-tests:
     runs-on: ubuntu-24.04
