@@ -31,14 +31,23 @@ export function AdminWorkspaceBoundary({
   if (!user) {
     title = "Sign in to manage Phone11";
     detail = "Open the admin portal after signing in.";
-  } else if (workspace.membershipsQuery.isLoading || workspace.admissionChecking) {
+  } else if (
+    workspace.membershipsQuery.isLoading ||
+    workspace.admissionChecking
+  ) {
     title = "Checking workspace access";
     detail = "Phone11 is confirming your workspace membership.";
     loading = true;
-  } else if (workspace.membershipsQuery.isError) {
+  } else if (
+    workspace.membershipsQuery.isError &&
+    !workspace.membershipAccessDenied
+  ) {
     title = "Workspace access unavailable";
     detail = "Phone11 could not confirm your workspace membership. Try again.";
-  } else if (workspace.manageableMemberships.length === 0) {
+  } else if (
+    workspace.membershipAccessDenied ||
+    workspace.manageableMemberships.length === 0
+  ) {
     title = "Administrator access required";
     detail = "Only a workspace owner or administrator can manage Phone11.";
   } else if (workspace.updateRequired) {
@@ -78,9 +87,10 @@ export function AdminWorkspaceBoundary({
         >
           {detail}
         </Text>
-        {workspace.membershipsQuery.isError ||
-        workspace.admissionError ||
-        workspace.updateRequired ? (
+        {!workspace.membershipAccessDenied &&
+        (workspace.membershipsQuery.isError ||
+          workspace.admissionError ||
+          workspace.updateRequired) ? (
           <TouchableOpacity
             accessibilityRole="button"
             accessibilityLabel="Try again"
