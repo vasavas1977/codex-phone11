@@ -24,6 +24,11 @@ on:
         required: true
         type: boolean
         default: false
+      package_image:
+        description: 'Keep the public CI image after successful isolated smoke and cleanup. Requires publish=false.'
+        required: true
+        type: boolean
+        default: false
 
 env:
   AWS_REGION: ${{ vars.AWS_REGION }}
@@ -47,6 +52,10 @@ jobs:
       - name: Refuse publishing in diagnostic mode
         if: inputs.diagnose_start && inputs.publish
         run: echo 'diagnose_start requires publish=false' >&2; exit 1
+
+      - name: Refuse publishing when packaging the image
+        if: inputs.package_image && inputs.publish
+        run: echo 'package_image requires publish=false' >&2; exit 1
 
       - name: Validate AWS region
         if: inputs.publish
@@ -118,6 +127,7 @@ jobs:
           retention-days: 1
 
       - name: Smoke the isolated backend process
+        id: smoke
         if: ${{ !inputs.publish }}
         timeout-minutes: 3
         env:
@@ -128,6 +138,24 @@ jobs:
           else
             python3 -I -B scripts/smoke-phone11-backend-image.py --commit "$GITHUB_SHA" --metadata "$RUNNER_TEMP/phone11-backend-build.json" --output "$RUNNER_TEMP/phone11-backend-smoke.json" --private-diagnostics "$RUNNER_TEMP/phone11-backend-smoke-private.log"
           fi
+
+      - name: Package the successfully smoked public CI image
+        id: package
+        if: ${{ success() && inputs.package_image && !inputs.publish && steps.smoke.outcome == 'success' }}
+        timeout-minutes: 6
+        run: python3 -I -B scripts/package-phone11-backend-image.py --commit "$GITHUB_SHA" --metadata "$RUNNER_TEMP/phone11-backend-build.json" --smoke "$RUNNER_TEMP/phone11-backend-smoke.json" --output "$RUNNER_TEMP/phone11-backend-package"
+
+      - name: Keep the completed public CI image package
+        if: ${{ success() && inputs.package_image && !inputs.publish && steps.smoke.outcome == 'success' && steps.package.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: phone11-backend-image-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/phone11-backend-package/backend-image.tar
+            ${{ runner.temp }}/phone11-backend-package/manifest.json
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
 
       - name: Keep finite process smoke evidence
         if: ${{ always() && !inputs.publish }}
