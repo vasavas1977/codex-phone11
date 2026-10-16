@@ -30,6 +30,16 @@ With `publish=false`, region validation, AWS credentials and ECR login/repositor
 
 Both modes prepare the exact public context and pass the GitHub commit as PHONE11_BUILD_SHA. The available ARM64 base descriptor does not create an ARM64 CI/emulation claim. If actual topology requires ARM64, separately select/review an appropriate native runner before dispatch. No workflow was dispatched here.
 
+## Isolated process smoke in build-only CI
+
+After image metadata, build-only CI runs `smoke-phone11-backend-image.py`. It binds that exact loaded image ID/revision/platform, refuses image volumes, then creates one commit/nonce-labelled container with pull disabled, network none, no published ports, read-only root, UID1001, dropped capabilities, no-new-privileges, 128 PIDs, 512MiB RAM/no extra swap, one CPU and a 64MiB non-executable tmpfs. The Docker client uses a new empty private config and fixed local socket with a clean environment. Only explicit synthetic unused loopback-port1 DB/cache/ESL settings and synthetic auth/SIP secrets enter the container. No production credentials are inherited.
+
+The real image command starts `dist/index.mjs` as api-candidate. The only request is an inside-container Node/fetch probe of `/api/health`, with a 30s deadline and exact build/service/role/field checks. No auth, tRPC, migration, provider or customer request runs. Ownership/image/security are checked before exec and stop; cleanup rechecks nonce/name/image/ID before removing only that container. Passing also requires graceful exit0, no OOM and removal. The Docker command budget is 120s, with 90s for primary work and 30s reserved for cleanup; the outer workflow step is bounded to 3min. Unknown creation or ownership/cleanup failures remain refusals and never trigger another create attempt or shared cleanup.
+
+Local container logs are capped at 16KiB/one file. On failure, an ownership-checked reader caps collection to 64 lines, 16384 bytes and 10s, emits only a finite matching-log classification (not an established root cause), and retains bytes in a new file with mode 0600 at `$RUNNER_TEMP/phone11-backend-smoke-private.log` before owned cleanup. That private path is never printed or uploaded. An explicitly authorized operator may inspect it host-privately before runner teardown; its persistence after teardown is not claimed. An unknown failure must be diagnosed before a rerun. The public one-day artifact contains only finite smoke/identity/cleanup fields; it never contains raw logs, configuration or environment.
+
+This proves process startup/health/shutdown only when the future CI step actually runs. It does not establish DB/auth readiness,27-handler acceptance, live feature compatibility or permission to deploy. Current focused tests substitute Docker, use owned public child processes for byte/deadline handling, and execute the exact health JavaScript in a VM with substituted fetch; no image or application starts in these tests.
+
 ## Four real outputs
 
 The compiler builds index.mjs, auth-admin.mjs, conference-readiness.mjs and profile-photo-worker.mjs from their existing source entries. It keeps packages external, records metafiles/output hashes/compiler/platform/decoder hashes and the source-context identity, refuses compiler warnings/timeouts or missing assets, and never imports application code. Compile runs with network disabled. The final image checks its revision against this build record, keeps UID1001, and starts `node dist/index.mjs`; the unrelated package.json `start` path is not used.
@@ -46,8 +56,9 @@ Focused source checks:
 python3 -I -B tests/phone11-backend-context.test.py
 node --test tests/phone11-backend-build.test.mjs
 node --test tests/phone11-backend-workflow.test.mjs
+python3 -I -B tests/phone11-backend-smoke.test.py
 node scripts/build-phone11-backend.mjs --verify-install-inputs
 python3 -I -B scripts/prepare-phone11-backend-context.py --check
 ```
 
-Compiler tests substitute an owned fake executable at the spawn boundary and never execute real esbuild, package code or a server. Actual normal Docker build, lifecycle-skipped dependency installation and Node22.23.3 application/staging compatibility remain unrun. No paid SDK/license/provider or phone acceptance is implied.
+Compiler tests substitute an owned fake executable at the spawn boundary and never execute real esbuild, package code or a server. No Docker build/install/process smoke was run by this source author; Root's separate genuine build evidence must be assessed separately. Node22.23.3 application/staging compatibility, paid SDK/license/provider and phone acceptance are not implied by these source fixtures.

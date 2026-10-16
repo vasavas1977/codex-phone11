@@ -107,3 +107,17 @@ jobs:
           path: ${{ runner.temp }}/phone11-backend-build.json
           if-no-files-found: error
           retention-days: 1
+
+      - name: Smoke the isolated backend process
+        if: ${{ !inputs.publish }}
+        timeout-minutes: 3
+        run: python3 -I -B scripts/smoke-phone11-backend-image.py --commit "$GITHUB_SHA" --metadata "$RUNNER_TEMP/phone11-backend-build.json" --output "$RUNNER_TEMP/phone11-backend-smoke.json" --private-diagnostics "$RUNNER_TEMP/phone11-backend-smoke-private.log"
+
+      - name: Keep finite process smoke evidence
+        if: ${{ always() && !inputs.publish }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: phone11-backend-smoke-${{ github.sha }}
+          path: ${{ runner.temp }}/phone11-backend-smoke.json
+          if-no-files-found: ignore
+          retention-days: 1
