@@ -1,0 +1,106 @@
+{
+  "actualDockerCICloudTargetGitEffects": false,
+  "all27ReviewedV5SourceLeavesUnchanged": true,
+  "bounds": {
+    "archiveBytes": 4294967296,
+    "directoryEntriesMaximum": 2,
+    "diskCheck": "Every stream append requires reserve+incoming bytes available",
+    "diskReserveBytes": 1073741824,
+    "futureOuterStep": "Recommend6min independent CI step timeout for filesystem/scheduling unwind; no workflow wiring authored here",
+    "initialRequiredFreeBytes": 5368709120,
+    "inspectSecondsEach": 15,
+    "inspectStdoutBytes": 2048,
+    "manifestBytes": 2048,
+    "ownChildKillWaitSeconds": 2,
+    "primaryMonotonicSeconds": 300,
+    "readbackChunkBytes": 1048576,
+    "receiptBytesEach": 8192,
+    "stderrAcceptedBytes": 0,
+    "successfulDockerChildren": 3,
+    "writeChunkBytes": 65536
+  },
+  "currentActualBoundary": {
+    "cause": "UNDER_INDEPENDENT_DIAGNOSIS_NOT_INFERRED_HERE",
+    "commit": "6c44b95c08e0fa97e1ee6bad10d57baab7b68e37",
+    "imageBuild": "PASS",
+    "newArchiveExists": false,
+    "packagingEnabled": false,
+    "rootReportedRun": 38851906468,
+    "smoke": "FAIL"
+  },
+  "deploymentAuthority": false,
+  "futureWiringNotAuthored": "Optional typed package_image defaultfalse; only publish=false after successful exact-image smoke AND ownedcleanup; success-gated upload of exactly tar+manifest, one-day retention. Failed packaging must not upload or recover partial output. Workflow wiring awaits actual smoke resolution and separate review/Root integration.",
+  "implementation": {
+    "archive": "Plain Docker save stream, no compression/untar/package execution; append size capped4GiB, SHA256 streamed and reread over heldFD with bounded1MiB chunks; snapshot/name/mode/link/size/clock and source receipt guards, own exact append size/time accounted",
+    "client": "New private empty config, explicit unix:///var/run/docker.sock, clean HOME/PATH/LANG only; no ambient Docker/AWS/context/registry credentials inherited",
+    "durability": "Archivefsync/readback, post-imageidentity, input/archivecloses before creating manifest; manifest bounded2048B/write/fsync/readback/name/close, directoryfsync/name/close and final named metadata/deadline checks before exit0",
+    "failures": "Own reader process killed/waited and all open own files/inputs/directory closes attempted; private partial output retained. A late manifest/directory close/fsync failure may leave complete-looking files but returns failure; that entire output remains consumed and must never be uploaded/adopted.",
+    "finiteInspection": "Only ID/OS/architecture/revision/size, stdout2048B, strict no stderr/code0,15s; exact sourcecommit/linuxAMD64/imageID/positive integer size<=4GiB, entire pre/post tuple equal",
+    "manifest": "Finite archivefilename/format/SHA/size/imageID/commit/platform, source metadata+smokeSHA, processsmokepassed/owncontainerremoved, publicCiBuildRequiredtrue precondition, runtimeContainerCommitted/runtimeAcceptance/deploymentAuthorityfalse; no raw config/env/logs/rows/body/localpaths/private credentials",
+    "operations": "Exactly3 Docker children on success: fixed image inspect exactID, image save exactID to stdout stream, same image inspect exactID; no image/container creation/commit/run/tag/load/remove/build/pull/prune/push/registry/upload operation",
+    "output": "New exclusive0700 directory, only backend-image.tar and manifest.json exclusive/no-follow0600 regularfiles. Output-directory FD/currentname identity/full-nine/exactentry set guarded; one known child creation accounts only own size/time and nlink0or1 delta (Linux/APFS), then full-nine checks resume.",
+    "publicationRule": "Only exit0 AND its matching complete manifest/archive qualifies for a later separately authorized upload. File/manifest presence alone is never evidence of success. Any existing directory/file/dangling output refuses before Docker; no partial recovery, adoption, retry or overwrite."
+  },
+  "independentReview": "PENDING",
+  "newFiles": {
+    "scripts/package-phone11-backend-image.py": {
+      "bytes": 16932,
+      "sha256": "9bdf2d22f8df12050ce8f9f30a492c9ad1efe6fc086cd3f1a0b85cee3e5c6af7"
+    },
+    "tests/phone11-backend-package.test.py": {
+      "bytes": 14926,
+      "sha256": "7de1e186a0c67ae33c97b11e7c7487e8e8bdab752892871ef25bf0d931a1b28b"
+    }
+  },
+  "next": "Freeze this source and pause. Root coordinates independent helper review, resolves failed actual smoke, then separately authorizes minimal optional workflow wiring. This source is not permission to export, upload, create registry resources, stage or deploy.",
+  "preservedReviewedV5": {
+    "bytes": 9578,
+    "path": "/Users/vasavas16macbookpro/Documents/Codex/phone11-full-backend-release-20261016/ops/backend-release/SOURCE-HANDOFF-v5.json",
+    "sha256": "cd87ef7257f93e244bba86a9aa7fb2847c8c153a31ced0e471f732e0ce35ed8d"
+  },
+  "requiredInputs": {
+    "diagnosticMode": "Actual reviewed smoke source with owned FakeDocker proves successful diagnose_start=true has the same exact17 fields; startDiagnostics appears only for failures and is rejected rather than loosened",
+    "files": "Two regular sameUID single-link0600 bounded8192B JSON inputs, no symlink parents/leaves, duplicate JSON keys/NaN refused; held FD/current name full-nine guards and inputSHA recorded",
+    "metadata": "Exact existing6-field finite metadata, unpublished/unstarted image, same full commit/platformAMD64/local tag and sha256 imageID",
+    "provenance": "Trusted controlled same-job CI, built from the reviewed exact tracked public context with only source SHA as build argument, no runtime credentials/config/customer data/SDK secrets. Helper does not authenticate the CI service or independently prove absence of secrets in arbitrary image layers; callers must not point it at a serving/live/unrelated image.",
+    "smoke": "Exact17-field PROCESS_SMOKE_PASSED/phasecomplete, same commit/platform/imageID, health/start/gracefultrue, observedStopped/exitzero/noOOM, ownedcontainerremoved, no diagnostic collected, runtimeAcceptancefalse"
+  },
+  "rootReportedIntegratedCommit": "6c44b95c08e0fa97e1ee6bad10d57baab7b68e37",
+  "runtimeReadiness": false,
+  "schema": "phone11-optional-public-ci-image-package-source-handoff/v1",
+  "standaloneInvocation": "python3 -I -B scripts/package-phone11-backend-image.py --commit EXACT_40_LOWER_HEX_COMMIT --metadata ABSOLUTE_SAME_JOB_BUILD_JSON --smoke ABSOLUTE_SAME_JOB_PASSED_SMOKE_JSON --output ABSOLUTE_NEW_PRIVATE_DIRECTORY",
+  "status": "SOURCE_READY_FOR_INDEPENDENT_REVIEW_WORKFLOW_UNWIRED_ACTUAL_INHIBITED",
+  "validation": {
+    "cases": [
+      "actual source normal and diagnose_start successful17field compatibility",
+      "exact imageID inspect/save/inspect and SHA/readback/privacy",
+      "failed/extra/diagnostic/mismatched input refuses before Docker",
+      "regular/directory/dangling output collisions",
+      "wrong image and post-save image change",
+      "empty export and child failure",
+      "archive cap/free disk/deadline",
+      "receipt replacement/archive truncate/chmod",
+      "hash mismatch/output-directory replacement",
+      "inputclose all-attempt/no manifest",
+      "archiveconstructor failure closes newly opened FD",
+      "late directoryclose failure remains non-success/outputconsumed",
+      "inputsymlink/hardlink/mode/size/parent/duplicateJSON",
+      "fixed real stream stderr/overflow/exit/timeout kill",
+      "finite CLI success/refusal output"
+    ],
+    "command": "python3 -I -B tests/phone11-backend-package.test.py",
+    "failed": 0,
+    "initialFindingResolved": "First fixture run correctly refused own output creation because APFS nlink increments on regular child creation. Owned stat fixture measured+1; helper now narrowly accounts Linux0/APFS1 only after a known single creation+exact entry set; all later full-nine metadata checks remain exact.",
+    "notRun": [
+      "Genuine Docker save/image export/archive validation",
+      "Linux Docker/CI process startup/shutdown",
+      "Archive artifact upload/download/staging/deployment",
+      "Broader unchanged source/application/PG suites"
+    ],
+    "ownedSubprocesses": "Actual clean-env selector/byte/deadline/kill/readback paths exercised using isolated public Python fixture programs at the fixed Docker boundary. Fixture stream is labelled PUBLIC synthetic bytes, not a genuine Docker TAR; no real Docker endpoint/image/app/package/DB/network/CI effects.",
+    "skipped": 0,
+    "sourceChecks": "Both new Python AST parses passed; git diff --check passed; all27 v5 reviewed source pins rehashed unchanged",
+    "testMethodsPassed": 13
+  },
+  "workflowDockerfileSmokeModified": false
+}

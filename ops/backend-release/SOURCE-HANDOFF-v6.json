@@ -1,0 +1,239 @@
+{
+  "actualBoundary": {
+    "commit": "6c44b95c08e0fa97e1ee6bad10d57baab7b68e37",
+    "historicalCiCause": "UNKNOWN_NOT_RECLASSIFIED_BY_THIS_SOURCE",
+    "imageBuild": "PASS",
+    "newCorrectedImageSmoke": "NOT_RUN",
+    "rootReportedPriorRun": 38851906468,
+    "smoke": "FAIL"
+  },
+  "actualDockerCICloudNetworkTargetGitEffects": false,
+  "archiveRemainsPaused": {
+    "actualExport": false,
+    "bytes": 8630,
+    "handoff": "/Users/vasavas16macbookpro/Documents/Codex/phone11-full-backend-release-20261016/ops/backend-release/PACKAGE-SOURCE-HANDOFF-v1.json",
+    "helperAndTestBytesUnchanged": true,
+    "independentReview": "PENDING",
+    "sha256": "84b61846d46396dc374e28ae9a2115524547be53ee338f03b6a47022eca29894",
+    "workflowWiring": false
+  },
+  "delta": {
+    "ops/backend-release/README.md": {
+      "after": {
+        "bytes": 15201,
+        "sha256": "2f5dfc7b33790e6eb6124df6ae244c89ebbc7d21084f58ccc9c33be26f03c945"
+      },
+      "before": {
+        "bytes": 13988,
+        "sha256": "229e955407a4f085238dec6d5be903ef4a000adda795d45f49e345fcb37529f6"
+      }
+    },
+    "scripts/smoke-phone11-backend-image.py": {
+      "after": {
+        "bytes": 23959,
+        "sha256": "27fe2e10ac6f92839c8a41cf96c36f75a235d6406bd30f60b67ef6f09c0412cc"
+      },
+      "before": {
+        "bytes": 23682,
+        "sha256": "714460ecd8818a67d7ad3685a2fdc67fca5eebe2a26ae64668fb3b02e8a0de22"
+      }
+    },
+    "tests/phone11-backend-smoke.test.py": {
+      "after": {
+        "bytes": 19486,
+        "sha256": "92c53354761b22a512c1abb361bb5ff3a32165aaba5a0e4575a161b60159b107"
+      },
+      "before": {
+        "bytes": 18068,
+        "sha256": "fa4fdcdec6824ce93a9a121f45a9fcfdc5bd2797ca9685eb8b7b4c0df3fac1f9"
+      }
+    },
+    "tests/phone11-backend-start-diagnostic.test.py": {
+      "after": {
+        "bytes": 10826,
+        "sha256": "fa28e3908747e5530c84fc85fff8b27fc997ac827e0aeb6f08d290e9bb96e569"
+      },
+      "before": {
+        "bytes": 9747,
+        "sha256": "57bac8369921ddb1aa0ab7f5f1e454404e3138d293b5d2b1c7c03070d71cf19d"
+      }
+    }
+  },
+  "deploymentAuthority": false,
+  "files": {
+    ".dockerignore": {
+      "bytes": 5695,
+      "sha256": "29e4a3d1fba2300b2a11ea80961d0387c4d6c3d77eb3c1e63c08187003ebd431"
+    },
+    ".github/workflows/docker-build.yml": {
+      "bytes": 5899,
+      "sha256": "90f81f9287df6643b53a89f6ee112f451fe2f1ebb7e1e81b94301de1f4531355"
+    },
+    "infra/docker/backend/Dockerfile": {
+      "bytes": 4644,
+      "sha256": "2443ff651e006a77bb3485c9b4799263a5cae181bfa2873c4f5bf940278c755a"
+    },
+    "infra/docker/backend/context-files.json": {
+      "bytes": 6166,
+      "sha256": "0f1450271d3985f3ffb541745c213a534db01a7538fa538711bebccaac889e27"
+    },
+    "infra/docker/backend/public-input-pins.json": {
+      "bytes": 2031,
+      "sha256": "a3ef9104458bffb24554918a7b117343fc3126339cee6fe98799f8045542e310"
+    },
+    "ops/backend-release/README.md": {
+      "bytes": 15201,
+      "sha256": "2f5dfc7b33790e6eb6124df6ae244c89ebbc7d21084f58ccc9c33be26f03c945"
+    },
+    "ops/backend-release/public-inputs/PUBLIC-INPUT-PINS.json": {
+      "bytes": 4737,
+      "sha256": "0779c2c511486739b538e76d7b8f9e95619ebd7c132951dc28a3466355cb6959"
+    },
+    "ops/backend-release/public-inputs/esbuild-0.25.12-metadata.json": {
+      "bytes": 2292,
+      "sha256": "2d519a80bfd174247d8c092d170227cb3a48674f066809580332d27abf0c2a5e"
+    },
+    "ops/backend-release/public-inputs/esbuild-linux-arm64-0.25.12-metadata.json": {
+      "bytes": 1386,
+      "sha256": "804ecfa628c96b7aa71891028ef69b6b269804985700769728f66ce06e3892d1"
+    },
+    "ops/backend-release/public-inputs/esbuild-linux-x64-0.25.12-metadata.json": {
+      "bytes": 1372,
+      "sha256": "fbe354283efc0fe2ff022119e42a3d5dba299676426dcae05f1d0fcced689860"
+    },
+    "ops/backend-release/public-inputs/node22-alpine-amd64-config.json": {
+      "bytes": 6480,
+      "sha256": "7c3b093add7c43400ee83b815ab2cda98794a10045bcf76ce9bb2f89b97cbc5c"
+    },
+    "ops/backend-release/public-inputs/node22-alpine-amd64-manifest.json": {
+      "bytes": 1720,
+      "sha256": "2c752226d477b4a886378baa95b9af252be59301b725fdb0b7e15208131505a8"
+    },
+    "ops/backend-release/public-inputs/node22-alpine-arm64-config.json": {
+      "bytes": 6496,
+      "sha256": "0d459d0765f0e55925663ba63fad229237ea06ad6ba4fa38658e7c5b5308a0b9"
+    },
+    "ops/backend-release/public-inputs/node22-alpine-arm64-manifest.json": {
+      "bytes": 1722,
+      "sha256": "85cdd100016a2e09927c0776bb7ebebcfefce5cd0af49893ada91cbc4d78ee22"
+    },
+    "ops/backend-release/public-inputs/node22-alpine-index.json": {
+      "bytes": 6406,
+      "sha256": "0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402"
+    },
+    "ops/backend-release/public-inputs/pnpm-9.12.0-metadata.json": {
+      "bytes": 2614,
+      "sha256": "ded23a0c3c3219df888f7563d1d672fdaa36092fb66988c943205da99eb60e10"
+    },
+    "ops/backend-release/resolve-public-inputs.py": {
+      "bytes": 4149,
+      "sha256": "add9a9d5e87fcec6af39b7e094fb6a2b32f8e391780d614180a601e1668ba317"
+    },
+    "scripts/build-phone11-backend.mjs": {
+      "bytes": 9420,
+      "sha256": "61fdd1c4a83113acc30ad66635c4959fcce5689f68576d6eb5869bfd0420cee6"
+    },
+    "scripts/describe-phone11-backend-image.py": {
+      "bytes": 2137,
+      "sha256": "ceaf367b60549476da59def792f6d0b7b231c444ee2bba1c944c61c14048af22"
+    },
+    "scripts/prepare-phone11-backend-context.py": {
+      "bytes": 7821,
+      "sha256": "5c28896a8b516d8da93b6114b0ea0464bdd13ff865aff2fab765367f5011d28b"
+    },
+    "scripts/smoke-phone11-backend-image.py": {
+      "bytes": 23959,
+      "sha256": "27fe2e10ac6f92839c8a41cf96c36f75a235d6406bd30f60b67ef6f09c0412cc"
+    },
+    "tests/phone11-backend-build.test.mjs": {
+      "bytes": 9148,
+      "sha256": "61a2b4939fa86e58b6335dcb09c675e71e728c7c405b6c617e729d4ec7b28efe"
+    },
+    "tests/phone11-backend-context.test.py": {
+      "bytes": 6716,
+      "sha256": "c5ccd54e6e05bc3dbd76a18b7d2149e496ed5367a8b258a4827cf1e14133038f"
+    },
+    "tests/phone11-backend-runtime-modes.test.py": {
+      "bytes": 3154,
+      "sha256": "b3acbc9f4ac7bd96b44cbf602ebc0b7a942406576de21c556a2e69c3ec9f0282"
+    },
+    "tests/phone11-backend-smoke.test.py": {
+      "bytes": 19486,
+      "sha256": "92c53354761b22a512c1abb361bb5ff3a32165aaba5a0e4575a161b60159b107"
+    },
+    "tests/phone11-backend-start-diagnostic.test.py": {
+      "bytes": 10826,
+      "sha256": "fa28e3908747e5530c84fc85fff8b27fc997ac827e0aeb6f08d290e9bb96e569"
+    },
+    "tests/phone11-backend-workflow.test.mjs": {
+      "bytes": 5567,
+      "sha256": "3da69432bfb77fc083f6f32137faf79a145351bd16b1002e662bcaab6f3bc013"
+    }
+  },
+  "genuineV5IndependentReview": {
+    "bytes": 3403,
+    "path": "/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/review/full-backend-stop-timeout-independent-v1/INDEPENDENT-REVIEW.json",
+    "sha256": "8fad239c640bf8d63fb7fc9b37fd1e74e028bdf935f72f350cfe9a08f10c95eb"
+  },
+  "independentReview": "PENDING",
+  "next": "Independent exact v5 continuity/logger policy/closed diagnostic field source review. Root alone integrates reviewed files and decides one separately authorized corrected diagnostic CI run; no unchanged retry, acceptance weakening or archive wiring follows from this source.",
+  "otherV5SourceLeavesUnchanged": 23,
+  "preservedV5Handoff": {
+    "bytes": 9578,
+    "path": "/Users/vasavas16macbookpro/Documents/Codex/phone11-full-backend-release-20261016/ops/backend-release/SOURCE-HANDOFF-v5.json",
+    "sha256": "cd87ef7257f93e244bba86a9aa7fb2847c8c153a31ced0e471f732e0ce35ed8d"
+  },
+  "primaryEvidence": {
+    "defaultsAndParsing": "Root verified defaultCompressLogs=true at26-28; explicit compress option is ParseBool and sets DisableCompression=!compressLogs at85-90. Thus max-file1 requires explicit compress=false.",
+    "defaultsAndParsingSource": "https://github.com/moby/moby/blob/v28.0.4/daemon/logger/local/local.go",
+    "origin": "Root-supplied public source excerpts, explicitly verified by Root this turn; this author made no new network GET.",
+    "ownedLocalFixture": {
+      "bytes": 645,
+      "facts": "Root owned public cached-image /bin/true/networknone fixture created then start exit1/stateExit128; exact known compressionConfigError true in bounded State.Error and startstderr; ownedcontainerremoved, productionEffectsfalse. No application command beyond/bin/true.",
+      "limits": "This establishes invalid old logging recipe; historical CI cause remains unproven.",
+      "path": "/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/LOCAL-LOGGING-CONFIG-4be618ff5a49413dba4cef383d1fc090.json",
+      "sha256": "06e1bfdc277f95b237eed449111e6920e2df8a21ae258ce2798c02e410867e57"
+    },
+    "validation": "When DisableCompression is false and MaxFileCount<=1, Moby returns the fixed public error: compression cannot be enabled when max file count is 1",
+    "validationSource": "https://github.com/moby/moby/blob/v28.0.4/daemon/logger/local/config.go#L28-L31"
+  },
+  "productionChanges": {
+    "create": "Append exactly --log-opt compress=false beside unchanged max-size=16k and max-file=1 for local driver.",
+    "diagnostics": "One fixed loggingCompressionConflict boolean matches only the public error literal above; class LOGGING_COMPRESSION_CONFLICT takes priority for that token. No arbitrary text/path/hash exported; rootCauseEstablished remainsfalse, unknown remainsunknown.",
+    "exactReverse": "Reverse two expected-dictionary additions, one create argument addition, one pattern and one two-line class branch reconstructs exact reviewed v5 smoke SHA714460ecd8818a67d7ad3685a2fdc67fca5eebe2a26ae64668fb3b02e8a0de22; all other production helper bytes unchanged.",
+    "inspectionAndFailureLogRead": "Both exact expected logOptions dictionaries now require compress=false; omitted/default or explicittrue observed config refuses before start/log read; exact owned cleanup preserved.",
+    "unchanged": "Canonical stop --timeout10, log16KiB/onefile bounds, private/raw repo gates, resource/networknone/readonly/UID/caps/ownership/image/health/cleanup recipe, strict empty stderr, commandcensus/deadlines/bytecaps, successful17field receipt schema, workflow/Dockerfile/business/auth/package/lock/migrations"
+  },
+  "rootReportedBaseCommit": "6c44b95c08e0fa97e1ee6bad10d57baab7b68e37",
+  "runtimeReadiness": false,
+  "schema": "phone11-backend-local-logger-source-successor/v6",
+  "status": "AUTHOR_SOURCE_ONLY_READY_FOR_INDEPENDENT_REVIEW",
+  "validation": {
+    "commands": [
+      {
+        "command": "python3 -I -B tests/phone11-backend-smoke.test.py",
+        "newCase": "Exact create local logger options max-size16k/max-file1/compressfalse; observed true or missing compression refuses before start and before application-log collection, owned removal remains guarded",
+        "passed": 14
+      },
+      {
+        "command": "python3 -I -B tests/phone11-backend-start-diagnostic.test.py",
+        "newCase": "Actual owned Python child emits fixed public Moby error at exactstart/State.Error seam; closed token/class only, no rawtext in finite receipt, rootcausefalse, owned cleanup",
+        "passed": 10
+      },
+      {
+        "command": "Changed Python AST3 + git diff --check",
+        "status": "PASSED"
+      },
+      {
+        "command": "Exact production reverse derivation +23 unchanged v5 leaf hashes",
+        "status": "PASSED"
+      }
+    ],
+    "failed": 0,
+    "passed": 24,
+    "primaryBehaviorBoundary": "Moby defaults/validation interpreted from Root supplied exact public version28.0.4 excerpt and genuine Root local repro; no Go compile, Docker test or target policy change by this author.",
+    "seams": "FakeDocker lifecycle; owned public Python child at fixed diagnostic command boundary and existing health JS VM; no real Docker/app/daemon/CI/network/DB/provider/target/Git effects.",
+    "skipped": 0,
+    "unchangedBroadSuitesRepeated": false
+  }
+}

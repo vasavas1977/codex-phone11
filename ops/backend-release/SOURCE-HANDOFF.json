@@ -1,0 +1,230 @@
+{
+  "changedComponents": [
+    "Exact public tracked context helper and deny-by-default Docker context",
+    "Immutable Node22.23.3 multi-platform index, pnpm9.12.0 and esbuild0.25.12 pin metadata",
+    "Lifecycle-disabled production and build dependencies with explicit native compiler and required decoder/WASM/link targets",
+    "Four actual authenticated backend build entries, output/source/compiler/platform manifest",
+    "Existing manual native-AMD64 AWS/ECR workflow context/revision wiring; no added trigger or permissions"
+  ],
+  "checks": [
+    {
+      "command": "python3 -I -B tests/phone11-backend-context.test.py",
+      "failed": 0,
+      "passed": 11,
+      "scope": "Owned offline source/FD/name/hash/privacy/copy/fsync/close fixtures; no real Git writes or transport",
+      "skipped": 0
+    },
+    {
+      "command": "node --test tests/phone11-backend-build.test.mjs",
+      "failed": 0,
+      "passed": 8,
+      "scope": "Owned fake installed ELF/WASM/package fixtures; compiler spawn replaced, no native execution",
+      "skipped": 0
+    },
+    {
+      "command": "ESLint from existing core checkout with its explicit eslint.config.js, new two mjs files",
+      "errors": 0,
+      "exitCode": 0,
+      "toolWarnings": [
+        "Existing config MODULE_TYPELESS_PACKAGE_JSON",
+        "React detection unavailable in new no-install checkout"
+      ]
+    },
+    {
+      "command": "node scripts/build-phone11-backend.mjs --verify-install-inputs",
+      "exitCode": 0,
+      "scope": "Real package/lock/patch/compiler integrity records only; no installation/compiler"
+    },
+    {
+      "bytes": 1814032,
+      "command": "python3 -I -B scripts/prepare-phone11-backend-context.py --check",
+      "exitCode": 0,
+      "files": 156,
+      "releaseReady": false,
+      "sourceDirty": true,
+      "sourceManifestSha256": "52d01a71ca3c5877d47040cf04adae136b40f2b612881f2b3cc9507f6afeb5ef"
+    },
+    {
+      "allFourEntryAndTypeSourceFiles": 135,
+      "applicationSourceChanges": 0,
+      "command": "Independent static closure/ignore comparison against previously frozen full source inventory",
+      "dockerignoreExact": true,
+      "missing": 0
+    },
+    {
+      "cases": 4,
+      "command": "Standalone default, Python -O and actual dirty --prepare refusals",
+      "newOutputDirectoryCreated": false,
+      "refused": 4
+    },
+    {
+      "command": "node --check (both mjs), Python ast.parse (three py), git diff --check",
+      "exitCode": 0
+    }
+  ],
+  "failedDevelopmentChecksResolved": [
+    "Explicit node:buffer imports fix no-undef lint errors",
+    "Owned fake lock header corrected so compiler fixture reaches intended branches; negative assertions tightened",
+    "Source stability now checked before output directory creation",
+    "Reported manifest hash uses exact pretty newline bytes written to context",
+    "Selected source bytes checked against actual HEAD blob rather than git-status clean assumption"
+  ],
+  "files": {
+    ".dockerignore": {
+      "bytes": 5695,
+      "sha256": "29e4a3d1fba2300b2a11ea80961d0387c4d6c3d77eb3c1e63c08187003ebd431"
+    },
+    ".github/workflows/docker-build.yml": {
+      "bytes": 2268,
+      "sha256": "e133718475914d1d0b78823ed0f62839c9c2e08e90c991341065c2605b92c82f"
+    },
+    "infra/docker/backend/Dockerfile": {
+      "bytes": 3604,
+      "sha256": "5905c29a6dce1ee33578e99cbb7fff90da145f80d5906b1cb4924456a14f8c6d"
+    },
+    "infra/docker/backend/context-files.json": {
+      "bytes": 6166,
+      "sha256": "0f1450271d3985f3ffb541745c213a534db01a7538fa538711bebccaac889e27"
+    },
+    "infra/docker/backend/public-input-pins.json": {
+      "bytes": 2031,
+      "sha256": "a3ef9104458bffb24554918a7b117343fc3126339cee6fe98799f8045542e310"
+    },
+    "ops/backend-release/README.md": {
+      "bytes": 6194,
+      "sha256": "74c3141a053d13ecdbf9c1e06da0a9a2a93d9348f714656f86f0bf7cd2f21563"
+    },
+    "ops/backend-release/public-inputs/PUBLIC-INPUT-PINS.json": {
+      "bytes": 4737,
+      "sha256": "0779c2c511486739b538e76d7b8f9e95619ebd7c132951dc28a3466355cb6959"
+    },
+    "ops/backend-release/public-inputs/esbuild-0.25.12-metadata.json": {
+      "bytes": 2292,
+      "sha256": "2d519a80bfd174247d8c092d170227cb3a48674f066809580332d27abf0c2a5e"
+    },
+    "ops/backend-release/public-inputs/esbuild-linux-arm64-0.25.12-metadata.json": {
+      "bytes": 1386,
+      "sha256": "804ecfa628c96b7aa71891028ef69b6b269804985700769728f66ce06e3892d1"
+    },
+    "ops/backend-release/public-inputs/esbuild-linux-x64-0.25.12-metadata.json": {
+      "bytes": 1372,
+      "sha256": "fbe354283efc0fe2ff022119e42a3d5dba299676426dcae05f1d0fcced689860"
+    },
+    "ops/backend-release/public-inputs/node22-alpine-amd64-config.json": {
+      "bytes": 6480,
+      "sha256": "7c3b093add7c43400ee83b815ab2cda98794a10045bcf76ce9bb2f89b97cbc5c"
+    },
+    "ops/backend-release/public-inputs/node22-alpine-amd64-manifest.json": {
+      "bytes": 1720,
+      "sha256": "2c752226d477b4a886378baa95b9af252be59301b725fdb0b7e15208131505a8"
+    },
+    "ops/backend-release/public-inputs/node22-alpine-arm64-config.json": {
+      "bytes": 6496,
+      "sha256": "0d459d0765f0e55925663ba63fad229237ea06ad6ba4fa38658e7c5b5308a0b9"
+    },
+    "ops/backend-release/public-inputs/node22-alpine-arm64-manifest.json": {
+      "bytes": 1722,
+      "sha256": "85cdd100016a2e09927c0776bb7ebebcfefce5cd0af49893ada91cbc4d78ee22"
+    },
+    "ops/backend-release/public-inputs/node22-alpine-index.json": {
+      "bytes": 6406,
+      "sha256": "0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402"
+    },
+    "ops/backend-release/public-inputs/pnpm-9.12.0-metadata.json": {
+      "bytes": 2614,
+      "sha256": "ded23a0c3c3219df888f7563d1d672fdaa36092fb66988c943205da99eb60e10"
+    },
+    "ops/backend-release/resolve-public-inputs.py": {
+      "bytes": 4149,
+      "sha256": "add9a9d5e87fcec6af39b7e094fb6a2b32f8e391780d614180a601e1668ba317"
+    },
+    "scripts/build-phone11-backend.mjs": {
+      "bytes": 9420,
+      "sha256": "61fdd1c4a83113acc30ad66635c4959fcce5689f68576d6eb5869bfd0420cee6"
+    },
+    "scripts/prepare-phone11-backend-context.py": {
+      "bytes": 7821,
+      "sha256": "5c28896a8b516d8da93b6114b0ea0464bdd13ff865aff2fab765367f5011d28b"
+    },
+    "tests/phone11-backend-build.test.mjs": {
+      "bytes": 9148,
+      "sha256": "61a2b4939fa86e58b6335dcb09c675e71e728c7c405b6c617e729d4ec7b28efe"
+    },
+    "tests/phone11-backend-context.test.py": {
+      "bytes": 6716,
+      "sha256": "c5ccd54e6e05bc3dbd76a18b7d2149e496ed5367a8b258a4827cf1e14133038f"
+    }
+  },
+  "limits": {
+    "applicationStarted": false,
+    "ciPlatform": "linux/amd64 native runner only; arm64 metadata is not arm64 CI proof",
+    "fullApplication": "Real authenticated server and four entries; no 19-file prototype/partial handler claim",
+    "gitWrites": false,
+    "imageBuildOrPullExecuted": false,
+    "independentReview": "PENDING",
+    "installExecuted": false,
+    "nativeCompilerExecuted": false,
+    "nodeAndNativeWasmCompatibility": "UNVERIFIED",
+    "providerEffects": false,
+    "releaseContext": "REFUSES until Root reviews/integrates selected public inputs as exact HEAD",
+    "runtimeAuthority": false,
+    "targetOrDatabaseQueried": false,
+    "workflowDispatched": false
+  },
+  "nextActions": [
+    "Independent source review of exact changed hashes and owned-fixture counterexamples",
+    "Root reviews/integrates exact commit before context preparation",
+    "Separately authorize controlled ordinary build/install/image inspection with retained toolchain/artifact record",
+    "Observe actual live API container/route/build and app/auth/PBX database identities before deployment configuration",
+    "Clone-only api-candidate staging with exact PORT/loopback exposure/background disabled/separate cache-media/no provider writes; verify actual27 audit operations, auth and tenant/revocation boundaries",
+    "Review narrow existing API image/route activation and application rollback separately; no old uncertain1948 migration replay"
+  ],
+  "productAndLockUnchanged": {
+    "package.json": {
+      "bytes": 7043,
+      "sha256": "5eb762a5ee003d44e621f24fc9bc990e7611b5931d0f4631e1f93f642036e8a5"
+    },
+    "pnpm-lock.yaml": {
+      "bytes": 526701,
+      "sha256": "8054011e2b1b4973b9f90bfd17859bdd437a4fe079958d02bd22ed8c72acc750"
+    },
+    "server/pbx/audit.ts": {
+      "bytes": 5233,
+      "sha256": "60bd5224f3a55ea40e06e69911637c61134a419cc2bdac928644a5afb5d40e84"
+    },
+    "server/pbx/ivr-router.ts": {
+      "bytes": 69625,
+      "sha256": "cfb6f16e3f77289041a0b950b22a750d3924bad3181dd8d505eeb5489520b4b3"
+    },
+    "server/pbx/pbx-router.ts": {
+      "bytes": 90283,
+      "sha256": "fc61032aa1e6c663763df1d7cb81b7917a8bc376310d660d20ed439dfb3bf260"
+    }
+  },
+  "resolvedPublicMetadata": {
+    "evidence": {
+      "bytes": 4737,
+      "sha256": "0779c2c511486739b538e76d7b8f9e95619ebd7c132951dc28a3466355cb6959"
+    },
+    "method": "Anonymous fixed primary registry GETs only, no stored token or package/image pull",
+    "nodeImageExecuted": false,
+    "nodeVersion": "22.23.3",
+    "nodeVersionChangeExplicit": true,
+    "primaryDocumentation": [
+      "https://github.com/nodejs/corepack#when-authoring-packages",
+      "https://pnpm.io/cli/install",
+      "https://docs.docker.com/build/building/context/"
+    ]
+  },
+  "sourceBaseCommit": "59be84779a2f6ce716eb8b72ff9b66aeae379870",
+  "sourcePriorBusinessCommit": "a0ee80f (lead-provided abbreviated history only; no runtime claim)",
+  "status": "SOURCE_READY_FOR_INDEPENDENT_REVIEW",
+  "topologyBoundary": {
+    "liveBuild": "team-chat-media-d41fc504 is opaque, source ancestry unknown",
+    "newProtectedPBXBackup": "Independently accepted per Root; not automatically API database backup",
+    "noFeatureEquivalenceClaim": true,
+    "ownerSelectedPBX": "43.210.122.111 is separate; API residency there not proven",
+    "publicAPI": "api.phone11.ai at43.209.112.208 per Root observation8a93f1bdcc30935870e1c3be81b37ed81891d62d6c61728664445da2055e6b0c"
+  },
+  "workingTreeCommitted": false
+}

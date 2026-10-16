@@ -1,0 +1,196 @@
+{
+  "behavior": {
+    "hostedBuild": "NOT_RUN",
+    "metadata": "Inspect only ID/OS/architecture/revision, require exact commit and native platform, preserve exclusive JSON output; upload finite metadata artifact for one day, no full image/config/environment",
+    "permissionsTriggersDeployment": "Original manual dispatch, permissions and no deployment behavior preserved",
+    "publishDefault": true,
+    "publishFalse": "Skip region validation, AWS credentials, ECR login and repository query; push=false/load=true exact local phone11-backend-check:<commit> LinuxAMD64 image, no remote cache export",
+    "publishTrue": "Existing AWS/ECR/tag/push/cache path, with exact cloudphone11/backend describe-repositories check before context preparation/build; no automatic resource creation"
+  },
+  "delta": {
+    "added": {
+      "scripts/describe-phone11-backend-image.py": {
+        "bytes": 2137,
+        "sha256": "ceaf367b60549476da59def792f6d0b7b231c444ee2bba1c944c61c14048af22"
+      },
+      "tests/phone11-backend-workflow.test.mjs": {
+        "bytes": 5567,
+        "sha256": "3da69432bfb77fc083f6f32137faf79a145351bd16b1002e662bcaab6f3bc013"
+      }
+    },
+    "modified": {
+      ".github/workflows/docker-build.yml": {
+        "after": {
+          "bytes": 3921,
+          "sha256": "133ef24691fe820137cb00f33187a81c119e300b8a30d60a7ebb6334fdffc5f6"
+        },
+        "before": {
+          "bytes": 2268,
+          "sha256": "e133718475914d1d0b78823ed0f62839c9c2e08e90c991341065c2605b92c82f"
+        }
+      },
+      "ops/backend-release/README.md": {
+        "after": {
+          "bytes": 7011,
+          "sha256": "f1138af0a72826292aeceead5b4fede0af9e633431c416498f0512189a0f4af5"
+        },
+        "before": {
+          "bytes": 6194,
+          "sha256": "74c3141a053d13ecdbf9c1e06da0a9a2a93d9348f714656f86f0bf7cd2f21563"
+        }
+      }
+    },
+    "otherPriorSourceLeavesUnchanged": 19,
+    "productPackageAndLockUnchanged": true
+  },
+  "files": {
+    ".dockerignore": {
+      "bytes": 5695,
+      "sha256": "29e4a3d1fba2300b2a11ea80961d0387c4d6c3d77eb3c1e63c08187003ebd431"
+    },
+    ".github/workflows/docker-build.yml": {
+      "bytes": 3921,
+      "sha256": "133ef24691fe820137cb00f33187a81c119e300b8a30d60a7ebb6334fdffc5f6"
+    },
+    "infra/docker/backend/Dockerfile": {
+      "bytes": 3604,
+      "sha256": "5905c29a6dce1ee33578e99cbb7fff90da145f80d5906b1cb4924456a14f8c6d"
+    },
+    "infra/docker/backend/context-files.json": {
+      "bytes": 6166,
+      "sha256": "0f1450271d3985f3ffb541745c213a534db01a7538fa538711bebccaac889e27"
+    },
+    "infra/docker/backend/public-input-pins.json": {
+      "bytes": 2031,
+      "sha256": "a3ef9104458bffb24554918a7b117343fc3126339cee6fe98799f8045542e310"
+    },
+    "ops/backend-release/README.md": {
+      "bytes": 7011,
+      "sha256": "f1138af0a72826292aeceead5b4fede0af9e633431c416498f0512189a0f4af5"
+    },
+    "ops/backend-release/public-inputs/PUBLIC-INPUT-PINS.json": {
+      "bytes": 4737,
+      "sha256": "0779c2c511486739b538e76d7b8f9e95619ebd7c132951dc28a3466355cb6959"
+    },
+    "ops/backend-release/public-inputs/esbuild-0.25.12-metadata.json": {
+      "bytes": 2292,
+      "sha256": "2d519a80bfd174247d8c092d170227cb3a48674f066809580332d27abf0c2a5e"
+    },
+    "ops/backend-release/public-inputs/esbuild-linux-arm64-0.25.12-metadata.json": {
+      "bytes": 1386,
+      "sha256": "804ecfa628c96b7aa71891028ef69b6b269804985700769728f66ce06e3892d1"
+    },
+    "ops/backend-release/public-inputs/esbuild-linux-x64-0.25.12-metadata.json": {
+      "bytes": 1372,
+      "sha256": "fbe354283efc0fe2ff022119e42a3d5dba299676426dcae05f1d0fcced689860"
+    },
+    "ops/backend-release/public-inputs/node22-alpine-amd64-config.json": {
+      "bytes": 6480,
+      "sha256": "7c3b093add7c43400ee83b815ab2cda98794a10045bcf76ce9bb2f89b97cbc5c"
+    },
+    "ops/backend-release/public-inputs/node22-alpine-amd64-manifest.json": {
+      "bytes": 1720,
+      "sha256": "2c752226d477b4a886378baa95b9af252be59301b725fdb0b7e15208131505a8"
+    },
+    "ops/backend-release/public-inputs/node22-alpine-arm64-config.json": {
+      "bytes": 6496,
+      "sha256": "0d459d0765f0e55925663ba63fad229237ea06ad6ba4fa38658e7c5b5308a0b9"
+    },
+    "ops/backend-release/public-inputs/node22-alpine-arm64-manifest.json": {
+      "bytes": 1722,
+      "sha256": "85cdd100016a2e09927c0776bb7ebebcfefce5cd0af49893ada91cbc4d78ee22"
+    },
+    "ops/backend-release/public-inputs/node22-alpine-index.json": {
+      "bytes": 6406,
+      "sha256": "0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402"
+    },
+    "ops/backend-release/public-inputs/pnpm-9.12.0-metadata.json": {
+      "bytes": 2614,
+      "sha256": "ded23a0c3c3219df888f7563d1d672fdaa36092fb66988c943205da99eb60e10"
+    },
+    "ops/backend-release/resolve-public-inputs.py": {
+      "bytes": 4149,
+      "sha256": "add9a9d5e87fcec6af39b7e094fb6a2b32f8e391780d614180a601e1668ba317"
+    },
+    "scripts/build-phone11-backend.mjs": {
+      "bytes": 9420,
+      "sha256": "61fdd1c4a83113acc30ad66635c4959fcce5689f68576d6eb5869bfd0420cee6"
+    },
+    "scripts/describe-phone11-backend-image.py": {
+      "bytes": 2137,
+      "sha256": "ceaf367b60549476da59def792f6d0b7b231c444ee2bba1c944c61c14048af22"
+    },
+    "scripts/prepare-phone11-backend-context.py": {
+      "bytes": 7821,
+      "sha256": "5c28896a8b516d8da93b6114b0ea0464bdd13ff865aff2fab765367f5011d28b"
+    },
+    "tests/phone11-backend-build.test.mjs": {
+      "bytes": 9148,
+      "sha256": "61a2b4939fa86e58b6335dcb09c675e71e728c7c405b6c617e729d4ec7b28efe"
+    },
+    "tests/phone11-backend-context.test.py": {
+      "bytes": 6716,
+      "sha256": "c5ccd54e6e05bc3dbd76a18b7d2149e496ed5367a8b258a4827cf1e14133038f"
+    },
+    "tests/phone11-backend-workflow.test.mjs": {
+      "bytes": 5567,
+      "sha256": "3da69432bfb77fc083f6f32137faf79a145351bd16b1002e662bcaab6f3bc013"
+    }
+  },
+  "limits": {
+    "AWSOrDockerEndpointCalledByAuthor": false,
+    "actualBuild": false,
+    "databaseProviderDeployEffects": false,
+    "gitWrites": false,
+    "independentReview": "PENDING",
+    "installOrPull": false,
+    "liveSourceDBAndTopologyIdentity": "UNKNOWN",
+    "node22_23_3RuntimeCompatibility": "UNVERIFIED",
+    "runtimeAcceptance": false,
+    "workflowDispatch": false
+  },
+  "next": "Independent delta review, then Root alone integrates/reviews a commit and separately dispatches publish=false for genuine build evidence before any publishing/infrastructure decision. Clone-only api-candidate staging and actual API topology/source/DB compatibility remain prerequisites.",
+  "priorSnapshot": {
+    "bytes": 10030,
+    "path": "ops/backend-release/SOURCE-HANDOFF.json",
+    "preservedUnchanged": true,
+    "sha256": "cbf12401dd44e2263ebddae916306ede71e0eb366a17c4bae2859908a76e7f80"
+  },
+  "rootObservation": "Root reports exact repository absent in current PBX Bangkok account; CI credential account identity remains UNVERIFIED. This source does not create or choose cloud infrastructure.",
+  "sourceBaseCommit": "59be84779a2f6ce716eb8b72ff9b66aeae379870",
+  "status": "SOURCE_READY_FOR_INDEPENDENT_REVIEW",
+  "unchangedContext": {
+    "bytes": 1814032,
+    "files": 156,
+    "reason": "Selected packaging source remains uncommitted; no release context prepared",
+    "releaseReady": false,
+    "sourceManifestSha256": "52d01a71ca3c5877d47040cf04adae136b40f2b612881f2b3cc9507f6afeb5ef"
+  },
+  "validation": {
+    "cases": [
+      "Manual defaults, per-step publish gates, matching build context/revision/platform, no resource creation/new trigger/permissions",
+      "Real fixed repository guard shell with owned fake AWS: exact match accepts, missing and wrong name refuse",
+      "Real metadata helper with owned fake Docker: revision/platform/ID/extra-field mismatch, invalid commit and output collision refuse; valid finite receipt accepts; no raw sentinel emitted"
+    ],
+    "diffCheck": 0,
+    "failed": 0,
+    "failureDiagnosed": {
+      "change": "Fixture subprocess timeout increased to10000ms and spawn-error diagnostic added; production metadata timeout15s and workflow behavior unchanged",
+      "finalRun": "3pass0fail0skip, repository cases182ms total",
+      "isolatedSameGuard": "Exit0 in180ms with exact expected stdout/empty stderr",
+      "oneParallelRun": "Repository test hit 3000ms test process timeout; cause beyond that finite timing remains unproven"
+    },
+    "lint": {
+      "errors": 0,
+      "exitCode": 0,
+      "warnings": "Previously documented existing config/React detection warnings only"
+    },
+    "newCommand": "node --test tests/phone11-backend-workflow.test.mjs",
+    "newTestsPassed": 3,
+    "prior": "Prior11Python+8Node fixtures and source/pin/closure/lint/syntax/diff checks remain bound through preserved snapshot and unchanged relevant source leaves; no broad suite repeated",
+    "seams": "Only owned local fake AWS/Docker executables; no real CLI endpoints or native app/compiler/package execution",
+    "skipped": 0,
+    "syntax": "Python metadata helper AST parsed; Node test parsed/linted"
+  },
+  "workingTreeCommitted": false
+}

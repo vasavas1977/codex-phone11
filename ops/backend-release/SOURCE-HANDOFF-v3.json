@@ -1,0 +1,232 @@
+{
+  "baseCommit": "2bed0ab (Root-reported integrated source; no commit authored here)",
+  "delta": {
+    "added": {
+      "scripts/smoke-phone11-backend-image.py": {
+        "bytes": 16015,
+        "sha256": "8bbbab2f4f423ae84a3e4d066cd348cfb84e72bca7b2edb67af9e5eba82146fa"
+      },
+      "tests/phone11-backend-smoke.test.py": {
+        "bytes": 16984,
+        "sha256": "17080b249507d01fcc706a7f62a551a0919d0c865afe92828974169a54e900ca"
+      }
+    },
+    "modified": {
+      ".github/workflows/docker-build.yml": {
+        "after": {
+          "bytes": 4631,
+          "sha256": "2878e27c9553ecbac6d631640766bfb46dbd3ba2504d1629d15df28ec0c56660"
+        },
+        "before": {
+          "bytes": 3921,
+          "sha256": "133ef24691fe820137cb00f33187a81c119e300b8a30d60a7ebb6334fdffc5f6"
+        }
+      },
+      "ops/backend-release/README.md": {
+        "after": {
+          "bytes": 9701,
+          "sha256": "4f9ce9eb146eb5fcbb991ad8a6626f58fb752f5989bc845be56a25b9890c1127"
+        },
+        "before": {
+          "bytes": 7011,
+          "sha256": "f1138af0a72826292aeceead5b4fede0af9e633431c416498f0512189a0f4af5"
+        }
+      }
+    },
+    "otherPriorSourceLeavesUnchanged": 21
+  },
+  "diagnostics": {
+    "classification": "Finite matching-log enum, not actual root cause. Unclassified/unavailable retained honestly; diagnose before rerun.",
+    "cleanup": "Only owned container, including on timeout/health/stop/log failure; ownership mismatch retains unknown object without log read/deletion; image and shared cache untouched",
+    "containerLogging": "Docker local, max-size16k/max-file1, verified before collection",
+    "private": "Explicit optional runner-private log0600/exclusive/fsync, never stdout/artifact; workflow supplies fixed RUNNER_TEMP path; runner teardown may destroy it",
+    "public": "Finite status/phase/source/image/nonce/container/health/exit/OOM/cleanup/classification flags only; no raw bodies/env/config/SQL/logs",
+    "read": "Only identity-matching owned container; tail64; combined output actually limited to16384B using selector/deadline/childkill, not unbounded communicate"
+  },
+  "files": {
+    ".dockerignore": {
+      "bytes": 5695,
+      "sha256": "29e4a3d1fba2300b2a11ea80961d0387c4d6c3d77eb3c1e63c08187003ebd431"
+    },
+    ".github/workflows/docker-build.yml": {
+      "bytes": 4631,
+      "sha256": "2878e27c9553ecbac6d631640766bfb46dbd3ba2504d1629d15df28ec0c56660"
+    },
+    "infra/docker/backend/Dockerfile": {
+      "bytes": 3604,
+      "sha256": "5905c29a6dce1ee33578e99cbb7fff90da145f80d5906b1cb4924456a14f8c6d"
+    },
+    "infra/docker/backend/context-files.json": {
+      "bytes": 6166,
+      "sha256": "0f1450271d3985f3ffb541745c213a534db01a7538fa538711bebccaac889e27"
+    },
+    "infra/docker/backend/public-input-pins.json": {
+      "bytes": 2031,
+      "sha256": "a3ef9104458bffb24554918a7b117343fc3126339cee6fe98799f8045542e310"
+    },
+    "ops/backend-release/README.md": {
+      "bytes": 9701,
+      "sha256": "4f9ce9eb146eb5fcbb991ad8a6626f58fb752f5989bc845be56a25b9890c1127"
+    },
+    "ops/backend-release/public-inputs/PUBLIC-INPUT-PINS.json": {
+      "bytes": 4737,
+      "sha256": "0779c2c511486739b538e76d7b8f9e95619ebd7c132951dc28a3466355cb6959"
+    },
+    "ops/backend-release/public-inputs/esbuild-0.25.12-metadata.json": {
+      "bytes": 2292,
+      "sha256": "2d519a80bfd174247d8c092d170227cb3a48674f066809580332d27abf0c2a5e"
+    },
+    "ops/backend-release/public-inputs/esbuild-linux-arm64-0.25.12-metadata.json": {
+      "bytes": 1386,
+      "sha256": "804ecfa628c96b7aa71891028ef69b6b269804985700769728f66ce06e3892d1"
+    },
+    "ops/backend-release/public-inputs/esbuild-linux-x64-0.25.12-metadata.json": {
+      "bytes": 1372,
+      "sha256": "fbe354283efc0fe2ff022119e42a3d5dba299676426dcae05f1d0fcced689860"
+    },
+    "ops/backend-release/public-inputs/node22-alpine-amd64-config.json": {
+      "bytes": 6480,
+      "sha256": "7c3b093add7c43400ee83b815ab2cda98794a10045bcf76ce9bb2f89b97cbc5c"
+    },
+    "ops/backend-release/public-inputs/node22-alpine-amd64-manifest.json": {
+      "bytes": 1720,
+      "sha256": "2c752226d477b4a886378baa95b9af252be59301b725fdb0b7e15208131505a8"
+    },
+    "ops/backend-release/public-inputs/node22-alpine-arm64-config.json": {
+      "bytes": 6496,
+      "sha256": "0d459d0765f0e55925663ba63fad229237ea06ad6ba4fa38658e7c5b5308a0b9"
+    },
+    "ops/backend-release/public-inputs/node22-alpine-arm64-manifest.json": {
+      "bytes": 1722,
+      "sha256": "85cdd100016a2e09927c0776bb7ebebcfefce5cd0af49893ada91cbc4d78ee22"
+    },
+    "ops/backend-release/public-inputs/node22-alpine-index.json": {
+      "bytes": 6406,
+      "sha256": "0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402"
+    },
+    "ops/backend-release/public-inputs/pnpm-9.12.0-metadata.json": {
+      "bytes": 2614,
+      "sha256": "ded23a0c3c3219df888f7563d1d672fdaa36092fb66988c943205da99eb60e10"
+    },
+    "ops/backend-release/resolve-public-inputs.py": {
+      "bytes": 4149,
+      "sha256": "add9a9d5e87fcec6af39b7e094fb6a2b32f8e391780d614180a601e1668ba317"
+    },
+    "scripts/build-phone11-backend.mjs": {
+      "bytes": 9420,
+      "sha256": "61fdd1c4a83113acc30ad66635c4959fcce5689f68576d6eb5869bfd0420cee6"
+    },
+    "scripts/describe-phone11-backend-image.py": {
+      "bytes": 2137,
+      "sha256": "ceaf367b60549476da59def792f6d0b7b231c444ee2bba1c944c61c14048af22"
+    },
+    "scripts/prepare-phone11-backend-context.py": {
+      "bytes": 7821,
+      "sha256": "5c28896a8b516d8da93b6114b0ea0464bdd13ff865aff2fab765367f5011d28b"
+    },
+    "scripts/smoke-phone11-backend-image.py": {
+      "bytes": 16015,
+      "sha256": "8bbbab2f4f423ae84a3e4d066cd348cfb84e72bca7b2edb67af9e5eba82146fa"
+    },
+    "tests/phone11-backend-build.test.mjs": {
+      "bytes": 9148,
+      "sha256": "61a2b4939fa86e58b6335dcb09c675e71e728c7c405b6c617e729d4ec7b28efe"
+    },
+    "tests/phone11-backend-context.test.py": {
+      "bytes": 6716,
+      "sha256": "c5ccd54e6e05bc3dbd76a18b7d2149e496ed5367a8b258a4827cf1e14133038f"
+    },
+    "tests/phone11-backend-smoke.test.py": {
+      "bytes": 16984,
+      "sha256": "17080b249507d01fcc706a7f62a551a0919d0c865afe92828974169a54e900ca"
+    },
+    "tests/phone11-backend-workflow.test.mjs": {
+      "bytes": 5567,
+      "sha256": "3da69432bfb77fc083f6f32137faf79a145351bd16b1002e662bcaab6f3bc013"
+    }
+  },
+  "lifecycle": {
+    "DockerChildCensus": "11 on successful lifecycle; at most12 in handled failure path with bounded diagnostic read; one create/one health exec maximum; no artificial native probe",
+    "acceptance": "Observed ownership/image/security before exec and stop; health match; graceful exit0/noOOM; final stopped state; exact owned-ID removal acknowledgment. runtimeAcceptance remainsfalse.",
+    "budgets": "90s primary Docker command deadline+30s cleanup reserve; outer step3min; health exec35s; normal command15s; log collection10s/16384B plus own-client kill/wait2s if needed",
+    "container": "Unique commit+128-bit nonce labels/name; create once with pull=never/platformAMD64; fixed local socket and private empty Docker config/clean CLI env",
+    "failure": "No second create, no image cleanup/prune/shared object cleanup. Ambiguous create may only remove the exact freshly named nonce/image-matching object; otherwise cleanupUNKNOWN/refusal. Any unknown cleanup or exit state cannot pass.",
+    "image": "Exact ID/revision/LinuxAMD64 from prior finite loaded-image metadata; image volumes absent/empty, actual CMD node dist/index.mjs",
+    "isolation": [
+      "networknone",
+      "no ports or host binds",
+      "root read-only",
+      "UID1001:GID1001",
+      "cap-dropALL/no-new-privileges",
+      "pids128",
+      "memory512MiB/memory-swap512MiB",
+      "CPU1",
+      "nofile256",
+      "tmpfs /tmp64MiB noexec/nosuid/nodev UID1001",
+      "restartno",
+      "no automatic image healthcheck"
+    ],
+    "request": "One inside-container node/fetch health-only execution; connection polling bounded30s, fetch deadline1s, exact5 healthfields including source SHA/role/service; no auth/tRPC/migration/provider/user request",
+    "settings": "Only explicit synthetic unused loopbackport1 DB/cache/ESL URLs and synthetic auth/SIP values; production NODE_ENV/api-candidate/PORT3000; no inherited runtime credentials"
+  },
+  "limits": {
+    "DBAuthAnd27HTTPAcceptance": "NOT_ESTABLISHED",
+    "GitWrites": false,
+    "actualDockerAppBuildInstallCI": false,
+    "deployAuthority": false,
+    "independentReview": "PENDING",
+    "liveSourceDBTopologyCompatibility": "UNKNOWN",
+    "newSmokeActualExists": false,
+    "processStartupOfThisDelta": "UNVERIFIED",
+    "sourceBusinessAuthMigrationLockChanged": false,
+    "targetNetworkProviderDBEffects": false
+  },
+  "next": "Independent exact-source/stub review, then Root alone integrates/commits and separately dispatches publish=false to build and genuinely exercise this new lifecycle. A failed actual must be diagnosed before rerun; this never grants staging DB/provider/deployment effects.",
+  "preservedHistory": {
+    "ops/backend-release/SOURCE-HANDOFF-v2.json": {
+      "bytes": 9062,
+      "sha256": "f0997a88629ba9e1f077d4e4c74f44a752dbcd928b7ba8ea7e23014ea737ea38"
+    },
+    "ops/backend-release/SOURCE-HANDOFF.json": {
+      "bytes": 10030,
+      "sha256": "cbf12401dd44e2263ebddae916306ede71e0eb366a17c4bae2859908a76e7f80"
+    }
+  },
+  "sourceChangedNotCommitted": true,
+  "startupSourceInspection": {
+    "conclusion": "No unavoidable eager DB/cache/ESL dependency identified by source inspection. Actual installed package startup remains UNVERIFIED; do not relax network isolation or add a DB if it fails.",
+    "server/_core/auth-routes.ts": "auth initialization/database calls are request-triggered; health only traverses CORS config parsing",
+    "server/_core/index.ts": "health at92-103 does not use auth context; api-candidate selected before listener/background start; real startServer/default image command retained",
+    "server/_core/runtime-role.ts": "api-candidate45-55/92-98 suppresses scheduled background constructors, exact PORT67-85",
+    "server/pbx/fs-event-listener.ts": "configuration/socket connection deferred until start()60-71; candidate suppresses that start",
+    "server/profile/photo.ts": "eager decoder resolution32-42 retained and genuinely exercised only by future image startup"
+  },
+  "status": "AUTHOR_SOURCE_ONLY_READY_FOR_INDEPENDENT_REVIEW",
+  "validation": {
+    "DockerSeam": "Substituted FakeDocker only; source lifecycle/control flow is real; no Docker endpoint/image/app started",
+    "actualHealthJavaScriptVMSubcases": 8,
+    "coveredFailures": [
+      "metadata/imagevolume",
+      "wrongnetworkpolicy",
+      "foreign nonce beforeexec/cleanup",
+      "ambiguouscreate present/absent",
+      "healthtimeout/wrongfields",
+      "stopfailure/nonzeroexit/OOM/restartedcontainer",
+      "removalfailure",
+      "unboundedlogpolicy",
+      "public/private receipt separation",
+      "outputcollisionbeforeDocker",
+      "cleanconfig/clientenv/deadline reserve",
+      "workflow build-only order/no privateartifact"
+    ],
+    "diffCheck": "git diff --check passed; read-only source check only",
+    "existingWorkflowRegression": "node --test tests/phone11-backend-workflow.test.mjs:3pass0fail0skip",
+    "failed": 0,
+    "newCommand": "python3 -I -B tests/phone11-backend-smoke.test.py",
+    "newTestsPassed": 12,
+    "ownedChildren": "Public Python child tests exercise actual bounded log-reader bytes/overflow/deadline+kill; exact health JS runs in Node VM with substituted fetch/time/process and no network",
+    "priorSuites": "Prior19 context/compiler tests and existing source checks remain historical evidence bound by unchanged helper/test pins; no broad application suite repeated",
+    "skipped": 0,
+    "syntax": "Both new Python sources AST parse passed"
+  }
+}

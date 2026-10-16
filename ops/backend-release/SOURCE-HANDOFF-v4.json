@@ -1,0 +1,305 @@
+{
+  "baseCommit": "e737b6970ae7842bc4d6316a5344b88724de3fb9",
+  "currentHead": "b6ea1b62dd8d1983a4ad7ca5fad6e69f574d3470",
+  "delta": {
+    "added": {
+      "tests/phone11-backend-runtime-modes.test.py": {
+        "bytes": 3154,
+        "sha256": "b3acbc9f4ac7bd96b44cbf602ebc0b7a942406576de21c556a2e69c3ec9f0282"
+      },
+      "tests/phone11-backend-start-diagnostic.test.py": {
+        "bytes": 9747,
+        "sha256": "57bac8369921ddb1aa0ab7f5f1e454404e3138d293b5d2b1c7c03070d71cf19d"
+      }
+    },
+    "modified": {
+      ".github/workflows/docker-build.yml": {
+        "after": {
+          "bytes": 5899,
+          "sha256": "90f81f9287df6643b53a89f6ee112f451fe2f1ebb7e1e81b94301de1f4531355"
+        },
+        "before": {
+          "bytes": 4631,
+          "sha256": "2878e27c9553ecbac6d631640766bfb46dbd3ba2504d1629d15df28ec0c56660"
+        }
+      },
+      "infra/docker/backend/Dockerfile": {
+        "after": {
+          "bytes": 4644,
+          "sha256": "2443ff651e006a77bb3485c9b4799263a5cae181bfa2873c4f5bf940278c755a"
+        },
+        "before": {
+          "bytes": 3604,
+          "sha256": "5905c29a6dce1ee33578e99cbb7fff90da145f80d5906b1cb4924456a14f8c6d"
+        }
+      },
+      "ops/backend-release/README.md": {
+        "after": {
+          "bytes": 13531,
+          "sha256": "d2250713340a05c2f50a9464932415a0f2c1118c49d71404c02f3393af7ed81e"
+        },
+        "before": {
+          "bytes": 9701,
+          "sha256": "4f9ce9eb146eb5fcbb991ad8a6626f58fb752f5989bc845be56a25b9890c1127"
+        }
+      },
+      "scripts/smoke-phone11-backend-image.py": {
+        "after": {
+          "bytes": 23679,
+          "sha256": "6853eea44f8a04e6c52c6a24c8d2e5ee1af3040f678e8f48dba1ec127043f626"
+        },
+        "before": {
+          "bytes": 16015,
+          "sha256": "8bbbab2f4f423ae84a3e4d066cd348cfb84e72bca7b2edb67af9e5eba82146fa"
+        }
+      }
+    },
+    "unchangedPriorPackagingLeaves": 21
+  },
+  "diagnosticDelta": {
+    "budgets": "Existing90s primary+30s cleanup reserve/120s total Docker deadline and3min workflow; diagnostic start15s/State.Error5s fit existing deadline; child kill/wait2s retained; no daemon/container/image retry or image/cache cleanup",
+    "childCensus": "Successful normal/diagnostic lifecycle11. Normal handled-failure maximum12 including bounded logs. Fixed-start failure7 including State.Error; diagnostic mode never adds application-log child. Maximum12 remains an upper bound.",
+    "containerRecipe": "Exactly unchanged between modes: same loaded image ID, AMD64, nonce/name, networknone/no ports/binds, read-only, UID1001, capdropALL/no-new-privileges, pids128, 512MiB RAM/swap, CPU1, nofile256, tmpfs64MiB, synthetic settings only",
+    "failures": "Foreign identity prohibits State.Error/private write/delete; private output failure does not bypass owned cleanup; own client deadline/cap kills/waits bounded child; failure cannot pass smoke",
+    "fixedStart": "One fixed owned container-start; stdout1024B, stderr4096B, min15s/current primary deadline; strict code0, exact CID acknowledgment and empty stderr required, no retry",
+    "normalMode": "Earlier bounded private application-log behavior unchanged; existing12 smoke tests pass",
+    "private": "Only redacted start stderr then redacted State.Error, at most8192B combined; exclusive/no-follow0600/fsync output; no application-log read in diagnostic mode; synthetic credential strings and capped suffixes redacted; finite byte counts split the two fields",
+    "privateRepository": "Separate one-day raw artifact only if actual github.event.repository.private==true AND diagnose_start AND !publish; contains only the two redacted fields",
+    "public": "Fixed booleans, integer returncode, bounded byte counts and fixed matching-token class only; rootCauseEstablished=false; no arbitrary text/path/config/env/error hashes",
+    "publicRepository": "Raw remains runner-private, never console or public artifact; current repo is public per Root. Runner teardown may discard it.",
+    "stateError": "Only after final exact nonce/name/image/ID ownership check and nonzero/unknown start exit; fixed container inspect --format {{.State.Error}} sameCID; 5s, 4096B plus optional framing newline, zero allowed stderr; unknown/truncated observation never invented",
+    "workflow": "Typed diagnose_start defaultfalse; publish=true+diagnose_start refuses before AWS; normal mode and publishing defaults retained"
+  },
+  "failedActual": {
+    "applicationLogs": "UNAVAILABLE",
+    "applicationStartEstablished": false,
+    "authority": "Root-reported genuine CI evidence, not a run performed by this source author",
+    "cause": "UNKNOWN",
+    "commit": "e737b6970ae7842bc4d6316a5344b88724de3fb9",
+    "healthAccepted": false,
+    "imageBuild": "PASSED",
+    "job": 116800664978,
+    "observedExitCode": 128,
+    "observedOOM": false,
+    "observedRunning": false,
+    "ownedCleanup": "DONE",
+    "phase": "start",
+    "recordReinterpreted": false,
+    "run": 38847312390,
+    "startDispatched": true,
+    "startStderr": "NOT_RETAINED"
+  },
+  "files": {
+    ".dockerignore": {
+      "bytes": 5695,
+      "sha256": "29e4a3d1fba2300b2a11ea80961d0387c4d6c3d77eb3c1e63c08187003ebd431"
+    },
+    ".github/workflows/docker-build.yml": {
+      "bytes": 5899,
+      "sha256": "90f81f9287df6643b53a89f6ee112f451fe2f1ebb7e1e81b94301de1f4531355"
+    },
+    "infra/docker/backend/Dockerfile": {
+      "bytes": 4644,
+      "sha256": "2443ff651e006a77bb3485c9b4799263a5cae181bfa2873c4f5bf940278c755a"
+    },
+    "infra/docker/backend/context-files.json": {
+      "bytes": 6166,
+      "sha256": "0f1450271d3985f3ffb541745c213a534db01a7538fa538711bebccaac889e27"
+    },
+    "infra/docker/backend/public-input-pins.json": {
+      "bytes": 2031,
+      "sha256": "a3ef9104458bffb24554918a7b117343fc3126339cee6fe98799f8045542e310"
+    },
+    "ops/backend-release/README.md": {
+      "bytes": 13531,
+      "sha256": "d2250713340a05c2f50a9464932415a0f2c1118c49d71404c02f3393af7ed81e"
+    },
+    "ops/backend-release/public-inputs/PUBLIC-INPUT-PINS.json": {
+      "bytes": 4737,
+      "sha256": "0779c2c511486739b538e76d7b8f9e95619ebd7c132951dc28a3466355cb6959"
+    },
+    "ops/backend-release/public-inputs/esbuild-0.25.12-metadata.json": {
+      "bytes": 2292,
+      "sha256": "2d519a80bfd174247d8c092d170227cb3a48674f066809580332d27abf0c2a5e"
+    },
+    "ops/backend-release/public-inputs/esbuild-linux-arm64-0.25.12-metadata.json": {
+      "bytes": 1386,
+      "sha256": "804ecfa628c96b7aa71891028ef69b6b269804985700769728f66ce06e3892d1"
+    },
+    "ops/backend-release/public-inputs/esbuild-linux-x64-0.25.12-metadata.json": {
+      "bytes": 1372,
+      "sha256": "fbe354283efc0fe2ff022119e42a3d5dba299676426dcae05f1d0fcced689860"
+    },
+    "ops/backend-release/public-inputs/node22-alpine-amd64-config.json": {
+      "bytes": 6480,
+      "sha256": "7c3b093add7c43400ee83b815ab2cda98794a10045bcf76ce9bb2f89b97cbc5c"
+    },
+    "ops/backend-release/public-inputs/node22-alpine-amd64-manifest.json": {
+      "bytes": 1720,
+      "sha256": "2c752226d477b4a886378baa95b9af252be59301b725fdb0b7e15208131505a8"
+    },
+    "ops/backend-release/public-inputs/node22-alpine-arm64-config.json": {
+      "bytes": 6496,
+      "sha256": "0d459d0765f0e55925663ba63fad229237ea06ad6ba4fa38658e7c5b5308a0b9"
+    },
+    "ops/backend-release/public-inputs/node22-alpine-arm64-manifest.json": {
+      "bytes": 1722,
+      "sha256": "85cdd100016a2e09927c0776bb7ebebcfefce5cd0af49893ada91cbc4d78ee22"
+    },
+    "ops/backend-release/public-inputs/node22-alpine-index.json": {
+      "bytes": 6406,
+      "sha256": "0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402"
+    },
+    "ops/backend-release/public-inputs/pnpm-9.12.0-metadata.json": {
+      "bytes": 2614,
+      "sha256": "ded23a0c3c3219df888f7563d1d672fdaa36092fb66988c943205da99eb60e10"
+    },
+    "ops/backend-release/resolve-public-inputs.py": {
+      "bytes": 4149,
+      "sha256": "add9a9d5e87fcec6af39b7e094fb6a2b32f8e391780d614180a601e1668ba317"
+    },
+    "scripts/build-phone11-backend.mjs": {
+      "bytes": 9420,
+      "sha256": "61fdd1c4a83113acc30ad66635c4959fcce5689f68576d6eb5869bfd0420cee6"
+    },
+    "scripts/describe-phone11-backend-image.py": {
+      "bytes": 2137,
+      "sha256": "ceaf367b60549476da59def792f6d0b7b231c444ee2bba1c944c61c14048af22"
+    },
+    "scripts/prepare-phone11-backend-context.py": {
+      "bytes": 7821,
+      "sha256": "5c28896a8b516d8da93b6114b0ea0464bdd13ff865aff2fab765367f5011d28b"
+    },
+    "scripts/smoke-phone11-backend-image.py": {
+      "bytes": 23679,
+      "sha256": "6853eea44f8a04e6c52c6a24c8d2e5ee1af3040f678e8f48dba1ec127043f626"
+    },
+    "tests/phone11-backend-build.test.mjs": {
+      "bytes": 9148,
+      "sha256": "61a2b4939fa86e58b6335dcb09c675e71e728c7c405b6c617e729d4ec7b28efe"
+    },
+    "tests/phone11-backend-context.test.py": {
+      "bytes": 6716,
+      "sha256": "c5ccd54e6e05bc3dbd76a18b7d2149e496ed5367a8b258a4827cf1e14133038f"
+    },
+    "tests/phone11-backend-runtime-modes.test.py": {
+      "bytes": 3154,
+      "sha256": "b3acbc9f4ac7bd96b44cbf602ebc0b7a942406576de21c556a2e69c3ec9f0282"
+    },
+    "tests/phone11-backend-smoke.test.py": {
+      "bytes": 16984,
+      "sha256": "17080b249507d01fcc706a7f62a551a0919d0c865afe92828974169a54e900ca"
+    },
+    "tests/phone11-backend-start-diagnostic.test.py": {
+      "bytes": 9747,
+      "sha256": "57bac8369921ddb1aa0ab7f5f1e454404e3138d293b5d2b1c7c03070d71cf19d"
+    },
+    "tests/phone11-backend-workflow.test.mjs": {
+      "bytes": 5567,
+      "sha256": "3da69432bfb77fc083f6f32137faf79a145351bd16b1002e662bcaab6f3bc013"
+    }
+  },
+  "headSuccessor": "Root fixture-only wake-Postgres test change; not authored, staged or validated by this worker; no product change inferred",
+  "limits": {
+    "DBAuth27HTTPAcceptance": "NOT_ESTABLISHED",
+    "GitWrites": false,
+    "actualDockerNetworkTargetDBProviderEffects": false,
+    "businessAuthMigrationPackageLockChanged": false,
+    "deploymentAuthority": false,
+    "e737Cause": "UNKNOWN",
+    "independentReview": "PENDING",
+    "liveSourceDBTopologyCompatibility": "UNKNOWN",
+    "newActualExists": false
+  },
+  "next": "Independent exact-source/stub review; Root alone integrates reviewed files, commits and chooses one separately authorized fresh publish=false diagnostic CI run. Diagnose finite actual result before retry. No stage/production/provider permission follows.",
+  "preservedHistory": {
+    "ops/backend-release/SOURCE-HANDOFF-v2.json": {
+      "bytes": 9062,
+      "sha256": "f0997a88629ba9e1f077d4e4c74f44a752dbcd928b7ba8ea7e23014ea737ea38"
+    },
+    "ops/backend-release/SOURCE-HANDOFF-v3.json": {
+      "bytes": 11852,
+      "sha256": "58dab993c3ce7ac3876dffcb48ac789ffe582d0d40ed02193b1f1ccd312e4c2f"
+    },
+    "ops/backend-release/SOURCE-HANDOFF.json": {
+      "bytes": 10030,
+      "sha256": "cbf12401dd44e2263ebddae916306ede71e0eb366a17c4bae2859908a76e7f80"
+    }
+  },
+  "publicContextCheck": {
+    "actualBuild": false,
+    "bytes": 1815072,
+    "files": 156,
+    "releaseReady": false,
+    "runtimeAuthority": false,
+    "sourceCommit": "b6ea1b62dd8d1983a4ad7ca5fad6e69f574d3470",
+    "sourceDirty": true,
+    "sourceManifestSha256": "3474ed4cf8f6314eb44a249678f45ec8d47020612571a435a42b62b053caf9c8",
+    "status": "PUBLIC_SOURCE_CHECKED"
+  },
+  "publicRuntimePermissions": {
+    "actualNewImageCheck": "NOT_RUN",
+    "correction": "After all runtime COPYs, chmod -R a+rX,go-w /app; preserve root ownership, public R/X and no group/other write; mutable data untouched",
+    "independentRootFixture": {
+      "bytes": 679,
+      "doesNotProve": "Actual e737 source modes or its exit128 cause",
+      "path": "/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PUBLIC-COPY-MODE-ad43ae58c60348ccaf0a4437fe1ea400.json",
+      "proves": "FROMscratch/publicCOPY source0600 remains root-owned0600, unreadableUID1001; no container/app start",
+      "sha256": "6ce156a6cfb302ab1bd14ed1d3baa648f6660637d26ad1d6f7bc9609d71ab6ae"
+    },
+    "localFixtureLimit": "Pythoncopy2+actualchmod public owned paths verifies mode masks/removal of existing group/other write/private context unchanged; not actual Docker or UID1001 process",
+    "realBuildCheck": "After USER cloudphone, networknone Node verifies revision, readable package/eight bundle+metafile outputs/link/JPEG+WebP JS/WASM, traversable dirs and nonwritable /app; no application import, SQL or provider call",
+    "sourceFacts": "Context helper requests0644 files subject to umask and creates0700 private directories; source/private context permissions remain unchanged"
+  },
+  "separateOpenItems": [
+    "Stop still uses --time; local Docker help advertised --timeout. CI/target warning compatibility is unverified, not an asserted start failure cause; no workaround or stderr weakening.",
+    "scripts/package-phone11-backend-image.py is a paused unvalidated/unreviewed/unwired draft. EXCLUDED from this source inventory and any integration; preserve but do not commit it.",
+    "Root owns unrelated wake-Postgres TTL fixture validation; this handoff does not duplicate or claim its checks."
+  ],
+  "sourceChangedNotCommitted": true,
+  "status": "AUTHOR_SOURCE_ONLY_READY_FOR_INDEPENDENT_REVIEW",
+  "validation": {
+    "commands": [
+      {
+        "command": "python3 -I -B tests/phone11-backend-start-diagnostic.test.py",
+        "passed": 9,
+        "scope": "Actual bounded owned public Python subprocesses for fixed-start/State.Error caps/deadlines/strictack; fake Docker lifecycle; no Docker endpoint"
+      },
+      {
+        "command": "python3 -I -B tests/phone11-backend-runtime-modes.test.py",
+        "passed": 2,
+        "scope": "Owned public files and actual chmod only; static build-user policy"
+      },
+      {
+        "command": "python3 -I -B tests/phone11-backend-smoke.test.py",
+        "passed": 12,
+        "scope": "Prior unchanged smoke tests replayed against changed helper; FakeDocker and health JS VM only"
+      },
+      {
+        "command": "node --test tests/phone11-backend-workflow.test.mjs tests/phone11-backend-build.test.mjs",
+        "passed": 11,
+        "scope": "3 workflow+8 compiler/source tests; fake compiler, no package execution"
+      },
+      {
+        "command": "3 changed Python AST parses + extracted runtime-check JavaScript node --check",
+        "scope": "Syntax only; new build-check JS not evaluated",
+        "status": "PASSED"
+      },
+      {
+        "command": "git diff --check",
+        "scope": "Read-only diff whitespace check",
+        "status": "PASSED"
+      }
+    ],
+    "counterexamples": "Start cap/time/strictack/replay, State.Error overflow or inspect-stderr, syntheticsecret full/capped suffix redaction, owner replacement, privatewrite failure, public/private artifact gates, defaultfalse, unchanged security recipe, runtime0600/0700/0777 masks",
+    "failed": 0,
+    "focusedTestsPassed": 34,
+    "initialFixtureCorrection": "An initial diagnostic test wrongly forbade the existing public ownership nonce anywhere in the receipt; corrected assertion forbids full credentials everywhere and nonce in raw/new diagnostic fields. Final9 pass. No production relaxation.",
+    "notRun": [
+      "Docker/build/pull/install/app/CI/network/DB/provider/target",
+      "Broad application suite/typecheck/realPG",
+      "New UID1001 image/runtime permission test"
+    ],
+    "skipped": 0
+  }
+}

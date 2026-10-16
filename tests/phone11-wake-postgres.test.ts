@@ -35,9 +35,9 @@ async function afterExpiry(expiry: Date) {
   await pool.query("SELECT pg_sleep(GREATEST(0,EXTRACT(EPOCH FROM ($1::timestamptz-clock_timestamp())))+0.03)", [expiry]);
 }
 // Pause a real transaction after it obtains relevant locks, while the DB clock advances.
-function delayedBefore(match: string, pause: () => Promise<void>) {
+function delayedBefore(match: string, pause: (client: PoolClient) => Promise<void>) {
   return createWakeRepository(fn => transaction(client => fn({ query: async (sql: string, params?: any[]) => {
-    if (sql.includes(match)) await pause();
+    if (sql.includes(match)) await pause(client);
     return client.query(sql, params);
   } } as PoolClient)));
 }
@@ -338,8 +338,14 @@ describe.skipIf(!connectionString)("Wake grants and calls in isolated real Postg
     expect((await pool.query("SELECT count(*)::int AS n FROM phone11_wake_terminals")).rows[0].n).toBe(5);
   });
   it("does not return credentials after the setup TTL expires during credential fetch", async () => {
-    const {b,call}=await offered(); const {rows:[r]}=await pool.query("UPDATE phone11_wake_calls SET expires_at=clock_timestamp()+INTERVAL '150 milliseconds' RETURNING expires_at");
-    let paused=false; const slow=delayedBefore("SELECT sa.sip_username",async()=>{paused=true;await afterExpiry(r.expires_at);});
+    const {b,call}=await offered();
+    let paused=false; const slow=delayedBefore("SELECT sa.sip_username",async(client)=>{
+      paused=true;
+      // Arm the short TTL only after this transaction reaches credential fetch.
+      // Scheduler delays before entry must not turn this into an early-expiry test.
+      const {rows:[r]}=await client.query("UPDATE phone11_wake_calls SET expires_at=clock_timestamp()+INTERVAL '150 milliseconds' WHERE id=$1 RETURNING expires_at",[call.callUUID]);
+      await afterExpiry(r.expires_at);
+    });
     await expect(slow.deviceCall(b.bindingId,b.grant,call.callUUID,"claim")).rejects.toMatchObject({status:410}); expect(paused).toBe(true);
   });
   it("does not return credentials after the auth session expires during credential fetch", async () => {

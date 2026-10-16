@@ -1,0 +1,118 @@
+{
+  "actualBoundary": {
+    "actualArchiveUpload": "NOT_RUN",
+    "actualPackage": "NOT_RUN",
+    "rootReportedCommit": "dbf4515",
+    "rootReportedCorrectedSmokeRun": 38852913602,
+    "rootReportedStatus": "SUCCESS_AWAIT_SEPARATE_AUTHENTICATED_FINITE_RECEIPT_ACCEPTANCE"
+  },
+  "actualDockerCICloudNetworkTargetGitEffects": false,
+  "baseObservedHead": "dbf4515bbe0d425fcb00e7962211ad6fbd134899",
+  "delta": {
+    ".github/workflows/docker-build.yml": {
+      "after": {
+        "bytes": 7330,
+        "path": "/Users/vasavas16macbookpro/Documents/Codex/phone11-full-backend-release-20261016/.github/workflows/docker-build.yml",
+        "sha256": "4a04d1ee74f6261fabb6714ebf667fd143bc7905ea1f8a92aa6c2d81ae371688"
+      },
+      "before": {
+        "bytes": 5899,
+        "sha256": "90f81f9287df6643b53a89f6ee112f451fe2f1ebb7e1e81b94301de1f4531355"
+      }
+    },
+    "ops/backend-release/README.md": {
+      "after": {
+        "bytes": 17414,
+        "path": "/Users/vasavas16macbookpro/Documents/Codex/phone11-full-backend-release-20261016/ops/backend-release/README.md",
+        "sha256": "ee0c7e0dddeabc86c66fb6bfdb8ab10d88abb168d7b44f7ea3685de2a8dbb1b1"
+      },
+      "before": {
+        "bytes": 15201,
+        "sha256": "2f5dfc7b33790e6eb6124df6ae244c89ebbc7d21084f58ccc9c33be26f03c945"
+      }
+    },
+    "tests/phone11-backend-workflow.test.mjs": {
+      "after": {
+        "bytes": 11273,
+        "path": "/Users/vasavas16macbookpro/Documents/Codex/phone11-full-backend-release-20261016/tests/phone11-backend-workflow.test.mjs",
+        "sha256": "8704a62268795637e70b7b5a20eae56a7eb77e7da3032d27f93650da2ff6d294"
+      },
+      "before": {
+        "bytes": 5567,
+        "sha256": "3da69432bfb77fc083f6f32137faf79a145351bd16b1002e662bcaab6f3bc013"
+      }
+    }
+  },
+  "deploymentAuthority": false,
+  "fullNineRelevantSourceLeavesStableClosed": 8,
+  "genuineHelperIndependentReview": {
+    "bytes": 6320,
+    "path": "/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/review/full-backend-archive-helper-independent-v1/INDEPENDENT-REVIEW.json",
+    "sha256": "fc0aba3fadd12e0bfcc4ad3fe3abcb9b795255df3eb75edcd722f90a5c392330"
+  },
+  "helperAndHelperTestsUnchanged": true,
+  "implementation": {
+    "earlyRefusal": "package_image&&publish exits1 before AWS region/credential/ECR steps",
+    "failure": "No continue-on-error/always/recovery for package or upload; skipped/failed/cancelled/prior-failed/smoke-not-success/helper-nonzero cannot upload even if two files exist. Existing finite smoke evidence always upload remains separate.",
+    "newInput": "manual typed boolean package_image defaultfalse; publish defaulttrue unchanged",
+    "output": "new private helper-owned exclusive directory; no workflow precreation/recovery",
+    "packageGate": "success() && inputs.package_image && !inputs.publish && steps.smoke.outcome == 'success'",
+    "packageInvocation": "python3 -I -B scripts/package-phone11-backend-image.py --commit \"$GITHUB_SHA\" --metadata \"$RUNNER_TEMP/phone11-backend-build.json\" --smoke \"$RUNNER_TEMP/phone11-backend-smoke.json\" --output \"$RUNNER_TEMP/phone11-backend-package\"",
+    "permissionsTriggersAwsEcr": "unchanged manual workflow, same permissions, no repository/IAM/resource creation or deployment trigger",
+    "smokeBinding": "Existing same-job smoke step now id=smoke; helper independently requires exact17field passed/healthy/graceful/exitzero/noOOM/ownedremoved receipt for same commit/platform/imageID",
+    "timeout": "helper300s unchanged; workflow6minutes for cleanup/unwind",
+    "upload": "actions/upload-artifact@v4, exactly backend-image.tar + manifest.json, if-no-files-found:error, retention1day, compression-level0",
+    "uploadGate": "success() && inputs.package_image && !inputs.publish && steps.smoke.outcome == 'success' && steps.package.outcome == 'success'"
+  },
+  "independentWorkflowReview": "PENDING",
+  "preservedFrozenHelper": {
+    "bytes": 16932,
+    "path": "/Users/vasavas16macbookpro/Documents/Codex/phone11-full-backend-release-20261016/scripts/package-phone11-backend-image.py",
+    "sha256": "9bdf2d22f8df12050ce8f9f30a492c9ad1efe6fc086cd3f1a0b85cee3e5c6af7"
+  },
+  "preservedFrozenHelperTests": {
+    "bytes": 14926,
+    "path": "/Users/vasavas16macbookpro/Documents/Codex/phone11-full-backend-release-20261016/tests/phone11-backend-package.test.py",
+    "sha256": "7de1e186a0c67ae33c97b11e7c7487e8e8bdab752892871ef25bf0d931a1b28b"
+  },
+  "preservedHelperAuthorHandoff": {
+    "bytes": 8630,
+    "path": "/Users/vasavas16macbookpro/Documents/Codex/phone11-full-backend-release-20261016/ops/backend-release/PACKAGE-SOURCE-HANDOFF-v1.json",
+    "sha256": "84b61846d46396dc374e28ae9a2115524547be53ee338f03b6a47022eca29894"
+  },
+  "priorSourceHandoff": {
+    "bytes": 11983,
+    "path": "/Users/vasavas16macbookpro/Documents/Codex/phone11-full-backend-release-20261016/ops/backend-release/SOURCE-HANDOFF-v6.json",
+    "sha256": "bdb029a02aee9e66dd0f1d09468d75558b11d000765f998c41023af4e0bd1bcc"
+  },
+  "provenanceConstraints": [
+    "Only trusted controlled same-job image built by current exact public-source context/commit flow, unpublished loaded local image; package helper pins actual imageID from finite metadata, same successful smoke/cleanup then inspect/save/inspect exactID.",
+    "Never export serving containers, runtime configuration/credentials/customer data/mutable volumes or arbitrary unrelated images. publicCiBuildRequired is caller provenance precondition, not image-layer secret proof.",
+    "Helper source caps/protocol/file custody/strict stderr/close/partial-no-adopt unchanged. Files after failure are consumed; no archive upload except successful step outcome and complete helper manifest/archive.",
+    "Root alone may dispatch after independent workflow source review plus genuine successful smoke/cleanup acceptance. This author did not observe/download actual CI receipt or perform archive/export/upload."
+  ],
+  "runtimeAcceptance": false,
+  "schema": "phone11-backend-optional-package-workflow-source-handoff/v7",
+  "status": "SOURCE_READY_FOR_INDEPENDENT_REVIEW_NO_ACTUAL_PACKAGE",
+  "unchangedProductPackageLockDockerfileCompilerContextAndSmoke": true,
+  "validation": {
+    "allOwnedTempFixturesRemoved": true,
+    "command": "node --test tests/phone11-backend-workflow.test.mjs",
+    "completeLookingSyntheticFilesOnFailureCannotUpload": true,
+    "failed": 0,
+    "frozenHelperTestsRerun": false,
+    "gitDiffCheck": "PASS",
+    "lint": "NOT_RUN_UNAVAILABLE: attempted ./node_modules/.bin/eslint; no local binary. No install/download performed. Node test syntax/execution passed.",
+    "newConditionRows": 11,
+    "newTests": 3,
+    "originalAwsEcrContextMetadataAssertionsPreserved": true,
+    "ownedFakePythonExitCases": [
+      0,
+      37
+    ],
+    "passed": 6,
+    "priorBroadSuitesRepeated": false,
+    "sameJobReceiptArgvWithSpaces": true,
+    "skipped": 0
+  }
+}
