@@ -50,8 +50,12 @@ COPY --from=production-dependencies /app/modules/phone11-siprix ./modules/phone1
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/drizzle ./drizzle
 COPY package.json ./
-RUN node -e 'const m=require("./dist/build-manifest.json"); if(m.sourceCommit!==process.env.PHONE11_BUILD_SHA) process.exit(1)'
+# Context directories are private on the build host. Only copied public runtime
+# code is made readable/traversable here; ownership stays root and group/other
+# write is removed. Private context/source modes and mutable data are untouched.
+RUN chmod -R a+rX,go-w /app
 HEALTHCHECK --interval=15s --timeout=5s --retries=3 --start-period=10s CMD wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1
 EXPOSE 3000/tcp
 USER cloudphone
+RUN --network=none node -e 'const fs=require("node:fs"),path=require("node:path"); const m=require("./dist/build-manifest.json"); if(m.sourceCommit!==process.env.PHONE11_BUILD_SHA) throw Error("Build revision differs"); for(const p of [".","./dist","./drizzle","./modules/phone11-siprix"]) fs.accessSync(p,fs.constants.R_OK|fs.constants.X_OK); for(const p of ["./package.json","./modules/phone11-siprix/index.js",...Object.keys(m.outputs)]) fs.accessSync(p,fs.constants.R_OK); for(const [name,wasm] of [["@jsquash/jpeg","mozjpeg_dec.wasm"],["@jsquash/webp","webp_dec.wasm"]]) { const decoder=require.resolve(name+"/decode.js"); fs.accessSync(decoder,fs.constants.R_OK); fs.accessSync(path.join(path.dirname(decoder),"codec/dec",wasm),fs.constants.R_OK); } try { fs.accessSync(".",fs.constants.W_OK); throw Error("Runtime code is writable"); } catch(error) { if(error.code!=="EACCES") throw error; }'
 CMD ["node", "dist/index.mjs"]

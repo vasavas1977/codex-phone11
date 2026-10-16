@@ -19,6 +19,11 @@ on:
         required: true
         type: boolean
         default: true
+      diagnose_start:
+        description: 'Build-only fixed-start diagnostics. Public output is finite; raw fields stay runner-private.'
+        required: true
+        type: boolean
+        default: false
 
 env:
   AWS_REGION: ${{ vars.AWS_REGION }}
@@ -38,6 +43,10 @@ jobs:
         env:
           SELECTED_PLATFORM: ${{ inputs.platform }}
         run: test "$SELECTED_PLATFORM" = linux/amd64 && test "$(uname -m)" = x86_64
+
+      - name: Refuse publishing in diagnostic mode
+        if: inputs.diagnose_start && inputs.publish
+        run: echo 'diagnose_start requires publish=false' >&2; exit 1
 
       - name: Validate AWS region
         if: inputs.publish
@@ -111,7 +120,14 @@ jobs:
       - name: Smoke the isolated backend process
         if: ${{ !inputs.publish }}
         timeout-minutes: 3
-        run: python3 -I -B scripts/smoke-phone11-backend-image.py --commit "$GITHUB_SHA" --metadata "$RUNNER_TEMP/phone11-backend-build.json" --output "$RUNNER_TEMP/phone11-backend-smoke.json" --private-diagnostics "$RUNNER_TEMP/phone11-backend-smoke-private.log"
+        env:
+          DIAGNOSE_START: ${{ inputs.diagnose_start }}
+        run: |
+          if [ "$DIAGNOSE_START" = true ]; then
+            python3 -I -B scripts/smoke-phone11-backend-image.py --diagnose-start --commit "$GITHUB_SHA" --metadata "$RUNNER_TEMP/phone11-backend-build.json" --output "$RUNNER_TEMP/phone11-backend-smoke.json" --private-diagnostics "$RUNNER_TEMP/phone11-backend-smoke-private.log"
+          else
+            python3 -I -B scripts/smoke-phone11-backend-image.py --commit "$GITHUB_SHA" --metadata "$RUNNER_TEMP/phone11-backend-build.json" --output "$RUNNER_TEMP/phone11-backend-smoke.json" --private-diagnostics "$RUNNER_TEMP/phone11-backend-smoke-private.log"
+          fi
 
       - name: Keep finite process smoke evidence
         if: ${{ always() && !inputs.publish }}
@@ -119,5 +135,14 @@ jobs:
         with:
           name: phone11-backend-smoke-${{ github.sha }}
           path: ${{ runner.temp }}/phone11-backend-smoke.json
+          if-no-files-found: ignore
+          retention-days: 1
+
+      - name: Keep protected fixed-start diagnostics only in a private repository
+        if: ${{ always() && !inputs.publish && inputs.diagnose_start && github.event.repository.private == true }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: phone11-backend-start-private-${{ github.sha }}
+          path: ${{ runner.temp }}/phone11-backend-smoke-private.log
           if-no-files-found: ignore
           retention-days: 1

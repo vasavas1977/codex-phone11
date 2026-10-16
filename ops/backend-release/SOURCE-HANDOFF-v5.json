@@ -1,0 +1,217 @@
+{
+  "causeBoundary": "This prevents a known deprecated-option stderr path at stop. It does not establish the old e737 start exit128 cause or genuine new startup/shutdown success. Root identified CI Docker28.0.4; no Docker invocation occurred here.",
+  "delta": {
+    "ops/backend-release/README.md": {
+      "after": {
+        "bytes": 13988,
+        "sha256": "229e955407a4f085238dec6d5be903ef4a000adda795d45f49e345fcb37529f6"
+      },
+      "before": {
+        "bytes": 13531,
+        "sha256": "d2250713340a05c2f50a9464932415a0f2c1118c49d71404c02f3393af7ed81e"
+      }
+    },
+    "scripts/smoke-phone11-backend-image.py": {
+      "after": {
+        "bytes": 23682,
+        "sha256": "714460ecd8818a67d7ad3685a2fdc67fca5eebe2a26ae64668fb3b02e8a0de22"
+      },
+      "before": {
+        "bytes": 23679,
+        "sha256": "6853eea44f8a04e6c52c6a24c8d2e5ee1af3040f678e8f48dba1ec127043f626"
+      }
+    },
+    "tests/phone11-backend-smoke.test.py": {
+      "after": {
+        "bytes": 18068,
+        "sha256": "fa4fdcdec6824ce93a9a121f45a9fcfdc5bd2797ca9685eb8b7b4c0df3fac1f9"
+      },
+      "before": {
+        "bytes": 16984,
+        "sha256": "17080b249507d01fcc706a7f62a551a0919d0c865afe92828974169a54e900ca"
+      }
+    }
+  },
+  "exactSourceDerivation": {
+    "after": "run(['container', 'stop', '--timeout', '10', cid])",
+    "allOtherSmokeBytesUnchanged": true,
+    "before": "run(['container', 'stop', '--time', '10', cid])",
+    "existingTestFileReverseReconstructsExactV4Sha256": true,
+    "newTestMethodOnly": true,
+    "occurrences": 1,
+    "reverseReconstructsExactV4SmokeSha256": true
+  },
+  "files": {
+    ".dockerignore": {
+      "bytes": 5695,
+      "sha256": "29e4a3d1fba2300b2a11ea80961d0387c4d6c3d77eb3c1e63c08187003ebd431"
+    },
+    ".github/workflows/docker-build.yml": {
+      "bytes": 5899,
+      "sha256": "90f81f9287df6643b53a89f6ee112f451fe2f1ebb7e1e81b94301de1f4531355"
+    },
+    "infra/docker/backend/Dockerfile": {
+      "bytes": 4644,
+      "sha256": "2443ff651e006a77bb3485c9b4799263a5cae181bfa2873c4f5bf940278c755a"
+    },
+    "infra/docker/backend/context-files.json": {
+      "bytes": 6166,
+      "sha256": "0f1450271d3985f3ffb541745c213a534db01a7538fa538711bebccaac889e27"
+    },
+    "infra/docker/backend/public-input-pins.json": {
+      "bytes": 2031,
+      "sha256": "a3ef9104458bffb24554918a7b117343fc3126339cee6fe98799f8045542e310"
+    },
+    "ops/backend-release/README.md": {
+      "bytes": 13988,
+      "sha256": "229e955407a4f085238dec6d5be903ef4a000adda795d45f49e345fcb37529f6"
+    },
+    "ops/backend-release/public-inputs/PUBLIC-INPUT-PINS.json": {
+      "bytes": 4737,
+      "sha256": "0779c2c511486739b538e76d7b8f9e95619ebd7c132951dc28a3466355cb6959"
+    },
+    "ops/backend-release/public-inputs/esbuild-0.25.12-metadata.json": {
+      "bytes": 2292,
+      "sha256": "2d519a80bfd174247d8c092d170227cb3a48674f066809580332d27abf0c2a5e"
+    },
+    "ops/backend-release/public-inputs/esbuild-linux-arm64-0.25.12-metadata.json": {
+      "bytes": 1386,
+      "sha256": "804ecfa628c96b7aa71891028ef69b6b269804985700769728f66ce06e3892d1"
+    },
+    "ops/backend-release/public-inputs/esbuild-linux-x64-0.25.12-metadata.json": {
+      "bytes": 1372,
+      "sha256": "fbe354283efc0fe2ff022119e42a3d5dba299676426dcae05f1d0fcced689860"
+    },
+    "ops/backend-release/public-inputs/node22-alpine-amd64-config.json": {
+      "bytes": 6480,
+      "sha256": "7c3b093add7c43400ee83b815ab2cda98794a10045bcf76ce9bb2f89b97cbc5c"
+    },
+    "ops/backend-release/public-inputs/node22-alpine-amd64-manifest.json": {
+      "bytes": 1720,
+      "sha256": "2c752226d477b4a886378baa95b9af252be59301b725fdb0b7e15208131505a8"
+    },
+    "ops/backend-release/public-inputs/node22-alpine-arm64-config.json": {
+      "bytes": 6496,
+      "sha256": "0d459d0765f0e55925663ba63fad229237ea06ad6ba4fa38658e7c5b5308a0b9"
+    },
+    "ops/backend-release/public-inputs/node22-alpine-arm64-manifest.json": {
+      "bytes": 1722,
+      "sha256": "85cdd100016a2e09927c0776bb7ebebcfefce5cd0af49893ada91cbc4d78ee22"
+    },
+    "ops/backend-release/public-inputs/node22-alpine-index.json": {
+      "bytes": 6406,
+      "sha256": "0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402"
+    },
+    "ops/backend-release/public-inputs/pnpm-9.12.0-metadata.json": {
+      "bytes": 2614,
+      "sha256": "ded23a0c3c3219df888f7563d1d672fdaa36092fb66988c943205da99eb60e10"
+    },
+    "ops/backend-release/resolve-public-inputs.py": {
+      "bytes": 4149,
+      "sha256": "add9a9d5e87fcec6af39b7e094fb6a2b32f8e391780d614180a601e1668ba317"
+    },
+    "scripts/build-phone11-backend.mjs": {
+      "bytes": 9420,
+      "sha256": "61fdd1c4a83113acc30ad66635c4959fcce5689f68576d6eb5869bfd0420cee6"
+    },
+    "scripts/describe-phone11-backend-image.py": {
+      "bytes": 2137,
+      "sha256": "ceaf367b60549476da59def792f6d0b7b231c444ee2bba1c944c61c14048af22"
+    },
+    "scripts/prepare-phone11-backend-context.py": {
+      "bytes": 7821,
+      "sha256": "5c28896a8b516d8da93b6114b0ea0464bdd13ff865aff2fab765367f5011d28b"
+    },
+    "scripts/smoke-phone11-backend-image.py": {
+      "bytes": 23682,
+      "sha256": "714460ecd8818a67d7ad3685a2fdc67fca5eebe2a26ae64668fb3b02e8a0de22"
+    },
+    "tests/phone11-backend-build.test.mjs": {
+      "bytes": 9148,
+      "sha256": "61a2b4939fa86e58b6335dcb09c675e71e728c7c405b6c617e729d4ec7b28efe"
+    },
+    "tests/phone11-backend-context.test.py": {
+      "bytes": 6716,
+      "sha256": "c5ccd54e6e05bc3dbd76a18b7d2149e496ed5367a8b258a4827cf1e14133038f"
+    },
+    "tests/phone11-backend-runtime-modes.test.py": {
+      "bytes": 3154,
+      "sha256": "b3acbc9f4ac7bd96b44cbf602ebc0b7a942406576de21c556a2e69c3ec9f0282"
+    },
+    "tests/phone11-backend-smoke.test.py": {
+      "bytes": 18068,
+      "sha256": "fa4fdcdec6824ce93a9a121f45a9fcfdc5bd2797ca9685eb8b7b4c0df3fac1f9"
+    },
+    "tests/phone11-backend-start-diagnostic.test.py": {
+      "bytes": 9747,
+      "sha256": "57bac8369921ddb1aa0ab7f5f1e454404e3138d293b5d2b1c7c03070d71cf19d"
+    },
+    "tests/phone11-backend-workflow.test.mjs": {
+      "bytes": 5567,
+      "sha256": "3da69432bfb77fc083f6f32137faf79a145351bd16b1002e662bcaab6f3bc013"
+    }
+  },
+  "genuineV4IndependentReview": {
+    "bytes": 4150,
+    "path": "/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/review/full-backend-startup-diagnostic-independent-v1/INDEPENDENT-REVIEW.json",
+    "sha256": "4fc45a88964cc23fcfa9e702db7dd2e04410afa8e8c19dcd2b4767b29bea8f52"
+  },
+  "limits": {
+    "actualDockerCICloudTargetGitEffects": false,
+    "actualNewRun": false,
+    "independentReview": "PENDING",
+    "oldE737Cause": "UNKNOWN",
+    "releaseAuthority": false,
+    "runtimeReadiness": false
+  },
+  "next": "Independent narrow v4-continuity/stop-option source review, then Root alone integrates reviewed files and decides any fresh genuine diagnostic run. No automatic retry or changed acceptance.",
+  "otherV4SourceLeavesUnchanged": 24,
+  "pausedArchive": "scripts/package-phone11-backend-image.py remains unvalidated/unreviewed/unwired and excluded; never stage it as part of this successor.",
+  "preservedV4Handoff": {
+    "bytes": 15413,
+    "path": "/Users/vasavas16macbookpro/Documents/Codex/phone11-full-backend-release-20261016/ops/backend-release/SOURCE-HANDOFF-v4.json",
+    "sha256": "e5c867b0298c6b76987e3c9c42428fdfc3565dcd879f40154f467235cb308513"
+  },
+  "primarySources": [
+    {
+      "supports": "Canonical --timeout registers the same timeout field as deprecated --time; both feed ContainerStop Timeout. --time is explicitly MarkDeprecated.",
+      "url": "https://github.com/docker/cli/blob/v28.0.4/cli/command/container/stop.go#L43-L64"
+    },
+    {
+      "supports": "--timeout is the documented stop grace-period option, before forced kill.",
+      "url": "https://docs.docker.com/reference/cli/docker/container/stop/"
+    }
+  ],
+  "schema": "phone11-backend-stop-timeout-source-successor/v5",
+  "sourceContext": "All v4 public context input files unchanged. No new context preparation/build was needed or run for this script/test/doc-only correction; v4 context check remains historical bound evidence.",
+  "status": "AUTHOR_SOURCE_ONLY_READY_FOR_INDEPENDENT_REVIEW",
+  "unchanged": "Ten-second stop grace/default signal, --stop-timeout10 create option, security/resource/identity/container recipe, strict empty-stderr validation, diagnostics/privacy/classifier/cleanup, deadlines/childcensus, workflow, Dockerfile, package/lock/business/auth/migrations all unchanged from v4",
+  "validation": {
+    "commands": [
+      {
+        "command": "python3 -I -B tests/phone11-backend-smoke.test.py",
+        "newCase": "Exact canonical stop argv including10; zero-exit child stderr still raisesRefused without allowlisting/suppression",
+        "passed": 13,
+        "seam": "FakeDocker lifecycle and substituted CompletedProcess capture only; existing owned child and JS VM fixtures retained; no actual Docker/app"
+      },
+      {
+        "command": "python3 -I -B tests/phone11-backend-start-diagnostic.test.py DiagnosticTests.test_diagnostic_mode_preserves_the_exact_container_recipe",
+        "passed": 1,
+        "seam": "Owned Python child+FakeDocker only; exact create argv identity between modes"
+      },
+      {
+        "command": "2 changed Python AST parses",
+        "status": "PASSED"
+      },
+      {
+        "command": "git diff --check",
+        "status": "PASSED"
+      }
+    ],
+    "failed": 0,
+    "newFullCIImageBuildOrContainerStartup": false,
+    "passed": 14,
+    "skipped": 0,
+    "unchangedBroadSuitesRepeated": false
+  }
+}

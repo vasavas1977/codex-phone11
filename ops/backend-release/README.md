@@ -6,7 +6,7 @@ The public API currently reports the opaque build label `team-chat-media-d41fc50
 
 ## Build inputs
 
-`public-inputs/` preserves anonymous primary registry metadata GET results. The official immutable Node22-alpine index is pinned in the Dockerfile; its recorded AMD64 and ARM64 images report Node22.23.3. This is an explicit update from the earlier qualification Node22.23.2. No Node22.23.3 image or compiler has been run for this change.
+`public-inputs/` preserves anonymous primary registry metadata GET results. The official immutable Node22-alpine index is pinned in the Dockerfile; its recorded AMD64 and ARM64 images report Node22.23.3. This is an explicit update from the earlier qualification Node22.23.2. This source author did not run a Node22.23.3 image or compiler; Root's later genuine CI build evidence is separate.
 
 The public pin file fixes pnpm9.12.0 with its SHA512 Corepack specification, esbuild0.25.12 and both Linux native package integrities, the unchanged package/lock and four patches. Docker's two installs use `--frozen-lockfile --ignore-scripts`; the root mobile installer, Expo prebuild and dependency postinstalls cannot acquire SDKs or execute implicitly. The build helper resolves the installed architecture-specific esbuild binary directly; it does not use esbuild's installer/download fallback. Package installs still require controlled public registry access in the future ordinary build. No registry credentials belong in context or build arguments.
 
@@ -40,6 +40,20 @@ Local container logs are capped at 16KiB/one file. On failure, an ownership-chec
 
 This proves process startup/health/shutdown only when the future CI step actually runs. It does not establish DB/auth readiness,27-handler acceptance, live feature compatibility or permission to deploy. Current focused tests substitute Docker, use owned public child processes for byte/deadline handling, and execute the exact health JavaScript in a VM with substituted fetch; no image or application starts in these tests.
 
+## Fixed-start diagnostic successor and public runtime permissions
+
+Root's e737 build-only run 38847312390 built the image but refused at container start: start was dispatched, health was not accepted, the owned stopped container reported exit 128/no OOM, and owned cleanup completed. Its Docker-start stderr was not retained and application logs were unavailable. The cause remains unknown; no application startup was established. Preserve that failed receipt and diagnose before another run.
+
+The optional typed `diagnose_start` dispatch input defaults to false and refuses `publish=true` before AWS setup. With it enabled, the same image identity, container arguments, synthetic settings and security/resource limits apply. There is one start attempt, no fallback or retry. Only that fixed `docker container start <owned-id>` stderr is captured (4096 bytes, 15s within the existing deadline). After the exact name/nonce/image/ID check, failed start may read only `docker container inspect --format '{{.State.Error}}' <same-id>` (4096 bytes plus its framing newline, 5s); unexpected inspect stderr refuses that observation. Diagnostic mode never reads application logs.
+
+Generated synthetic credential values are redacted before retaining these two fields. A new exclusive mode 0600 runner-private file contains redacted start stderr followed by redacted State.Error, with no separator; finite `startStderrBytes` and `stateErrorBytes` provide the split, and the combined cap is 8192 bytes. Public output contains only exit/timeout/truncation/presence flags and fixed matching-token booleans/classes for OCI, errno and resource categories. A matching token does not establish the cause. Unknown stays unknown; raw text, paths, configuration, environment and hashes of raw errors are not exported. Ownership mismatch prevents State.Error collection, private diagnostic writing and deletion.
+
+The current repository is public: raw fields stay runner-private and may be lost at teardown. No public diagnostic artifact contains them. Only if GitHub's actual repository-private flag is true does the workflow permit a separate one-day raw diagnostic artifact for an authorized private inspection; it contains those two redacted fields only. Finite smoke evidence remains the existing one-day JSON artifact. The existing non-diagnostic mode retains its earlier bounded application-log behavior.
+
+A separate public COPY fixture proved that a mode 0600 context file remains root-owned 0600 after Docker COPY, unreadable by UID1001. Its receipt is `PUBLIC-COPY-MODE-ad43ae58c60348ccaf0a4437fe1ea400.json`, SHA256 `6ce156a6cfb302ab1bd14ed1d3baa648f6660637d26ad1d6f7bc9609d71ab6ae` (679 bytes). It did not start an application and does not identify the e737 exit 128 cause. The context helper requests 0644 public files subject to the process umask, and creates 0700 private directories. The final image now makes only copied public `/app` code readable/traversable (`a+rX`) and removes group/other write, keeping root ownership. Private host context/source modes and mutable data are unchanged. A network-disabled build check runs as the final runtime user, requiring readable package/bundle/link/decoder/WASM assets and a nonwritable `/app` before the image completes. Local mode fixtures test these permission masks; a real UID1001 image check remains for the next reviewed CI build.
+
+The v5 stop correction uses `--timeout 10` in place of deprecated `--time 10`. [Docker CLI v28.0.4 source](https://github.com/docker/cli/blob/v28.0.4/cli/command/container/stop.go#L43-L64) registers `--timeout` and maps both spellings to the same timeout value, while marking `--time` deprecated; the [official stop reference](https://docs.docker.com/reference/cli/docker/container/stop/) documents the canonical option. The ten-second grace period, default signal, security recipe, deadlines and strict empty-stderr requirement remain unchanged. This prevents the known deprecation warning path; a genuine CI stop with this successor has not run. It is separate from the earlier failed start and does not establish its exit 128 cause.
+
 ## Four real outputs
 
 The compiler builds index.mjs, auth-admin.mjs, conference-readiness.mjs and profile-photo-worker.mjs from their existing source entries. It keeps packages external, records metafiles/output hashes/compiler/platform/decoder hashes and the source-context identity, refuses compiler warnings/timeouts or missing assets, and never imports application code. Compile runs with network disabled. The final image checks its revision against this build record, keeps UID1001, and starts `node dist/index.mjs`; the unrelated package.json `start` path is not used.
@@ -57,6 +71,8 @@ python3 -I -B tests/phone11-backend-context.test.py
 node --test tests/phone11-backend-build.test.mjs
 node --test tests/phone11-backend-workflow.test.mjs
 python3 -I -B tests/phone11-backend-smoke.test.py
+python3 -I -B tests/phone11-backend-start-diagnostic.test.py
+python3 -I -B tests/phone11-backend-runtime-modes.test.py
 node scripts/build-phone11-backend.mjs --verify-install-inputs
 python3 -I -B scripts/prepare-phone11-backend-context.py --check
 ```

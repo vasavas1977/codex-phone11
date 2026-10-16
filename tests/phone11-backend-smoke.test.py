@@ -122,6 +122,22 @@ class SmokeTests(unittest.TestCase):
         self.assertEqual(commands[-2:], [['container', 'inspect'], ['container', 'rm']])
         self.assertEqual(docker.log_calls, [])
 
+    def test_canonical_stop_timeout_keeps_ten_seconds_and_refuses_even_successful_stderr(self):
+        docker = FakeDocker()
+        result = smoke.smoke(COMMIT, META, docker)
+        self.assertEqual(result['status'], 'PROCESS_SMOKE_PASSED')
+        stop = [args for args, _ in docker.calls if args[:2] == ['container', 'stop']]
+        self.assertEqual(stop, [['container', 'stop', '--timeout', '10', CID]])
+        with patch.object(smoke.shutil, 'which', return_value='/owned/docker'):
+            client = smoke.Docker('/owned/private-config')
+        # A zero-exit CLI warning still refuses; no deprecation allowlist or
+        # stderr suppression is introduced by selecting the canonical option.
+        warning = subprocess.CompletedProcess([], 0, (CID + '\n').encode(), b'Flag --time has been deprecated, use --timeout instead\n')
+        with patch.object(smoke.subprocess, 'run', return_value=warning) as child:
+            with self.assertRaises(smoke.Refused):
+                client(stop[0])
+        self.assertEqual(child.call_args.args[0], client.prefix + stop[0])
+
     def test_unbound_or_wrong_image_refuses_before_creation(self):
         for metadata, mode in [({**META, 'sourceCommit': 'd' * 40}, 'pass'),
                                ({**META, 'published': True}, 'pass'), (META, 'image-volume')]:
