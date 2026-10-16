@@ -146,6 +146,7 @@ class Docker:
     def finite_diagnostic(self):
         raw = (self.start_stderr + b'\n' + self.state_error).lower()
         patterns = {
+            'loggingCompressionConflict': rb'compression cannot be enabled when max file count is 1',
             'ociRuntime': rb'\boci\b|\brunc\b|\bcrun\b',
             'permissionDenied': rb'permission denied|operation not permitted|\beperm\b|\beacces\b',
             'notFound': rb'no such file or directory|executable file not found|\benoent\b',
@@ -159,6 +160,8 @@ class Docker:
         category = next((key.upper() + '_TOKEN' for key in
                          ('permissionDenied', 'notFound', 'readOnlyFilesystem', 'execFormat', 'resourceLimit', 'ociRuntime')
                          if flags[key]), 'UNKNOWN')
+        if flags['loggingCompressionConflict']:
+            category = 'LOGGING_COMPRESSION_CONFLICT'
         return {**self.diagnostic, 'mode': 'FIXED_OWNED_START_DIAGNOSTIC',
                 'startStderrBytes': len(self.start_stderr), 'stateErrorBytes': len(self.state_error),
                 'stateErrorPresent': bool(self.state_error), 'matchedClass': category,
@@ -235,7 +238,7 @@ def smoke(commit, metadata, run, private_log=None):
                     'privileged': False, 'caps': ['ALL'], 'security': ['no-new-privileges'],
                     'tmpfs': {'/tmp': TMPFS}, 'pids': 128, 'memory': 536870912,
                     'swap': 536870912, 'cpus': 1000000000, 'restart': 'no', 'logging': 'local',
-                    'logOptions': {'max-size': '16k', 'max-file': '1'}}
+                    'logOptions': {'max-size': '16k', 'max-file': '1', 'compress': 'false'}}
         need(set(value) == set(expected) | {'id', 'ports', 'binds', 'running', 'exitCode', 'oom'})
         keys = expected if policy else ('name', 'image', 'nonce', 'revision')
         need(all(value[k] == expected[k] for k in keys))
@@ -282,7 +285,7 @@ def smoke(commit, metadata, run, private_log=None):
                 '--memory', '512m', '--memory-swap', '512m', '--cpus', '1',
                 '--ulimit', 'nofile=256:256', '--tmpfs', '/tmp:' + TMPFS,
                 '--stop-timeout', '10', '--restart', 'no', '--log-driver', 'local',
-                '--log-opt', 'max-size=16k', '--log-opt', 'max-file=1', '--no-healthcheck']
+                '--log-opt', 'max-size=16k', '--log-opt', 'max-file=1', '--log-opt', 'compress=false', '--no-healthcheck']
         for key, value in synthetic.items():
             args += ['--env', key + '=' + value]
         args.append(image)
@@ -344,7 +347,7 @@ def smoke(commit, metadata, run, private_log=None):
                                 pass
                     else:
                         try:
-                          need(owned['logging'] == 'local' and owned['logOptions'] == {'max-size': '16k', 'max-file': '1'})
+                          need(owned['logging'] == 'local' and owned['logOptions'] == {'max-size': '16k', 'max-file': '1', 'compress': 'false'})
                           raw = run.logs(owned['id'])
                           need(type(raw) is bytes and len(raw) <= 16384)
                           text = raw.decode(errors='replace')

@@ -159,6 +159,24 @@ class DiagnosticTests(unittest.TestCase):
         self.assertFalse(result['privateDiagnosticCaptured'])
         self.assertFalse(result['runtimeAcceptance'])
 
+    def test_exact_public_moby_compression_error_emits_only_closed_finite_token(self):
+        docker = DiagnosticDocker()
+        original = docker.capture_diagnostic
+        message = b'compression cannot be enabled when max file count is 1'
+        def capture(args, *limits):
+            program = ('import os,sys;os.write(2,' + repr(message) + ');sys.exit(1)' if args[1] == 'start'
+                       else 'import os;os.write(1,' + repr(message + b'\n') + ')')
+            docker.prefix = [sys.executable, '-I', '-B', '-c', program]
+            return original(args, *limits)
+        docker.capture_diagnostic = capture
+        result = m.smoke(fixtures.COMMIT, fixtures.META, docker)
+        value = result['startDiagnostics']
+        self.assertTrue(value['tokens']['loggingCompressionConflict'])
+        self.assertEqual(value['matchedClass'], 'LOGGING_COMPRESSION_CONFLICT')
+        self.assertFalse(value['rootCauseEstablished'])
+        self.assertEqual(result['cleanup'], 'OWNED_CONTAINER_REMOVED')
+        self.assertNotIn(message.decode(), json.dumps(result))
+
     def test_public_repository_gets_only_finite_artifact_and_publishing_is_refused(self):
         workflow = (ROOT / '.github/workflows/docker-build.yml').read_text()
         self.assertIn('diagnose_start:', workflow)

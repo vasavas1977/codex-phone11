@@ -63,7 +63,7 @@ class FakeDocker:
                      'privileged': False, 'caps': ['ALL'], 'security': ['no-new-privileges'],
                      'ports': None, 'binds': None, 'tmpfs': {'/tmp': smoke.TMPFS}, 'pids': 128,
                      'memory': 536870912, 'swap': 536870912, 'cpus': 1000000000, 'restart': 'no',
-                     'logging': 'local', 'logOptions': {'max-size': '16k', 'max-file': '1'},
+                     'logging': 'local', 'logOptions': {'max-size': '16k', 'max-file': '1', 'compress': 'false'},
                      'running': self.running, 'exitCode': 1 if self.mode == 'exit-failure' else 0,
                      'oom': self.mode == 'oom'}
             if self.mode == 'foreign-owner' and self.inspect_count >= 2:
@@ -72,6 +72,10 @@ class FakeDocker:
                 value['network'] = 'bridge'
             if self.mode == 'unbounded-logs':
                 value['logOptions'] = {}
+            if self.mode == 'compression-enabled':
+                value['logOptions']['compress'] = 'true'
+            if self.mode == 'compression-absent':
+                value['logOptions'].pop('compress')
             if self.mode == 'restarted' and self.inspect_count >= 5:
                 value['running'] = True
             return json.dumps(value)
@@ -137,6 +141,24 @@ class SmokeTests(unittest.TestCase):
             with self.assertRaises(smoke.Refused):
                 client(stop[0])
         self.assertEqual(child.call_args.args[0], client.prefix + stop[0])
+
+    def test_single_file_logger_disables_compression_and_requires_exact_observed_options(self):
+        docker = FakeDocker()
+        result = smoke.smoke(COMMIT, META, docker)
+        self.assertEqual(result['status'], 'PROCESS_SMOKE_PASSED')
+        create = next(args for args, _ in docker.calls if args[:2] == ['container', 'create'])
+        options = [create[i + 1] for i, value in enumerate(create) if value == '--log-opt']
+        self.assertEqual(options, ['max-size=16k', 'max-file=1', 'compress=false'])
+        self.assertEqual(create[create.index('--log-driver') + 1], 'local')
+        # The known Moby configuration conflict must not be reintroduced by
+        # accepting omitted/default or explicitly true observed compression.
+        for mode in ('compression-enabled', 'compression-absent'):
+            docker = FakeDocker(mode)
+            result = smoke.smoke(COMMIT, META, docker)
+            self.assertEqual(result['status'], 'REFUSED')
+            self.assertEqual(result['cleanup'], 'OWNED_CONTAINER_REMOVED')
+            self.assertFalse(any(args[:2] == ['container', 'start'] for args, _ in docker.calls))
+            self.assertEqual(docker.log_calls, [])
 
     def test_unbound_or_wrong_image_refuses_before_creation(self):
         for metadata, mode in [({**META, 'sourceCommit': 'd' * 40}, 'pass'),
