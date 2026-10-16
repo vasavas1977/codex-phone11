@@ -4,7 +4,7 @@ import superjson from "superjson";
 import type { AppRouter } from "@/server/routers";
 import { getApiBaseUrl } from "@/constants/oauth";
 import * as Auth from "@/lib/_core/auth";
-import { fetchWithTimeout } from "@/lib/_core/api";
+import { fetchTrpcJsonWithTimeout } from "@/lib/_core/api";
 import { Platform } from "react-native";
 
 /**
@@ -33,7 +33,7 @@ export function createTRPCClient() {
         },
         // Custom fetch to include credentials for cookie-based auth
         fetch(url, options) {
-          return fetchWithTimeout(url, {
+          return fetchTrpcJsonWithTimeout(url, {
             ...options,
             credentials: Platform.OS === "web" ? "include" : "omit",
           });
