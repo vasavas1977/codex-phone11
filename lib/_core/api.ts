@@ -54,9 +54,28 @@ async function withTimeout<T>(
   options.signal?.addEventListener("abort", abort, { once: true });
   if (options.signal?.aborted) abort();
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let rejectOnAbort: (() => void) | undefined;
   try {
+    if (controller.signal.aborted)
+      throw new ApiError("Phone11 took too long to respond. Please try again.");
+    const aborted = new Promise<never>((_, reject) => {
+      rejectOnAbort = () =>
+        reject(
+          new ApiError("Phone11 took too long to respond. Please try again."),
+        );
+      controller.signal.addEventListener("abort", rejectOnAbort, {
+        once: true,
+      });
+    });
     return await Promise.race([
-      run(controller.signal),
+      aborted,
+      Promise.resolve().then(() => {
+        if (controller.signal.aborted)
+          throw new ApiError(
+            "Phone11 took too long to respond. Please try again.",
+          );
+        return run(controller.signal);
+      }),
       new Promise<never>((_, reject) => {
         timer = setTimeout(() => {
           controller.abort();
@@ -76,6 +95,8 @@ async function withTimeout<T>(
   } finally {
     if (timer !== undefined) clearTimeout(timer);
     options.signal?.removeEventListener("abort", abort);
+    if (rejectOnAbort)
+      controller.signal.removeEventListener("abort", rejectOnAbort);
   }
 }
 
@@ -84,6 +105,123 @@ export function fetchWithTimeout(
   options: RequestInit = {},
 ): Promise<Response> {
   return withTimeout(options, (signal) => fetch(url, { ...options, signal }));
+}
+
+type TrpcJsonResponse = Pick<
+  Response,
+  "headers" | "ok" | "redirected" | "status" | "statusText" | "type" | "url"
+> & { readonly bodyUsed: boolean; json(): Promise<unknown> };
+
+async function readBatchJson(
+  response: Response,
+  signal: AbortSignal,
+): Promise<unknown> {
+  const cancelBody = () => {
+    try {
+      void response.body?.cancel().catch(() => {});
+    } catch {}
+  };
+  if (signal.aborted) {
+    cancelBody();
+    throw new ApiError("Phone11 took too long to respond. Please try again.");
+  }
+  // Native fetch can be Blob-backed with no public reader. Its own json() remains
+  // inside the deadline; aborting the request is its available cancellation API.
+  if (!response.body?.getReader || typeof TextDecoder === "undefined") {
+    signal.addEventListener("abort", cancelBody, { once: true });
+    try {
+      return await response.json();
+    } catch (error) {
+      cancelBody();
+      throw error;
+    } finally {
+      signal.removeEventListener("abort", cancelBody);
+    }
+  }
+  const reader = response.body.getReader();
+  let released = false;
+  const release = () => {
+    if (!released) {
+      reader.releaseLock();
+      released = true;
+    }
+  };
+  const abort = () => {
+    // Cancellation must not keep the caller waiting if an underlying source hangs.
+    try {
+      void reader.cancel().catch(() => {});
+    } catch {}
+    try {
+      release();
+    } catch {}
+  };
+  signal.addEventListener("abort", abort, { once: true });
+  try {
+    if (signal.aborted) {
+      abort();
+      throw new ApiError("Phone11 took too long to respond. Please try again.");
+    }
+    const decoder = new TextDecoder();
+    const parts: string[] = [];
+    while (true) {
+      const { done, value } = await reader.read();
+      if (signal.aborted)
+        throw new ApiError(
+          "Phone11 took too long to respond. Please try again.",
+        );
+      if (done) break;
+      parts.push(decoder.decode(value, { stream: true }));
+    }
+    parts.push(decoder.decode());
+    return JSON.parse(parts.join(""));
+  } catch (error) {
+    abort();
+    throw error;
+  } finally {
+    signal.removeEventListener("abort", abort);
+    release();
+  }
+}
+
+/** Only httpBatchLink's nonstreaming JSON contract, not a general fetch Response.
+ * Consume the body under the same deadline as headers, then expose the original
+ * metadata and a single-use json() to the actual tRPC consumer. */
+export function fetchTrpcJsonWithTimeout(
+  url: RequestInfo | URL,
+  options: RequestInit = {},
+): Promise<TrpcJsonResponse> {
+  return withTimeout(options, async (signal) => {
+    const response = await fetch(url, { ...options, signal });
+    let result: { value: unknown } | { error: unknown };
+    try {
+      result = { value: await readBatchJson(response, signal) };
+    } catch (error) {
+      if (signal.aborted) throw error;
+      // Preserve malformed JSON/body errors at res.json(), as httpBatchLink expects.
+      result = { error };
+    }
+    if (signal.aborted)
+      throw new ApiError("Phone11 took too long to respond. Please try again.");
+    let used = false;
+    return {
+      headers: response.headers,
+      ok: response.ok,
+      redirected: response.redirected,
+      status: response.status,
+      statusText: response.statusText,
+      type: response.type,
+      url: response.url,
+      get bodyUsed() {
+        return used;
+      },
+      async json() {
+        if (used) throw new TypeError("Body has already been consumed");
+        used = true;
+        if ("error" in result) throw result.error;
+        return result.value;
+      },
+    };
+  });
 }
 
 async function requestJson<T>(
