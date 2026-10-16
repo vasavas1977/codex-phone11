@@ -2,6 +2,7 @@ import { createRequire } from "node:module";
 import { createElement, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TenantMembership } from "../server/pbx/tenant-middleware";
+import { AdminWorkspaceBoundary } from "../components/admin/admin-workspace-boundary";
 
 const { renderToStaticMarkup } = createRequire(import.meta.url)(
   "react-dom/server",
@@ -13,6 +14,7 @@ const m = vi.hoisted(() => ({
   loading: false,
   authListeners: [] as (() => void)[],
   memberships: {} as any,
+  membershipOptions: {} as any,
   admission: {} as any,
   options: {} as any,
   workspace: {} as any,
@@ -20,9 +22,34 @@ const m = vi.hoisted(() => ({
   tenant: vi.fn(),
   cancel: vi.fn(),
   remove: vi.fn(),
+  buttons: new Map<string, { onPress: () => void }>(),
   directory: vi.fn(
     (_label: string, _input: unknown, _options: unknown) => ({}),
   ),
+}));
+vi.mock("react-native", () => ({
+  ActivityIndicator: () => null,
+  StyleSheet: { create: (styles: unknown) => styles },
+  Text: ({ children }: { children: ReactNode }) =>
+    createElement("span", null, children),
+  View: ({ children }: { children: ReactNode }) =>
+    createElement("div", null, children),
+  TouchableOpacity: (props: {
+    children: ReactNode;
+    accessibilityLabel: string;
+    onPress: () => void;
+  }) => {
+    m.buttons.set(props.accessibilityLabel, props);
+    return createElement("button", null, props.children);
+  },
+}));
+vi.mock("expo-router", () => ({ router: { replace: vi.fn() } }));
+vi.mock("../components/screen-container", () => ({
+  ScreenContainer: ({ children }: { children: ReactNode }) =>
+    createElement("div", null, children),
+}));
+vi.mock("../hooks/use-colors", () => ({
+  useColors: () => ({ foreground: "#111", muted: "#666", primary: "#06c" }),
 }));
 vi.mock("../hooks/use-auth", () => ({
   useAuth: () => ({ user: m.user, loading: m.loading }),
@@ -36,7 +63,14 @@ vi.mock("../lib/_core/auth", () => ({
 vi.mock("../lib/trpc", () => ({
   trpc: {
     pbx: {
-      tenant: { memberships: { useQuery: () => m.memberships } },
+      tenant: {
+        memberships: {
+          useQuery: (_input: unknown, options: unknown) => {
+            m.membershipOptions = options;
+            return m.memberships;
+          },
+        },
+      },
       extensions: {
         list: {
           useQuery: (input: unknown, options: unknown) =>
@@ -129,6 +163,31 @@ const render = () =>
   renderToStaticMarkup(
     createElement(AdminWorkspaceProvider, null, createElement(Child)),
   );
+function BoundaryChild() {
+  m.workspace = usePbxAdminWorkspace();
+  return createElement(AdminWorkspaceBoundary, null, "ADMIN_EXTENSION_CONTENT");
+}
+const renderBoundary = () => {
+  m.buttons.clear();
+  return renderToStaticMarkup(
+    createElement(AdminWorkspaceProvider, null, createElement(BoundaryChild)),
+  );
+};
+const membershipError = (code: "FORBIDDEN" | "UNAUTHORIZED") =>
+  Object.assign(
+    new Error(
+      code === "FORBIDDEN"
+        ? "User has no active tenant memberships"
+        : "Not authenticated",
+    ),
+    {
+      data: {
+        code,
+        httpStatus: code === "FORBIDDEN" ? 403 : 401,
+        path: "pbx.tenant.memberships",
+      },
+    },
+  );
 const verify = (rows: TenantMembership[], selected = 7) =>
   verifyAdminWorkspaceAdmission({
     userId: 9,
@@ -144,12 +203,14 @@ beforeEach(() => {
   m.authListeners.forEach((fn) => fn());
   m.user = { id: 9 };
   m.loading = false;
+  m.buttons.clear();
   m.memberships = {
     data: [member()],
     isSuccess: true,
     isFetching: false,
     isError: false,
     dataUpdatedAt: 1,
+    refetch: vi.fn(),
   };
   m.admission = {
     isPending: true,
@@ -164,6 +225,90 @@ beforeEach(() => {
 });
 
 describe("admin workspace API admission", () => {
+  it("shows a nonretryable access requirement for a forbidden membership read", () => {
+    const error = membershipError("FORBIDDEN");
+    m.memberships = {
+      ...m.memberships,
+      isSuccess: false,
+      isError: true,
+      error,
+    };
+    const markup = renderBoundary();
+    expect(markup).toContain("Administrator access required");
+    expect(markup).not.toContain("Workspace access unavailable");
+    expect(markup).not.toContain("ADMIN_EXTENSION_CONTENT");
+    expect(m.buttons.has("Try again")).toBe(false);
+    expect(m.membershipOptions.retry(0, error)).toBe(false);
+    expect(m.capabilities).not.toHaveBeenCalled();
+    expect(m.tenant).not.toHaveBeenCalled();
+    expect(m.workspace.selectedTenantId).toBeNull();
+  });
+
+  it.each([{ rows: [] }, { rows: [member(7, "user")] }])(
+    "keeps memberships without an administrator role outside the boundary: $rows",
+    ({ rows }) => {
+      m.memberships.data = rows;
+      expect(renderBoundary()).toContain("Administrator access required");
+      expect(m.workspace.membershipAccessDenied).toBe(false);
+      expect(m.workspace.selectedTenantId).toBeNull();
+      expect(m.buttons.has("Try again")).toBe(false);
+      expect(m.capabilities).not.toHaveBeenCalled();
+      expect(m.tenant).not.toHaveBeenCalled();
+    },
+  );
+
+  it("retains sign-in when authentication has expired rather than classifying401 as a membership denial", () => {
+    const error = membershipError("UNAUTHORIZED");
+    m.user = null;
+    m.memberships = {
+      ...m.memberships,
+      isSuccess: false,
+      isError: true,
+      error,
+    };
+    expect(renderBoundary()).toContain("Sign in to manage Phone11");
+    expect(m.workspace.membershipAccessDenied).toBe(false);
+    expect(m.membershipOptions.enabled).toBe(false);
+    // The existing one-retry policy remains unchanged for errors other than403.
+    expect(m.membershipOptions.retry(0, error)).toBe(true);
+    expect(m.membershipOptions.retry(1, error)).toBe(false);
+  });
+
+  it.each([
+    new Error("Cannot connect to Phone11"),
+    new Error("Phone11 took too long to respond"),
+    membershipError("UNAUTHORIZED"),
+  ])(
+    "keeps transient or unconfirmed-session membership errors retryable: %s",
+    (error) => {
+      m.memberships = {
+        ...m.memberships,
+        isSuccess: false,
+        isError: true,
+        error,
+      };
+      const markup = renderBoundary();
+      expect(markup).toContain("Workspace access unavailable");
+      expect(markup).not.toContain("Administrator access required");
+      expect(markup).not.toContain("ADMIN_EXTENSION_CONTENT");
+      expect(m.membershipOptions.retry(0, error)).toBe(true);
+      expect(m.membershipOptions.retry(1, error)).toBe(false);
+      m.buttons.get("Try again")?.onPress();
+      expect(m.memberships.refetch).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("still mounts administrator content after the existing matching admission succeeds", async () => {
+    renderBoundary();
+    const data = await m.options.queryFn({
+      signal: new AbortController().signal,
+    });
+    m.admission = { data, isSuccess: true, isFetching: false };
+    expect(renderBoundary()).toContain("ADMIN_EXTENSION_CONTENT");
+    expect(m.workspace.membershipAccessDenied).toBe(false);
+    expect(m.workspace.selectedTenantId).toBe(7);
+  });
+
   it("denies a legacy API that ignores inputs before requesting or showing a company for multiple memberships", async () => {
     const rows = [member(), member(12)];
     m.memberships.data = rows;

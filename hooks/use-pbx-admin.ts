@@ -68,6 +68,12 @@ export class AdminWorkspaceAdmissionError extends Error {
   }
 }
 
+/** A membership denial is an access state, not a temporary workspace outage. */
+function isAdminMembershipAccessDenied(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  return (error as { data?: { code?: unknown } }).data?.code === "FORBIDDEN";
+}
+
 function membershipIdentity(
   rows: TenantMembership[],
   userId: number,
@@ -151,7 +157,13 @@ function useAdminWorkspaceState() {
     gcTime: 0,
     refetchOnMount: "always",
     refetchOnWindowFocus: true,
+    // Keep the app's single retry for transient failures, but never retry a denial.
+    retry: (failureCount, error) =>
+      !isAdminMembershipAccessDenied(error) && failureCount < 1,
   });
+  const membershipAccessDenied =
+    membershipsQuery.isError &&
+    isAdminMembershipAccessDenied(membershipsQuery.error);
   const freshMemberships =
     membershipsQuery.isSuccess && !membershipsQuery.isFetching && !authLoading;
   const rows = Array.isArray(membershipsQuery.data)
@@ -285,6 +297,7 @@ function useAdminWorkspaceState() {
   };
   return {
     membershipsQuery,
+    membershipAccessDenied,
     manageableMemberships,
     selectedTenantId,
     requestedTenantId,
