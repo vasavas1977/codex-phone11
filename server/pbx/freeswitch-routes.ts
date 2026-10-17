@@ -202,7 +202,8 @@ router.post("/dialplan", verifyFsAuth, async (req: Request, res: Response) => {
             `SELECT international_enabled FROM fraud_controls WHERE tenant_id = $1`,
             [tenantId]
           );
-          if (fraudResult.rows.length > 0 && !fraudResult.rows[0].international_enabled) {
+          // An absent, duplicate or malformed policy is not an explicit allow.
+          if (fraudResult.rows.length !== 1 || fraudResult.rows[0]?.international_enabled !== true) {
             return res.type("xml").send(busyDialplanXml("International calls disabled"));
           }
         }
@@ -213,7 +214,7 @@ router.post("/dialplan", verifyFsAuth, async (req: Request, res: Response) => {
             `SELECT premium_rate_enabled FROM fraud_controls WHERE tenant_id = $1`,
             [tenantId]
           );
-          if (fraudResult.rows.length > 0 && !fraudResult.rows[0].premium_rate_enabled) {
+          if (fraudResult.rows.length !== 1 || fraudResult.rows[0]?.premium_rate_enabled !== true) {
             return res.type("xml").send(busyDialplanXml("Premium rate calls disabled"));
           }
         }
