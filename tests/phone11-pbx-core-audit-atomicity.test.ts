@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // replace only transports and unrelated integrations. No database is contacted.
 const f = vi.hoisted(() => ({
   events: [] as string[], audits: [] as unknown[][], pending: 0, committed: 0,
-  releases: 0, role: "admin", ownership: true, missing: false, available: true,
+  releases: 0, role: "admin", ownership: true, missing: false, available: true, fraudRows: 1,
   failAudit: false, auditCode: "42501", failCommit: false, failRollback: false,
   failRelease: false, failDml: false, pooled: vi.fn(), client: vi.fn(),
 }));
@@ -72,7 +72,7 @@ const cases = [
 beforeEach(() => {
   vi.stubEnv("PG_CONNECTION_STRING", "postgres://offline:synthetic@invalid.invalid/offline");
   Object.assign(f, { events: [], audits: [], pending: 0, committed: 0, releases: 0,
-    role: "admin", ownership: true, missing: false, available: true, failAudit: false,
+    role: "admin", ownership: true, missing: false, available: true, fraudRows: 1, failAudit: false,
     auditCode: "42501", failCommit: false, failRollback: false, failRelease: false, failDml: false });
   f.pooled.mockReset().mockImplementation(() => { throw new Error("POOLED_QUERY_FORBIDDEN"); });
   cache.invalidateCache.mockReset().mockImplementation(async () => { f.events.push("CACHE"); });
@@ -121,6 +121,12 @@ beforeEach(() => {
       if (f.failDml) throw Object.assign(new Error("PRIVATE_DML"), { detail: "PRIVATE_ROW" });
       // Missing tenant-owned target must not be fabricated by RETURNING.
       if (f.missing && text.startsWith("UPDATE extensions SET deleted_at")) return { rows: [] };
+      if (text.startsWith("UPDATE fraud_controls")) {
+        expect(text).toMatch(/WHERE tenant_id = \$\d+ RETURNING tenant_id$/);
+        expect(parameters.at(-1)).toBe(7);
+        f.pending += f.fraudRows;
+        return { rows: Array.from({ length: f.fraudRows }, () => ({ tenant_id: 7 })) };
+      }
       f.pending++;
       if (text.startsWith("INSERT INTO tenant_settings")) return { rows: [{ business_hours_timezone: "Asia/Bangkok" }] };
       if (text.startsWith("UPDATE tenant_memberships")) return { rows: [{ id: 33, role: "user", status: "inactive" }] };
@@ -138,6 +144,15 @@ function expectPrivateError(error: any, message: string) {
 }
 
 describe("all nine core PBX audits on the real withTransaction and insertAuditLog path", () => {
+  it.each([0, 2])("refuses a fraud update affecting %i rows before audit and rolls back", async rows => {
+    f.fraudRows = rows;
+    await expect(caller().fraudControls.update({ internationalEnabled: false }))
+      .rejects.toMatchObject({ code: "PRECONDITION_FAILED", message: "Fraud controls are unavailable" });
+    expect(f.events).toEqual(["BEGIN", "DML", "ROLLBACK", "RELEASE"]);
+    expect(f.audits).toHaveLength(0); expect(f.pending).toBe(0); expect(f.committed).toBe(0);
+    expect(f.releases).toBe(1); expect(f.pooled).not.toHaveBeenCalled();
+    expect(cache.invalidateCache).not.toHaveBeenCalled();
+  });
   it.each(cases)("%s inserts one tenant-scoped audit on the leased client before commit", async (_name, action, resource, id, cached, invoke) => {
     const result = await invoke();
     expect(f.audits).toHaveLength(1); expect(f.audits[0].slice(0, 5)).toEqual([7, 9, action, resource, id]);

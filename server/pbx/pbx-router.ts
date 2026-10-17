@@ -1923,10 +1923,13 @@ export const pbxRouter = router({
 
         await withPbxMutation(tc.tenantId, ctx.user!.id, async (client, audit) => {
           await lockLivePbxAdmin(client, ctx.user!.id, tc.tenantId, "fraud controls");
-          await client.query(
-            `UPDATE fraud_controls SET ${sets.join(", ")} WHERE tenant_id = $${idx}`,
+          const updated = await client.query(
+            `UPDATE fraud_controls SET ${sets.join(", ")} WHERE tenant_id = $${idx} RETURNING tenant_id`,
             vals,
           );
+          if (updated.rows.length !== 1) {
+            throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Fraud controls are unavailable" });
+          }
           await audit({
             tenantId: tc.tenantId,
             actorUserId: ctx.user!.id,
