@@ -18,8 +18,9 @@ import { freeswitchRouter } from "../server/pbx/freeswitch-routes";
 
 const secret = "synthetic-freeswitch-secret-0123456789";
 const layer = freeswitchRouter.stack.find(item => item.route?.path === "/dialplan");
-const auth = layer!.route.stack[0].handle;
-const handler = layer!.route.stack[1].handle;
+const route = layer!.route!;
+const auth = route.stack[0]!.handle;
+const handler = route.stack[1]!.handle;
 
 async function dial(destination: string, suppliedSecret = secret) {
   let admitted = false;
@@ -35,7 +36,7 @@ async function dial(destination: string, suppliedSecret = secret) {
     "variable_sip_from_user": "1996", "variable_domain_name": "sip.example.test",
   } };
   auth(req as any, res as any, () => { admitted = true; });
-  if (admitted) await handler(req as any, res as any);
+  if (admitted) await handler(req as any, res as any, () => undefined);
   return res;
 }
 
