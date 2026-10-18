@@ -13,7 +13,7 @@ import sys
 import tempfile
 import time
 
-IMAGE_FORMAT = '{"id":"{{.Id}}","os":"{{.Os}}","arch":"{{.Architecture}}","revision":"{{index .Config.Labels "org.opencontainers.image.revision"}}","volumes":{{json .Config.Volumes}},"cmd":{{json .Config.Cmd}}}'
+IMAGE_FORMAT = '{"id":"{{.Id}}","os":"{{.Os}}","arch":"{{.Architecture}}","revision":"{{index .Config.Labels "org.opencontainers.image.revision"}}","volumes":{{json (index .Config "Volumes")}},"cmd":{{json .Config.Cmd}}}'
 CONTAINER_FORMAT = '{"id":"{{.Id}}","name":"{{.Name}}","image":"{{.Image}}","nonce":"{{index .Config.Labels "ai.phone11.smoke"}}","revision":"{{index .Config.Labels "org.opencontainers.image.revision"}}","user":"{{.Config.User}}","network":"{{.HostConfig.NetworkMode}}","readOnly":{{.HostConfig.ReadonlyRootfs}},"privileged":{{.HostConfig.Privileged}},"caps":{{json .HostConfig.CapDrop}},"security":{{json .HostConfig.SecurityOpt}},"ports":{{json .HostConfig.PortBindings}},"binds":{{json .HostConfig.Binds}},"tmpfs":{{json .HostConfig.Tmpfs}},"pids":{{.HostConfig.PidsLimit}},"memory":{{.HostConfig.Memory}},"swap":{{.HostConfig.MemorySwap}},"cpus":{{.HostConfig.NanoCpus}},"restart":"{{.HostConfig.RestartPolicy.Name}}","logging":"{{.HostConfig.LogConfig.Type}}","logOptions":{{json .HostConfig.LogConfig.Config}},"running":{{.State.Running}},"exitCode":{{.State.ExitCode}},"oom":{{.State.OOMKilled}}}'
 TMPFS = 'rw,noexec,nosuid,nodev,size=64m,uid=1001,gid=1001,mode=1777'
 HEALTH_PROBE = r'''
