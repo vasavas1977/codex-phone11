@@ -124,8 +124,8 @@ async function fixture(run: (f: Fixture) => Promise<void>) {
     await admin.end();
   }
 }
-const caller = (id: number | null = 9) => pbxRouter.createCaller({
-  user: id === null ? null : { id, role: "user" }, req: { ip: "127.0.0.1", headers: {} }, res: {},
+const caller = (id: number | null = 9, ip = "127.0.0.1") => pbxRouter.createCaller({
+  user: id === null ? null : { id, role: "user" }, req: { ip, headers: {} }, res: {},
 } as any);
 
 async function policyDialplan(destination: string): Promise<string> {
@@ -154,17 +154,88 @@ describe.skipIf(!connectionString)("actual fraud handlers on generated restricte
     expect((await admin.query("SELECT tenant_id,actor_user_id,action,resource_type FROM audit_logs")).rows)
       .toEqual([{ tenant_id: 7, actor_user_id: 9, action: "update", resource_type: "fraud_controls" }]);
   }));
+  it("keeps policy and strict audit invisible together until the restricted transaction commits", () => fixture(async ({ admin, role, schema }) => {
+    // A fresh pair identifies only this generated fixture. The owner holds a
+    // session lock; the real restricted audit INSERT waits in its BEFORE trigger.
+    const key1 = randomBytes(4).readUInt32BE() & 0x7fffffff;
+    const key2 = randomBytes(4).readUInt32BE() & 0x7fffffff;
+    let ownsLock = false;
+    let mutation: Promise<{ ok: boolean; value?: unknown }> | undefined;
+    await admin.query("SET statement_timeout='2s'; SET lock_timeout='1s'");
+    await admin.query(`CREATE FUNCTION ${schema}.pause_generated_audit() RETURNS trigger LANGUAGE plpgsql AS $body$
+      BEGIN PERFORM pg_catalog.pg_advisory_xact_lock(${key1},${key2}); RETURN NEW; END $body$;
+      CREATE TRIGGER pause_generated_audit BEFORE INSERT ON ${schema}.audit_logs
+      FOR EACH ROW EXECUTE FUNCTION ${schema}.pause_generated_audit()`);
+    const counts = async () => (await admin.query(`SELECT
+      (SELECT count(*)::int FROM fraud_controls) AS policy,
+      (SELECT count(*)::int FROM audit_logs) AS audit`)).rows[0];
+    try {
+      ownsLock = (await admin.query("SELECT pg_catalog.pg_try_advisory_lock($1,$2) AS held", [key1, key2])).rows[0].held;
+      expect(ownsLock).toBe(true);
+      // Attach both outcomes immediately: a rejection cannot escape while the
+      // owner observes the lock. Neither the adapter nor its SQL is replaced.
+      let finished = false;
+      mutation = caller().fraudControls.update({ tenantId: 7, internationalEnabled: true }).then(
+        value => { finished = true; return { ok: true, value }; },
+        () => { finished = true; return { ok: false }; },
+      );
+      let waiting = false;
+      const deadline = performance.now() + 2000;
+      while (performance.now() < deadline && !finished) {
+        // Each owner query is autocommit: no cached statistics snapshot from a
+        // held owner transaction can hide the current restricted lock waiter.
+        const result = await admin.query(`SELECT count(*)::int AS n FROM pg_catalog.pg_locks l
+          JOIN pg_catalog.pg_stat_activity a ON a.pid=l.pid
+          WHERE l.locktype='advisory' AND l.classid=$1::oid AND l.objid=$2::oid AND l.objsubid=2
+            AND l.mode='ExclusiveLock' AND NOT l.granted AND a.usename=$3
+            AND a.datname=current_database() AND l.pid<>pg_backend_pid()`, [key1, key2, role]);
+        if (result.rows[0].n === 1) { waiting = true; break; }
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      expect(waiting).toBe(true);
+      expect(finished).toBe(false);
+      expect(await counts()).toEqual({ policy: 0, audit: 0 });
+      const unlocked = (await admin.query("SELECT pg_catalog.pg_advisory_unlock($1,$2) AS released", [key1, key2])).rows[0].released;
+      ownsLock = false;
+      expect(unlocked).toBe(true);
+      expect(await mutation).toEqual({ ok: true, value: { success: true } });
+      expect(await counts()).toEqual({ policy: 1, audit: 1 });
+      expect((await admin.query("SELECT international_enabled FROM fraud_controls WHERE tenant_id=7")).rows)
+        .toEqual([{ international_enabled: true }]);
+    } finally {
+      try {
+        if (ownsLock) await admin.query("SELECT pg_catalog.pg_advisory_unlock($1,$2)", [key1, key2]);
+      } finally {
+        // Source adapter bounds connection/statement/lock waits; settle before
+        // fixture teardown closes its real pool or drops its generated schema.
+        if (mutation) await mutation;
+      }
+    }
+  }), 30000);
   it("rejects another admitted tenant without shared-pool fallback", () => fixture(async ({ admin }) => {
     expect((await caller().capabilities({ tenantId: 8 })).explicitFraudControls).toBe(false);
     await expect(caller().fraudControls.get({ tenantId: 8 })).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
     await expect(caller().fraudControls.update({ tenantId: 8, internationalEnabled: true })).rejects.toBeDefined();
     expect((await admin.query("SELECT count(*)::int AS n FROM fraud_controls")).rows[0].n).toBe(0);
   }));
-  it("keeps prior policy when strict audit fails", () => fixture(async ({ admin, role, schema }) => {
+  it("refuses revoked audit INSERT permission without policy writes", () => fixture(async ({ admin, role, schema }) => {
     await caller().fraudControls.update({ tenantId: 7, internationalEnabled: false });
     await admin.query(`REVOKE INSERT(tenant_id,actor_user_id,action,resource_type,resource_id,old_value,new_value,ip_address,user_agent,request_id,session_id) ON ${schema}.audit_logs FROM ${role}`);
     await expect(caller().fraudControls.update({ tenantId: 7, internationalEnabled: true })).rejects.toBeDefined();
     expect((await admin.query("SELECT international_enabled FROM fraud_controls")).rows).toEqual([{ international_enabled: false }]);
+    expect((await admin.query("SELECT count(*)::int AS n FROM audit_logs")).rows[0].n).toBe(1);
+  }));
+  it("rolls back policy DML when the real strict audit INSERT rejects invalid inet", () => fixture(async ({ admin }) => {
+    await caller().fraudControls.update({ tenantId: 7, internationalEnabled: false });
+    // The adapter attests normally. The actual policy UPDATE succeeds inside its
+    // transaction, then audit_logs.ip_address rejects this value as inet (22P02).
+    const error = await caller(9, "PRIVATE_INVALID_IP").fraudControls.update({ tenantId: 7, internationalEnabled: true })
+      .then(() => null, failure => failure);
+    expect(error).toMatchObject({ code: "INTERNAL_SERVER_ERROR", message: "Could not record PBX change" });
+    expect(error.cause).toBeUndefined();
+    expect(JSON.stringify(error)).not.toContain("PRIVATE_INVALID_IP");
+    expect((await admin.query("SELECT international_enabled FROM fraud_controls WHERE tenant_id=7")).rows)
+      .toEqual([{ international_enabled: false }]);
     expect((await admin.query("SELECT count(*)::int AS n FROM audit_logs")).rows[0].n).toBe(1);
   }));
   it("rechecks current actor authority and rejects unauthenticated or revoked callers", () => fixture(async ({ admin }) => {

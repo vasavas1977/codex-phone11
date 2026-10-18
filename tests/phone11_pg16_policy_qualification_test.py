@@ -35,7 +35,7 @@ class Pg16QualificationGuards(unittest.TestCase):
         self.assertTrue(plan['heldUntilRootDispatch'])
         self.assertEqual((plan['bind'], plan['port'], plan['database']), ('127.0.0.1', 55436, 'phone11_pbx_test'))
         self.assertEqual(plan['postgresVersion'], '16.13')
-        self.assertEqual(plan['expectedPassedTests'], 67)
+        self.assertEqual(plan['expectedPassedTests'], 85)
         self.assertEqual(plan['testFiles'], list(MODULE.TESTS) + [MODULE.HTTP_TEST])
 
     def test_root_and_missing_external_pin_refuse_before_effects(self):
@@ -116,10 +116,11 @@ class Pg16QualificationGuards(unittest.TestCase):
         self.assertEqual(len(set(names)), len(names))
         for name in ['vitest.config.ts', 'package.json', 'pnpm-lock.yaml', 'server/pbx/fraud-policy-db.ts',
                      'server/pbx/js-postgres-driver.ts', 'server/pbx/js-postgres-driver-types.d.ts',
-                     'server/pbx/pbx-router.ts', 'server/_core/phone11-auth.ts', 'server/_core/auth-routes.ts',
+                     'server/pbx/pbx-router.ts', 'server/pbx/db.ts', 'tests/phone11-pbx-core-postgres-atomicity.test.ts',
+                     'server/_core/phone11-auth.ts', 'server/_core/auth-routes.ts',
                      'server/_core/context.ts', MODULE.HTTP_TEST]:
             self.assertIn(name, names)
-        self.assertEqual(len(MODULE.TESTS), 4)
+        self.assertEqual(len(MODULE.TESTS), 5)
         self.assertIn(MODULE.DONOR / 'better-auth/dist/index.mjs', MODULE.HTTP_DEPENDENCIES)
         self.assertIn(MODULE.DONOR / 'pg/lib/client.js', MODULE.DEPENDENCIES)
         self.assertIn(MODULE.DONOR / 'pg/lib/connection.js', MODULE.DEPENDENCIES)

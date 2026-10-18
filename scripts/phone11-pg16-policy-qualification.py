@@ -26,7 +26,7 @@ PG = TOOLCHAIN / 'bin'
 VERSION = '16.13'
 TARBALL_SHA256 = 'dc2ddbbd245c0265a689408e3d2f2f3f9ba2da96bd19318214b313cdd9797287'
 SCOPE = 'pg16-storage-handlers-http'
-EXPECTED_TESTS = 67
+EXPECTED_TESTS = 85
 NODE = Path('/Users/vasavas16macbookpro/.local/bin/node')
 PYTHON = Path('/usr/bin/python3')
 DONOR = Path('/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/review/pbx-pg16-commissioning-20261017-v1/source-release/dependency-candidate-v1/project/node_modules')
@@ -37,6 +37,7 @@ TESTS = (
     'tests/phone11-audit-storage-migration.test.ts',
     'tests/phone11-audit-runtime-permissions.test.ts',
     'tests/phone11-fraud-policy-native-api.test.ts',
+    'tests/phone11-pbx-core-postgres-atomicity.test.ts',
 )
 HTTP_TEST = 'tests/phone11-fraud-policy-http.test.ts'
 HTTP_SOURCES = (
@@ -52,7 +53,7 @@ SOURCES = TESTS + (
     'package.json', 'pnpm-lock.yaml', 'vitest.config.ts',
     'server/pbx/fraud-policy-db.ts', 'server/pbx/pbx-router.ts',
     'server/pbx/js-postgres-driver.ts', 'server/pbx/js-postgres-driver-types.d.ts',
-    'server/pbx/audit.ts', 'server/pbx/tenant-middleware.ts',
+    'server/pbx/audit.ts', 'server/pbx/db.ts', 'server/pbx/tenant-middleware.ts',
     'server/_core/trpc.ts', 'shared/const.ts',
     'server/pbx/freeswitch-routes.ts', 'server/pbx/protected-outbound-routing.ts',
     'server/pbx/integration-auth.ts',
