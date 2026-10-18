@@ -14,6 +14,8 @@ import { bindAuthenticatedOutbound } from "../cloud-recordings/correlation";
 import { Router, Request, Response, json, urlencoded } from "express";
 import { CdrInputError, parseCdrBody, requireCdrAuth, resolveCdrTenant } from "./cdr-input";
 import { query } from "./db";
+import { withFraudPolicyTransaction } from "./fraud-policy-db";
+import { selectsProtectedOutbound, productionProtectedOutboundXml } from "./protected-outbound-routing";
 import { decodeDidInternalTarget } from "./did-route-target";
 import { requireIntegrationSecret } from "./integration-auth";
 import { cacheGetOrSet, rateLimitCheck, invalidateCache } from "./redis";
@@ -82,6 +84,11 @@ router.post("/directory", verifyFsAuth, async (req: Request, res: Response) => {
 // 2. Dialplan Routing (mod_xml_curl)
 // ============================================================================
 router.post("/dialplan", verifyFsAuth, async (req: Request, res: Response) => {
+  // No production trust/strict-raw-form factory exists yet. Protected and malformed
+  // supplied contexts terminate here; they can never reach legacy/default XML.
+  if (selectsProtectedOutbound(req.body)) {
+    return res.type("xml").send(productionProtectedOutboundXml());
+  }
   try {
     const {
       "Caller-Destination-Number": destNumber,
@@ -183,8 +190,12 @@ router.post("/dialplan", verifyFsAuth, async (req: Request, res: Response) => {
       }
     }
 
+    // Both local 1900 and canonical +661900 forms are Thai premium calls.
+    // Keep this exception narrow; ordinary toll-free routes remain unchanged.
+    const isThaiPremium = normalized.isPremiumRate && /^\+661900\d{6}$/.test(normalized.e164);
+    const requiresInternationalPermission = normalized.type === "international" && !isThaiPremium;
     // PSTN outbound routing
-    if (normalized.type === "mobile" || normalized.type === "landline" || normalized.type === "international") {
+    if (normalized.type === "mobile" || normalized.type === "landline" || normalized.type === "international" || isThaiPremium) {
       // Check fraud controls
       const tenantId = await getTenantIdFromCaller(fromUser, domain);
       if (!tenantId) return res.type("xml").send(emptyDialplanXml());
@@ -196,24 +207,27 @@ router.post("/dialplan", verifyFsAuth, async (req: Request, res: Response) => {
           return res.type("xml").send(busyDialplanXml("Rate limit exceeded"));
         }
 
-        // Check if international is enabled
-        if (normalized.type === "international") {
-          const fraudResult = await query(
-            `SELECT international_enabled FROM fraud_controls WHERE tenant_id = $1`,
-            [tenantId]
-          );
-          if (fraudResult.rows.length > 0 && !fraudResult.rows[0].international_enabled) {
+        if (requiresInternationalPermission || normalized.isPremiumRate) {
+          // Telephony reads the same fixed-tenant restricted LOGIN as the
+          // policy API. The service is not acting as an administrator: do not
+          // invoke the actor helper or borrow the shared PBX pool's authority.
+          const policy = await withFraudPolicyTransaction(tenantId, async client => {
+            const result = await client.query(
+              `SELECT tenant_id, international_enabled, premium_rate_enabled
+                 FROM fraud_controls WHERE tenant_id = $1`,
+              [tenantId],
+            );
+            const row = result.rows[0];
+            return result.rows.length === 1 && row?.tenant_id === tenantId &&
+              typeof row.international_enabled === "boolean" && typeof row.premium_rate_enabled === "boolean"
+              ? row : null;
+          }).catch(() => null);
+          // Missing binding/storage, malformed rows and transaction failures
+          // are never explicit permission to bridge a protected destination.
+          if (requiresInternationalPermission && policy?.international_enabled !== true) {
             return res.type("xml").send(busyDialplanXml("International calls disabled"));
           }
-        }
-
-        // Check premium rate
-        if (normalized.isPremiumRate) {
-          const fraudResult = await query(
-            `SELECT premium_rate_enabled FROM fraud_controls WHERE tenant_id = $1`,
-            [tenantId]
-          );
-          if (fraudResult.rows.length > 0 && !fraudResult.rows[0].premium_rate_enabled) {
+          if (normalized.isPremiumRate && policy?.premium_rate_enabled !== true) {
             return res.type("xml").send(busyDialplanXml("Premium rate calls disabled"));
           }
         }

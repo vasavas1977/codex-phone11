@@ -172,12 +172,14 @@ export interface Phone11HttpServerLifecycle {
 /**
  * Stops HTTP admission immediately. Admitted handlers finish before background
  * producers stop, so a handler cannot enqueue work after its worker drained.
- * Both phases share one deadline and one promise for repeated signals.
+ * Resource pools close after producers stop. All phases share one deadline and
+ * one promise for repeated signals.
  */
 export function createPhone11Shutdown(
   server: Phone11HttpServerLifecycle,
   background: Phone11BackgroundLifecycle,
   timeoutMs = PHONE11_SHUTDOWN_TIMEOUT_MS,
+  closeResources: () => void | Promise<void> = () => undefined,
 ): () => Promise<void> {
   if (!Number.isFinite(timeoutMs) || timeoutMs < 1) {
     throw new Error("Invalid Phone11 shutdown timeout");
@@ -204,7 +206,15 @@ export function createPhone11Shutdown(
         reject(error);
       }
     });
-    const drained = httpClosed.then(stopBackground);
+    const drained = httpClosed.then(async () => {
+      try {
+        await stopBackground();
+      } finally {
+        // An admitted handler or background producer may still need its pool
+        // until these drains settle. Never close pools when shutdown starts.
+        await closeResources();
+      }
+    });
     shutdownPromise = new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         // A stuck admitted request must not leave schedulers, sockets, or the

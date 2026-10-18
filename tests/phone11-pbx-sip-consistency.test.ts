@@ -23,7 +23,7 @@ vi.mock("../server/pbx/sip-secrets", () => ({
   createSipCredentials: state.createCredentials,
   regenerateSipCredentials: state.resetCredentials,
 }));
-vi.mock("../server/pbx/audit", () => ({ writeAuditLog: state.audit, queryAuditLogs: vi.fn() }));
+vi.mock("../server/pbx/audit", () => ({ insertAuditLog: state.audit, queryAuditLogs: vi.fn() }));
 vi.mock("../server/pbx/redis", () => ({
   cacheGetOrSet: vi.fn((_key, _ttl, callback) => callback()),
   invalidateCache: state.invalidateCache,
@@ -127,7 +127,7 @@ describe("PBX SIP credential consistency", () => {
       return original!(sql, parameters);
     });
     await expect(pbxRouter.createCaller(context).extensions.create({ extensionNumber: "4101" }))
-      .rejects.toThrow("fixture account insert failure");
+      .rejects.toMatchObject({ code: "INTERNAL_SERVER_ERROR", message: "Could not complete PBX change", cause: undefined });
     expect(state.withTransaction).toHaveBeenCalledTimes(1);
     expect(state.audit).not.toHaveBeenCalled();
     expect(state.invalidateCache).not.toHaveBeenCalled();
@@ -143,7 +143,7 @@ describe("PBX SIP credential consistency", () => {
     expect(sql.some((statement) => statement.includes("UPDATE subscriber") && statement.includes("RETURNING username"))).toBe(true);
     expect(sql.some((statement) => statement.includes("UPDATE sip_accounts") && statement.includes("tenant_id = $8"))).toBe(true);
     expect(sql.some((statement) => statement.includes("UPDATE extensions SET sip_password = NULL"))).toBe(true);
-    expect(state.audit).toHaveBeenCalledWith(expect.objectContaining({ resourceId: "51" }));
+    expect(state.audit).toHaveBeenCalledWith(expect.any(Function), expect.objectContaining({ resourceId: "51" }));
   });
 
   it("denies password reset to a global admin without tenant admin role", async () => {
@@ -209,7 +209,7 @@ describe("PBX SIP credential consistency", () => {
       return original!(sql, parameters);
     });
     await expect(pbxRouter.createCaller(context).extensions.resetPassword({ extensionId: 41 }))
-      .rejects.toThrow("fixture write failure");
+      .rejects.toMatchObject({ code: "INTERNAL_SERVER_ERROR", message: "Could not complete PBX change", cause: undefined });
     expect(state.withTransaction).toHaveBeenCalledTimes(1);
     expect(state.audit).not.toHaveBeenCalled();
     expect(state.invalidateCache).not.toHaveBeenCalled();

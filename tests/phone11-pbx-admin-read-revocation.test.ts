@@ -4,10 +4,15 @@ import { resolveTenantMemberships } from "../server/pbx/tenant-middleware";
 import { invalidateCache } from "../server/pbx/redis";
 
 const m = vi.hoisted(() => ({
+  fraudBinding: vi.fn(), fraudTransaction: vi.fn(), fraudQuery: vi.fn(),
   query: vi.fn(), capabilities: vi.fn(), audit: vi.fn(), analytics: vi.fn(),
   cached: null as string | null, roles: new Map<number, string>(),
   entered: (() => {}) as () => void, writeGate: Promise.resolve(), pauseWrite: false,
   calls: [{ id: 42, tenant_id: 7, caller_number: "synthetic-private-caller" }],
+}));
+vi.mock("../server/pbx/fraud-policy-db", () => ({
+  getFraudPolicyBindingStatus: m.fraudBinding,
+  withFraudPolicyTransaction: m.fraudTransaction,
 }));
 vi.mock("../server/pbx/db", () => ({ query: m.query, withTransaction: vi.fn() }));
 vi.mock("ioredis", () => ({ default: class {
@@ -32,13 +37,14 @@ vi.mock("../server/phone-provisioning", () => ({ reactivateExtensionSipAuth: vi.
 const caller = () => pbxRouter.createCaller({ user: { id: 9, role: "user" }, req: { headers: {}, ip: "127.0.0.1" }, res: {} } as any);
 type Caller = ReturnType<typeof caller>;
 const legacyReads: [string, (c: Caller) => Promise<unknown>][] = [
+  ["single-workspace fraud controls", c => c.fraudControls.get()],
   ["dashboard stats", c => c.dashboard.stats()],
   ["recent calls", c => c.dashboard.recentCalls({ limit: 7 })],
   ["analytics", c => c.dashboard.analytics({ period: "week" })],
   ["audit log", c => c.auditLogs.list({ resourceType: "call" })],
-  ["fraud controls", c => c.fraudControls.get()],
-];
+  ];
 const selectedReads: [string, (c: Caller) => Promise<unknown>][] = [
+  ["fraud controls", c => c.fraudControls.get({ tenantId: 7 })],
   ["capabilities", c => c.capabilities({ tenantId: 7 })],
   ["people", c => c.tenant.people({ tenantId: 7 })],
   ["members", c => c.tenant.members({ tenantId: 7 })],
@@ -52,6 +58,11 @@ beforeEach(() => {
   vi.clearAllMocks();
   m.cached = null; m.roles = new Map([[7, "admin"]]); m.pauseWrite = false;
   m.capabilities.mockResolvedValue({ phoneNumbers: false });
+  m.fraudBinding.mockReset().mockReturnValue({ available: true });
+  m.fraudQuery.mockReset().mockImplementation(async (sql: string) => ({ rows:
+    sql.includes("phone11_lock_fixed_fraud_admin") ? [{ role: m.roles.get(7) }] : [],
+  }));
+  m.fraudTransaction.mockReset().mockImplementation(async (_tenantId, callback) => callback({ query: m.fraudQuery }));
   m.audit.mockResolvedValue({ rows: ["synthetic audit"] });
   m.analytics.mockResolvedValue({ tenant: 7, synthetic: true });
   // Real router, membership resolver and Redis cache logic; only transports are fake.
@@ -87,6 +98,8 @@ it.each([...legacyReads, ...selectedReads])("%s refuses cache refill after demot
   expect(m.query.mock.calls[0][0]).toContain("tm.role::text IN ('owner', 'admin')");
   expect(m.analytics).not.toHaveBeenCalled(); expect(m.audit).not.toHaveBeenCalled();
   expect(m.capabilities).not.toHaveBeenCalled();
+  expect(m.fraudBinding).not.toHaveBeenCalled(); expect(m.fraudTransaction).not.toHaveBeenCalled();
+  expect(m.fraudQuery).not.toHaveBeenCalled();
 });
 
 it.each(["manager", null])("refuses a stale admin whose current role is %s", async role => {
@@ -103,9 +116,10 @@ it.each(["admin", "owner"])("admits current %s and preserves query limits and te
 
 it.each(["admin", "owner"])("admits current %s for explicit workspace capabilities", async role => {
   m.roles.set(7, role); await resolveTenantMemberships(9); m.query.mockClear();
-  await expect(caller().capabilities({ tenantId: 7 })).resolves.toEqual({ phoneNumbers: false, explicitTenantReads: true, explicitDidRouteDirectories: true });
+  await expect(caller().capabilities({ tenantId: 7 })).resolves.toEqual({ phoneNumbers: false, explicitTenantReads: true, explicitDidRouteDirectories: true, explicitFraudControls: true });
   expect(m.query).toHaveBeenCalledTimes(1); expect(m.query.mock.calls[0][1]).toEqual([9, 7]);
   expect(m.capabilities).toHaveBeenCalledOnce();
+  expect(m.fraudBinding).toHaveBeenCalledWith(7); expect(m.fraudTransaction).not.toHaveBeenCalled();
 });
 
 it("passes the same admitted workspace and filters to analytics and audit readers", async () => {
@@ -139,4 +153,22 @@ it("fails closed if fresh membership lookup fails", async () => {
   await resolveTenantMemberships(9); m.query.mockReset(); m.query.mockRejectedValue(new Error("synthetic DB failure"));
   await expect(caller().dashboard.recentCalls()).rejects.toThrow("synthetic DB failure");
   expect(m.query).toHaveBeenCalledTimes(1);
+});
+
+it("withholds explicit fraud capability when the selected workspace has no restricted binding", async () => {
+  await resolveTenantMemberships(9); m.query.mockClear();
+  m.fraudBinding.mockReturnValue({ available: false });
+  await expect(caller().capabilities({ tenantId: 7 })).resolves.toMatchObject({ explicitFraudControls: false });
+  expect(m.fraudBinding).toHaveBeenCalledWith(7); expect(m.fraudTransaction).not.toHaveBeenCalled();
+  expect(m.query).toHaveBeenCalledTimes(1);
+});
+
+it.each(["admin", "owner"])("admits current %s for fraud reads only on the dedicated selected connection", async role => {
+  m.roles.set(7, role); await resolveTenantMemberships(9); m.query.mockClear();
+  await expect(caller().fraudControls.get({ tenantId: 7 })).resolves.toBeNull();
+  expect(m.query).toHaveBeenCalledTimes(1); expect(m.query.mock.calls[0][1]).toEqual([9, 7]);
+  expect(m.fraudTransaction).toHaveBeenCalledWith(7, expect.any(Function));
+  expect(m.fraudQuery.mock.calls[0]).toEqual(["SELECT phone11_lock_fixed_fraud_admin($1) AS role", [9]]);
+  expect(m.fraudQuery).toHaveBeenCalledTimes(2);
+  expect(m.fraudQuery).toHaveBeenCalledWith(expect.stringContaining("FROM fraud_controls"), [7]);
 });

@@ -6,7 +6,7 @@ import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { router, protectedProcedure } from "../_core/trpc";
 import { query, withTransaction } from "./db";
-import { writeAuditLog } from "./audit";
+import { insertAuditLog, type AuditEntry } from "./audit";
 import { invalidateCache } from "./redis";
 import { hasRole } from "./tenant-middleware";
 import { readManagementCapabilities, type ManagementCapabilities } from "./schema-capabilities";
@@ -22,12 +22,12 @@ const routingFacilityLabels: Record<RoutingFacility, string> = {
 type RoutingWriteTools = {
   query: typeof query;
   runInTransaction: <T>(operation: (client: PoolClient) => Promise<T>) => Promise<T>;
-  auditAfterCommit: typeof writeAuditLog;
+  audit: (entry: AuditEntry) => Promise<void>;
   invalidateAfterCommit: typeof invalidateCache;
 };
 
 /** Current authority and every routing write share one transaction/client.
- * Cache invalidations and audit writes run only after its commit. */
+ * Audit inserts must succeed before commit; only cache invalidations follow it. */
 async function withRoutingMutation<T>(
   ctx: { user: { id: number } },
   requestedTenantId: number | undefined,
@@ -35,6 +35,7 @@ async function withRoutingMutation<T>(
   operation: (tenant: { tenantId: number }, client: PoolClient, tools: RoutingWriteTools) => Promise<T>,
 ): Promise<T> {
   const afterCommit: (() => Promise<void>)[] = [];
+  let auditFailed = false;
   const result = await withTransaction(async (client) => {
     // Preserve legacy workspace choice: IVR requires exactly one membership
     // when omitted; other facilities select the oldest active membership.
@@ -56,14 +57,31 @@ async function withRoutingMutation<T>(
       query: (sql, parameters) => client.query(sql, parameters),
       // Existing replacements reuse this client; no nested BEGIN/COMMIT.
       runInTransaction: callback => callback(client),
-      auditAfterCommit: async entry => {
-        afterCommit.push(async () => { await writeAuditLog(entry); });
+      audit: async entry => {
+        try {
+          await insertAuditLog((sql, parameters) => client.query(sql, parameters), {
+            ...entry,
+            tenantId: memberships.rows[0].tenant_id,
+            actorUserId: ctx.user.id,
+          });
+        } catch {
+          // PostgreSQL errors may contain row values. Do not expose the cause.
+          auditFailed = true;
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Could not record routing change" });
+        }
       },
       invalidateAfterCommit: async key => {
         afterCommit.push(async () => { await invalidateCache(key); });
       },
     };
     return operation({ tenantId: memberships.rows[0].tenant_id }, client, tools);
+  }).catch(error => {
+    // Neither COMMIT nor cleanup errors prove whether a transaction committed.
+    // Preserve only controlled authorization/validation refusals, never pg details.
+    if (auditFailed) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Could not record routing change" });
+    if (error instanceof TRPCError && error.cause === undefined &&
+      ["FORBIDDEN", "NOT_FOUND", "PRECONDITION_FAILED", "BAD_REQUEST", "CONFLICT"].includes(error.code)) throw error;
+    throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Could not complete routing change" });
   });
   for (const effect of afterCommit) await effect();
   return result;
@@ -140,9 +158,35 @@ async function requireTenantAdmin(ctx: any, requestedTenantId?: number) {
   return { tenantId: selected.tenant_id };
 }
 
+const routingAuditColumns: Record<TenantResourceTable, string> = {
+  ivr_menus: "id, timeout_ms, max_retries, digit_timeout_ms, exit_action, is_active",
+  ring_groups: "id, strategy, ring_timeout, skip_busy, skip_offline, enable_pickup, fallback_action, is_active",
+  call_queues: "id, strategy, max_wait_time, max_callers, wrap_up_time, announce_position, announce_frequency, overflow_action, service_level_secs, record_calls, is_active",
+  time_conditions: "id, timezone, match_action, nomatch_action",
+};
+
 async function requireTenantResource(table: TenantResourceTable, id: number, tenantId: number, client: { query: typeof query } = { query }) {
-  const result = await client.query(`SELECT id FROM ${table} WHERE id = $1 AND tenant_id = $2 FOR UPDATE`, [id, tenantId]);
+  const result = await client.query(`SELECT ${routingAuditColumns[table]} FROM ${table} WHERE id = $1 AND tenant_id = $2 FOR UPDATE`, [id, tenantId]);
   if (!result.rows[0]) throw new TRPCError({ code: "NOT_FOUND" });
+  return result.rows[0];
+}
+
+// Audit operational structure only. Never persist names, descriptions, routing
+// destinations, media paths, TTS, caller identities, skills, or arbitrary input.
+const routingAuditFields = [
+  "id", "menu_id", "ring_group_id", "queue_id", "time_condition_id", "extension_id",
+  "digit", "action_type", "priority", "delay_seconds", "is_active", "is_logged_in",
+  "max_no_answer", "sort_order", "strategy", "timeout_ms", "max_retries", "digit_timeout_ms",
+  "ring_timeout", "skip_busy", "skip_offline", "enable_pickup", "max_wait_time", "max_callers",
+  "wrap_up_time", "announce_position", "announce_frequency", "service_level_secs", "record_calls",
+  "exit_action", "fallback_action", "overflow_action", "match_action", "nomatch_action", "is_holiday",
+  "timezone", "day_of_week", "start_time", "end_time", "start_date", "end_date",
+] as const;
+function routingAuditRow(row: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(routingAuditFields.filter(key => key in row).map(key => [key, row[key]]));
+}
+function routingAuditRows(rows: Record<string, unknown>[]): Record<string, unknown> {
+  return { count: rows.length, rows: rows.map(routingAuditRow) };
 }
 
 async function requireTenantExtensions(extensionIds: number[], tenantId: number, client: { query: typeof query } = { query }) {
@@ -161,15 +205,19 @@ async function requireTenantExtensions(extensionIds: number[], tenantId: number,
 // IVR Menus
 // ═══════════════════════════════════════════════════════════════════════════════
 
+const ivrXmlText = z.string().refine(
+  value => !/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uD800-\uDFFF\uFFFE\uFFFF]/u.test(value),
+  "IVR text contains a character prohibited by XML 1.0",
+);
 const ivrMenuInput = z.object({
-  name: z.string().min(1).max(100),
+  name: ivrXmlText.refine(value => value.length >= 1 && value.length <= 100, "Name must be 1 to 100 characters"),
   description: z.string().optional(),
-  greeting_file: z.string().optional(),
-  greeting_tts: z.string().optional(),
+  greeting_file: ivrXmlText.optional(),
+  greeting_tts: ivrXmlText.optional(),
   timeout_ms: z.number().min(1000).max(30000).default(5000),
   max_retries: z.number().min(1).max(10).default(3),
   digit_timeout_ms: z.number().min(1000).max(10000).default(3000),
-  invalid_sound: z.string().optional(),
+  invalid_sound: ivrXmlText.optional(),
   exit_action: z.enum(["hangup", "transfer", "voicemail"]).default("hangup"),
   exit_target: z.string().optional(),
   is_active: z.boolean().default(true),
@@ -265,6 +313,30 @@ async function requireIvrActionTargets(
       invalidIvrAction(`The ${action.action_type} destination is unavailable in this workspace`);
     }
   }
+}
+
+/** Exit hooks can route calls, so admit only active extensions in this tenant. */
+async function requireIvrExitTarget(
+  action: unknown,
+  target: unknown,
+  tenantId: number,
+  client: { query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }> },
+) {
+  if (action === "hangup") {
+    if (target) invalidIvrAction("Hangup does not accept an exit destination");
+    return;
+  }
+  if (action !== "transfer" && action !== "voicemail") invalidIvrAction("The IVR exit action is invalid");
+  if (typeof target !== "string" || !/^\d{2,10}$/.test(target)) {
+    invalidIvrAction("The IVR exit destination must be a valid extension");
+  }
+  const destination = await client.query(
+    `SELECT 1 FROM extensions
+     WHERE tenant_id = $1 AND extension_number = $2
+       AND status = 'active' AND deleted_at IS NULL LIMIT 1`,
+    [tenantId, target],
+  );
+  if (destination.rows.length !== 1) invalidIvrAction("The IVR exit destination is unavailable in this workspace");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -536,15 +608,18 @@ export const ivrRouter = router({
     create: protectedProcedure
       .input(z.object({ tenant_id: z.number() }).merge(ivrMenuInput))
       .mutation(async ({ ctx, input }) => {
-        return withRoutingMutation(ctx, input.tenant_id, "ivr", async (tenant, client, { query, runInTransaction, auditAfterCommit, invalidateAfterCommit }) => {
+        return withRoutingMutation(ctx, input.tenant_id, "ivr", async (tenant, client, { query, runInTransaction, audit, invalidateAfterCommit }) => {
           const { tenant_id: _tenantId, ...data } = input;
+          data.exit_target = data.exit_target?.trim() || undefined;
+          await requireIvrExitTarget(data.exit_action, data.exit_target, tenant.tenantId, client);
           const res = await query(
             `INSERT INTO ivr_menus (tenant_id, name, description, greeting_file, greeting_tts, timeout_ms, max_retries, digit_timeout_ms, invalid_sound, exit_action, exit_target, is_active)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
             [tenant.tenantId, data.name, data.description, data.greeting_file, data.greeting_tts, data.timeout_ms, data.max_retries, data.digit_timeout_ms, data.invalid_sound, data.exit_action, data.exit_target, data.is_active]
           );
-          await auditAfterCommit({ tenantId: tenant.tenantId, actorUserId: ctx.user.id, action: "ivr_menu.created", resourceType: "ivr_menu", resourceId: String(res.rows[0].id), newValue: { name: data.name }, ipAddress: ctx.req.ip });
+          await audit({ tenantId: tenant.tenantId, actorUserId: ctx.user.id, action: "ivr_menu.created", resourceType: "ivr_menu", resourceId: String(res.rows[0].id), newValue: routingAuditRow(res.rows[0]), ipAddress: ctx.req.ip });
           await invalidateAfterCommit(`dialplan:ivr:${res.rows[0].id}`);
+          await invalidateAfterCommit(`dialplan:ivr:${tenant.tenantId}:${res.rows[0].id}`);
           return res.rows[0];
         });
       }),
@@ -552,9 +627,21 @@ export const ivrRouter = router({
     update: protectedProcedure
       .input(z.object({ id: z.number(), tenant_id: z.number().int().positive().optional() }).merge(ivrMenuInput.partial()))
       .mutation(async ({ ctx, input }) => {
-        return withRoutingMutation(ctx, input.tenant_id, "ivr", async (tenant, client, { query, runInTransaction, auditAfterCommit, invalidateAfterCommit }) => {
-          await requireTenantResource("ivr_menus", input.id, tenant.tenantId, client);
-          const { id, tenant_id: _tenantId, ...data } = input;
+        return withRoutingMutation(ctx, input.tenant_id, "ivr", async (tenant, client, { query, runInTransaction, audit, invalidateAfterCommit }) => {
+          const before = await requireTenantResource("ivr_menus", input.id, tenant.tenantId, client);
+          const { id, tenant_id: _tenantId, ...inputData } = input;
+          const data: Record<string, unknown> = { ...inputData };
+          if (input.exit_action !== undefined || input.exit_target !== undefined) {
+            const current = await query(
+              `SELECT exit_action, exit_target FROM ivr_menus WHERE id = $1 AND tenant_id = $2 FOR UPDATE`,
+              [id, tenant.tenantId],
+            );
+            const exitAction = input.exit_action ?? current.rows[0]?.exit_action ?? "hangup";
+            const exitTarget = input.exit_target !== undefined ? input.exit_target.trim()
+              : exitAction === "hangup" ? undefined : current.rows[0]?.exit_target?.trim();
+            await requireIvrExitTarget(exitAction, exitTarget, tenant.tenantId, client);
+            data.exit_target = exitAction === "hangup" ? null : exitTarget;
+          }
           const sets = Object.entries(data)
             .filter(([_, v]) => v !== undefined)
             .map(([k], i) => `${k} = $${i + 2}`);
@@ -565,8 +652,10 @@ export const ivrRouter = router({
             `UPDATE ivr_menus SET ${sets.join(", ")} WHERE id = $1 AND tenant_id = $${values.length + 2} RETURNING *`,
             [id, ...values, tenant.tenantId]
           );
+          await audit({ tenantId: tenant.tenantId, actorUserId: ctx.user.id, action: "ivr_menu.updated", resourceType: "ivr_menu", resourceId: String(id), oldValue: routingAuditRow(before), newValue: routingAuditRow(res.rows[0]), ipAddress: ctx.req.ip });
           await invalidateAfterCommit(`ivr:menu:${id}`);
           await invalidateAfterCommit(`dialplan:ivr:${id}`);
+          await invalidateAfterCommit(`dialplan:ivr:${tenant.tenantId}:${id}`);
           return res.rows[0];
         });
       }),
@@ -574,11 +663,13 @@ export const ivrRouter = router({
     delete: protectedProcedure
       .input(z.object({ id: z.number(), tenant_id: z.number().int().positive().optional() }))
       .mutation(async ({ ctx, input }) => {
-        return withRoutingMutation(ctx, input.tenant_id, "ivr", async (tenant, client, { query, runInTransaction, auditAfterCommit, invalidateAfterCommit }) => {
+        return withRoutingMutation(ctx, input.tenant_id, "ivr", async (tenant, client, { query, runInTransaction, audit, invalidateAfterCommit }) => {
           await requireTenantResource("ivr_menus", input.id, tenant.tenantId, client);
-          await query(`DELETE FROM ivr_menus WHERE id = $1 AND tenant_id = $2`, [input.id, tenant.tenantId]);
+          const deleted = await query(`DELETE FROM ivr_menus WHERE id = $1 AND tenant_id = $2 RETURNING ${routingAuditColumns.ivr_menus}`, [input.id, tenant.tenantId]);
+          await audit({ tenantId: tenant.tenantId, actorUserId: ctx.user.id, action: "ivr_menu.deleted", resourceType: "ivr_menu", resourceId: String(input.id), oldValue: routingAuditRows(deleted.rows), ipAddress: ctx.req.ip });
           await invalidateAfterCommit(`ivr:menu:${input.id}`);
           await invalidateAfterCommit(`dialplan:ivr:${input.id}`);
+          await invalidateAfterCommit(`dialplan:ivr:${tenant.tenantId}:${input.id}`);
           return { ok: true };
         });
       }),
@@ -591,26 +682,31 @@ export const ivrRouter = router({
         actions: z.array(ivrActionInput),
       }))
       .mutation(async ({ ctx, input }) => {
-        return withRoutingMutation(ctx, input.tenant_id, "ivr", async (tenant, client, { query, runInTransaction, auditAfterCommit, invalidateAfterCommit }) => {
+        return withRoutingMutation(ctx, input.tenant_id, "ivr", async (tenant, client, { query, runInTransaction, audit, invalidateAfterCommit }) => {
           await requireTenantResource("ivr_menus", input.menu_id, tenant.tenantId, client);
           const normalizedActions = input.actions.map((action) => ({
             ...action,
             target: action.target?.trim() || undefined,
             description: action.description?.trim() || undefined,
           }));
+          let oldRows: Record<string, unknown>[] = [];
+          const newRows: Record<string, unknown>[] = [];
           await runInTransaction(async (client) => {
             await requireIvrActionTargets(client, tenant.tenantId, normalizedActions);
-            await client.query(`DELETE FROM ivr_actions WHERE menu_id = $1`, [input.menu_id]);
+            oldRows = (await client.query(`DELETE FROM ivr_actions WHERE menu_id = $1 RETURNING id, menu_id, digit, action_type, sort_order`, [input.menu_id])).rows;
             for (const action of normalizedActions) {
-              await client.query(
+              const inserted = await client.query(
                 `INSERT INTO ivr_actions (menu_id, digit, action_type, target, description, sort_order)
-                 VALUES ($1, $2, $3, $4, $5, $6)`,
+                 VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, menu_id, digit, action_type, sort_order`,
                 [input.menu_id, action.digit, action.action_type, action.target, action.description, action.sort_order]
               );
+              newRows.push(...inserted.rows);
             }
           });
+          await audit({ tenantId: tenant.tenantId, actorUserId: ctx.user.id, action: "ivr_menu.actions_replaced", resourceType: "ivr_menu", resourceId: String(input.menu_id), oldValue: routingAuditRows(oldRows), newValue: routingAuditRows(newRows), ipAddress: ctx.req.ip });
           await invalidateAfterCommit(`ivr:menu:${input.menu_id}`);
           await invalidateAfterCommit(`dialplan:ivr:${input.menu_id}`);
+          await invalidateAfterCommit(`dialplan:ivr:${tenant.tenantId}:${input.menu_id}`);
           return { ok: true, count: input.actions.length };
         });
       }),
@@ -658,7 +754,7 @@ export const ivrRouter = router({
     create: protectedProcedure
       .input(z.object({ tenant_id: z.number() }).merge(ringGroupInput))
       .mutation(async ({ ctx, input }) => {
-        return withRoutingMutation(ctx, input.tenant_id, "ringGroups", async (tenant, client, { query, runInTransaction, auditAfterCommit, invalidateAfterCommit }) => {
+        return withRoutingMutation(ctx, input.tenant_id, "ringGroups", async (tenant, client, { query, runInTransaction, audit, invalidateAfterCommit }) => {
           const { tenant_id: _tenantId, ...data } = input;
           await requireRingGroupFallbackTarget(data.fallback_action, data.fallback_target, tenant.tenantId, client);
           const res = await query(
@@ -666,7 +762,7 @@ export const ivrRouter = router({
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) RETURNING *`,
             [tenant.tenantId, data.name, data.description, data.extension, data.strategy, data.ring_timeout, data.caller_id_mode, data.caller_id_name, data.caller_id_number, data.skip_busy, data.skip_offline, data.enable_pickup, data.fallback_action, data.fallback_action === "hangup" ? null : data.fallback_target, data.moh_file, data.is_active]
           );
-          await auditAfterCommit({ tenantId: tenant.tenantId, actorUserId: ctx.user.id, action: "ring_group.created", resourceType: "ring_group", resourceId: String(res.rows[0].id), newValue: { name: data.name }, ipAddress: ctx.req.ip });
+          await audit({ tenantId: tenant.tenantId, actorUserId: ctx.user.id, action: "ring_group.created", resourceType: "ring_group", resourceId: String(res.rows[0].id), newValue: routingAuditRow(res.rows[0]), ipAddress: ctx.req.ip });
           await invalidateAfterCommit(`dialplan:ringgroup:${tenant.tenantId}:${res.rows[0].id}`);
           return res.rows[0];
         });
@@ -675,8 +771,8 @@ export const ivrRouter = router({
     update: protectedProcedure
       .input(z.object({ id: z.number() }).merge(ringGroupInput.partial()))
       .mutation(async ({ ctx, input }) => {
-        return withRoutingMutation(ctx, undefined, "ringGroups", async (tenant, client, { query, runInTransaction, auditAfterCommit, invalidateAfterCommit }) => {
-          await requireTenantResource("ring_groups", input.id, tenant.tenantId, client);
+        return withRoutingMutation(ctx, undefined, "ringGroups", async (tenant, client, { query, runInTransaction, audit, invalidateAfterCommit }) => {
+          const before = await requireTenantResource("ring_groups", input.id, tenant.tenantId, client);
           const { id, ...inputData } = input;
           const data: Record<string, unknown> = { ...inputData };
           const current = await query(
@@ -699,6 +795,7 @@ export const ivrRouter = router({
             `UPDATE ring_groups SET ${sets.join(", ")} WHERE id = $1 AND tenant_id = $${values.length + 2} RETURNING *`,
             [id, ...values, tenant.tenantId]
           );
+          await audit({ tenantId: tenant.tenantId, actorUserId: ctx.user.id, action: "ring_group.updated", resourceType: "ring_group", resourceId: String(id), oldValue: routingAuditRow(before), newValue: routingAuditRow(res.rows[0]), ipAddress: ctx.req.ip });
           await invalidateAfterCommit(`ringgroup:${id}`);
           await invalidateAfterCommit(`dialplan:ringgroup:${tenant.tenantId}:${id}`);
           return res.rows[0];
@@ -708,9 +805,10 @@ export const ivrRouter = router({
     delete: protectedProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ ctx, input }) => {
-        return withRoutingMutation(ctx, undefined, "ringGroups", async (tenant, client, { query, runInTransaction, auditAfterCommit, invalidateAfterCommit }) => {
+        return withRoutingMutation(ctx, undefined, "ringGroups", async (tenant, client, { query, runInTransaction, audit, invalidateAfterCommit }) => {
           await requireTenantResource("ring_groups", input.id, tenant.tenantId, client);
-          await query(`DELETE FROM ring_groups WHERE id = $1 AND tenant_id = $2`, [input.id, tenant.tenantId]);
+          const deleted = await query(`DELETE FROM ring_groups WHERE id = $1 AND tenant_id = $2 RETURNING ${routingAuditColumns.ring_groups}`, [input.id, tenant.tenantId]);
+          await audit({ tenantId: tenant.tenantId, actorUserId: ctx.user.id, action: "ring_group.deleted", resourceType: "ring_group", resourceId: String(input.id), oldValue: routingAuditRows(deleted.rows), ipAddress: ctx.req.ip });
           await invalidateAfterCommit(`ringgroup:${input.id}`);
           await invalidateAfterCommit(`dialplan:ringgroup:${tenant.tenantId}:${input.id}`);
           return { ok: true };
@@ -728,23 +826,27 @@ export const ivrRouter = router({
         })),
       }))
       .mutation(async ({ ctx, input }) => {
-        return withRoutingMutation(ctx, undefined, "ringGroups", async (tenant, client, { query, runInTransaction, auditAfterCommit, invalidateAfterCommit }) => {
+        return withRoutingMutation(ctx, undefined, "ringGroups", async (tenant, client, { query, runInTransaction, audit, invalidateAfterCommit }) => {
           await requireTenantResource("ring_groups", input.ring_group_id, tenant.tenantId, client);
           const extensionIds = input.members.map((member) => member.extension_id);
           if (new Set(extensionIds).size !== extensionIds.length) {
             throw new TRPCError({ code: "BAD_REQUEST", message: "An extension can appear only once in a ring group" });
           }
           await requireTenantCallableRingGroupExtensions(extensionIds, tenant.tenantId, client);
+          let oldRows: Record<string, unknown>[] = [];
+          const newRows: Record<string, unknown>[] = [];
           await runInTransaction(async (client) => {
-            await client.query(`DELETE FROM ring_group_members WHERE ring_group_id = $1`, [input.ring_group_id]);
+            oldRows = (await client.query(`DELETE FROM ring_group_members WHERE ring_group_id = $1 RETURNING ring_group_id, extension_id, priority, delay_seconds, is_active`, [input.ring_group_id])).rows;
             for (const member of input.members) {
-              await client.query(
+              const inserted = await client.query(
                 `INSERT INTO ring_group_members (ring_group_id, extension_id, priority, delay_seconds, is_active)
-                 VALUES ($1, $2, $3, $4, $5)`,
+                 VALUES ($1, $2, $3, $4, $5) RETURNING ring_group_id, extension_id, priority, delay_seconds, is_active`,
                 [input.ring_group_id, member.extension_id, member.priority, member.delay_seconds, member.is_active]
               );
+              newRows.push(...inserted.rows);
             }
           });
+          await audit({ tenantId: tenant.tenantId, actorUserId: ctx.user.id, action: "ring_group.members_replaced", resourceType: "ring_group", resourceId: String(input.ring_group_id), oldValue: routingAuditRows(oldRows), newValue: routingAuditRows(newRows), ipAddress: ctx.req.ip });
           await invalidateAfterCommit(`ringgroup:${input.ring_group_id}`);
           await invalidateAfterCommit(`dialplan:ringgroup:${tenant.tenantId}:${input.ring_group_id}`);
           return { ok: true, count: input.members.length };
@@ -801,7 +903,7 @@ export const ivrRouter = router({
     create: protectedProcedure
       .input(z.object({ tenant_id: z.number() }).merge(callQueueInput))
       .mutation(async ({ ctx, input }) => {
-        return withRoutingMutation(ctx, input.tenant_id, "queues", async (tenant, client, { query, runInTransaction, auditAfterCommit, invalidateAfterCommit }) => {
+        return withRoutingMutation(ctx, input.tenant_id, "queues", async (tenant, client, { query, runInTransaction, audit, invalidateAfterCommit }) => {
           const { tenant_id: _tenantId, ...data } = input;
           await requireQueueOverflowTarget(data.overflow_action, data.overflow_target, tenant.tenantId, client);
           const res = await query(
@@ -809,7 +911,7 @@ export const ivrRouter = router({
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) RETURNING *`,
             [tenant.tenantId, data.name, data.description, data.extension, data.strategy, data.max_wait_time, data.max_callers, data.wrap_up_time, data.announce_position, data.announce_frequency, data.moh_file, data.join_announcement, data.agent_announcement, data.overflow_action, data.overflow_target, data.service_level_secs, data.record_calls, data.is_active]
           );
-          await auditAfterCommit({ tenantId: tenant.tenantId, actorUserId: ctx.user.id, action: "queue.created", resourceType: "call_queue", resourceId: String(res.rows[0].id), newValue: { name: data.name }, ipAddress: ctx.req.ip });
+          await audit({ tenantId: tenant.tenantId, actorUserId: ctx.user.id, action: "queue.created", resourceType: "call_queue", resourceId: String(res.rows[0].id), newValue: routingAuditRow(res.rows[0]), ipAddress: ctx.req.ip });
           await invalidateAfterCommit(`dialplan:queue:${tenant.tenantId}:${res.rows[0].id}`);
           return res.rows[0];
         });
@@ -818,8 +920,8 @@ export const ivrRouter = router({
     update: protectedProcedure
       .input(z.object({ id: z.number() }).merge(callQueueInput.partial()))
       .mutation(async ({ ctx, input }) => {
-        return withRoutingMutation(ctx, undefined, "queues", async (tenant, client, { query, runInTransaction, auditAfterCommit, invalidateAfterCommit }) => {
-          await requireTenantResource("call_queues", input.id, tenant.tenantId, client);
+        return withRoutingMutation(ctx, undefined, "queues", async (tenant, client, { query, runInTransaction, audit, invalidateAfterCommit }) => {
+          const before = await requireTenantResource("call_queues", input.id, tenant.tenantId, client);
           const { id, ...inputData } = input;
           const current = await query(`SELECT overflow_action, overflow_target FROM call_queues WHERE id = $1 AND tenant_id = $2`, [id, tenant.tenantId]);
           const data: Record<string, unknown> = { ...inputData };
@@ -837,6 +939,7 @@ export const ivrRouter = router({
             `UPDATE call_queues SET ${sets.join(", ")} WHERE id = $1 AND tenant_id = $${values.length + 2} RETURNING *`,
             [id, ...values, tenant.tenantId]
           );
+          await audit({ tenantId: tenant.tenantId, actorUserId: ctx.user.id, action: "queue.updated", resourceType: "call_queue", resourceId: String(id), oldValue: routingAuditRow(before), newValue: routingAuditRow(res.rows[0]), ipAddress: ctx.req.ip });
           await invalidateAfterCommit(`queue:${id}`);
           await invalidateAfterCommit(`dialplan:queue:${tenant.tenantId}:${id}`);
           return res.rows[0];
@@ -846,9 +949,10 @@ export const ivrRouter = router({
     delete: protectedProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ ctx, input }) => {
-        return withRoutingMutation(ctx, undefined, "queues", async (tenant, client, { query, runInTransaction, auditAfterCommit, invalidateAfterCommit }) => {
+        return withRoutingMutation(ctx, undefined, "queues", async (tenant, client, { query, runInTransaction, audit, invalidateAfterCommit }) => {
           await requireTenantResource("call_queues", input.id, tenant.tenantId, client);
-          await query(`DELETE FROM call_queues WHERE id = $1 AND tenant_id = $2`, [input.id, tenant.tenantId]);
+          const deleted = await query(`DELETE FROM call_queues WHERE id = $1 AND tenant_id = $2 RETURNING ${routingAuditColumns.call_queues}`, [input.id, tenant.tenantId]);
+          await audit({ tenantId: tenant.tenantId, actorUserId: ctx.user.id, action: "queue.deleted", resourceType: "call_queue", resourceId: String(input.id), oldValue: routingAuditRows(deleted.rows), ipAddress: ctx.req.ip });
           await invalidateAfterCommit(`queue:${input.id}`);
           await invalidateAfterCommit(`dialplan:queue:${tenant.tenantId}:${input.id}`);
           return { ok: true };
@@ -868,23 +972,27 @@ export const ivrRouter = router({
         })),
       }))
       .mutation(async ({ ctx, input }) => {
-        return withRoutingMutation(ctx, undefined, "queues", async (tenant, client, { query, runInTransaction, auditAfterCommit, invalidateAfterCommit }) => {
+        return withRoutingMutation(ctx, undefined, "queues", async (tenant, client, { query, runInTransaction, audit, invalidateAfterCommit }) => {
           await requireTenantResource("call_queues", input.queue_id, tenant.tenantId, client);
           const extensionIds = input.agents.map((agent) => agent.extension_id);
           if (new Set(extensionIds).size !== extensionIds.length) {
             throw new TRPCError({ code: "BAD_REQUEST", message: "An extension can appear only once in a queue" });
           }
           await requireTenantExtensions(extensionIds, tenant.tenantId, client);
+          let oldRows: Record<string, unknown>[] = [];
+          const newRows: Record<string, unknown>[] = [];
           await runInTransaction(async (client) => {
-            await client.query(`DELETE FROM queue_agents WHERE queue_id = $1`, [input.queue_id]);
+            oldRows = (await client.query(`DELETE FROM queue_agents WHERE queue_id = $1 RETURNING queue_id, extension_id, priority, max_no_answer, is_logged_in`, [input.queue_id])).rows;
             for (const agent of input.agents) {
-              await client.query(
+              const inserted = await client.query(
                 `INSERT INTO queue_agents (queue_id, extension_id, priority, skills, max_no_answer, is_logged_in)
-                 VALUES ($1, $2, $3, $4, $5, $6)`,
+                 VALUES ($1, $2, $3, $4, $5, $6) RETURNING queue_id, extension_id, priority, max_no_answer, is_logged_in`,
                 [input.queue_id, agent.extension_id, agent.priority, JSON.stringify(agent.skills), agent.max_no_answer, agent.is_logged_in]
               );
+              newRows.push(...inserted.rows);
             }
           });
+          await audit({ tenantId: tenant.tenantId, actorUserId: ctx.user.id, action: "queue.agents_replaced", resourceType: "call_queue", resourceId: String(input.queue_id), oldValue: routingAuditRows(oldRows), newValue: routingAuditRows(newRows), ipAddress: ctx.req.ip });
           await invalidateAfterCommit(`queue:${input.queue_id}`);
           await invalidateAfterCommit(`dialplan:queue:${tenant.tenantId}:${input.queue_id}`);
           return { ok: true, count: input.agents.length };
@@ -894,13 +1002,15 @@ export const ivrRouter = router({
     agentLogin: protectedProcedure
       .input(z.object({ queue_id: z.number(), extension_id: z.number() }))
       .mutation(async ({ ctx, input }) => {
-        return withRoutingMutation(ctx, undefined, "queues", async (tenant, client, { query, runInTransaction, auditAfterCommit, invalidateAfterCommit }) => {
+        return withRoutingMutation(ctx, undefined, "queues", async (tenant, client, { query, runInTransaction, audit, invalidateAfterCommit }) => {
           await requireTenantResource("call_queues", input.queue_id, tenant.tenantId, client);
           await requireTenantExtensions([input.extension_id], tenant.tenantId, client);
-          await query(
-            `UPDATE queue_agents SET is_logged_in = true WHERE queue_id = $1 AND extension_id = $2`,
+          const oldAgents = await query(`SELECT extension_id, is_logged_in FROM queue_agents WHERE queue_id = $1 AND extension_id = $2 FOR UPDATE`, [input.queue_id, input.extension_id]);
+          const updated = await query(
+            `UPDATE queue_agents SET is_logged_in = true WHERE queue_id = $1 AND extension_id = $2 RETURNING extension_id, is_logged_in`,
             [input.queue_id, input.extension_id]
           );
+          if (updated.rows.length > 0) await audit({ tenantId: tenant.tenantId, actorUserId: ctx.user.id, action: "queue.agent_logged_in", resourceType: "call_queue", resourceId: String(input.queue_id), oldValue: routingAuditRows(oldAgents.rows), newValue: routingAuditRows(updated.rows), ipAddress: ctx.req.ip });
           await invalidateAfterCommit(`dialplan:queue:${tenant.tenantId}:${input.queue_id}`);
           return { ok: true };
         });
@@ -909,13 +1019,15 @@ export const ivrRouter = router({
     agentLogout: protectedProcedure
       .input(z.object({ queue_id: z.number(), extension_id: z.number() }))
       .mutation(async ({ ctx, input }) => {
-        return withRoutingMutation(ctx, undefined, "queues", async (tenant, client, { query, runInTransaction, auditAfterCommit, invalidateAfterCommit }) => {
+        return withRoutingMutation(ctx, undefined, "queues", async (tenant, client, { query, runInTransaction, audit, invalidateAfterCommit }) => {
           await requireTenantResource("call_queues", input.queue_id, tenant.tenantId, client);
           await requireTenantExtensions([input.extension_id], tenant.tenantId, client);
-          await query(
-            `UPDATE queue_agents SET is_logged_in = false WHERE queue_id = $1 AND extension_id = $2`,
+          const oldAgents = await query(`SELECT extension_id, is_logged_in FROM queue_agents WHERE queue_id = $1 AND extension_id = $2 FOR UPDATE`, [input.queue_id, input.extension_id]);
+          const updated = await query(
+            `UPDATE queue_agents SET is_logged_in = false WHERE queue_id = $1 AND extension_id = $2 RETURNING extension_id, is_logged_in`,
             [input.queue_id, input.extension_id]
           );
+          if (updated.rows.length > 0) await audit({ tenantId: tenant.tenantId, actorUserId: ctx.user.id, action: "queue.agent_logged_out", resourceType: "call_queue", resourceId: String(input.queue_id), oldValue: routingAuditRows(oldAgents.rows), newValue: routingAuditRows(updated.rows), ipAddress: ctx.req.ip });
           await invalidateAfterCommit(`dialplan:queue:${tenant.tenantId}:${input.queue_id}`);
           return { ok: true };
         });
@@ -969,7 +1081,7 @@ export const ivrRouter = router({
     create: protectedProcedure
       .input(z.object({ tenant_id: z.number().int().positive() }).merge(timeConditionInput))
       .mutation(async ({ ctx, input }) => {
-        return withRoutingMutation(ctx, input.tenant_id, "businessHours", async (tenant, client, { query, runInTransaction, auditAfterCommit, invalidateAfterCommit }) => {
+        return withRoutingMutation(ctx, input.tenant_id, "businessHours", async (tenant, client, { query, runInTransaction, audit, invalidateAfterCommit }) => {
           requireSupportedTimezone(input.timezone);
           await requireTimeConditionRoute(client, input.match_action, input.match_target, tenant.tenantId);
           await requireTimeConditionRoute(client, input.nomatch_action, input.nomatch_target, tenant.tenantId);
@@ -987,7 +1099,7 @@ export const ivrRouter = router({
               input.nomatch_action === "hangup" ? null : input.nomatch_target,
             ]
           );
-          await auditAfterCommit({ tenantId: tenant.tenantId, actorUserId: ctx.user.id, action: "time_condition.created", resourceType: "time_condition", resourceId: String(res.rows[0].id), newValue: { name: input.name }, ipAddress: ctx.req.ip });
+          await audit({ tenantId: tenant.tenantId, actorUserId: ctx.user.id, action: "time_condition.created", resourceType: "time_condition", resourceId: String(res.rows[0].id), newValue: routingAuditRow(res.rows[0]), ipAddress: ctx.req.ip });
           await invalidateAfterCommit(`timecondition:${res.rows[0].id}`);
           await invalidateAfterCommit(`dialplan:timecondition:${tenant.tenantId}:${res.rows[0].id}`);
           return res.rows[0];
@@ -1000,10 +1112,12 @@ export const ivrRouter = router({
         rules: z.array(timeConditionRuleInput).min(1),
       }).merge(timeConditionInput))
       .mutation(async ({ ctx, input }) => {
-        return withRoutingMutation(ctx, undefined, "businessHours", async (tenant, client, { query, runInTransaction, auditAfterCommit, invalidateAfterCommit }) => {
-          await requireTenantResource("time_conditions", input.id, tenant.tenantId, client);
+        return withRoutingMutation(ctx, undefined, "businessHours", async (tenant, client, { query, runInTransaction, audit, invalidateAfterCommit }) => {
+          const before = await requireTenantResource("time_conditions", input.id, tenant.tenantId, client);
           requireSupportedTimezone(input.timezone);
           let updated: any;
+          let oldRules: Record<string, unknown>[] = [];
+          const newRules: Record<string, unknown>[] = [];
           await runInTransaction(async (client) => {
             await requireTimeConditionRoute(client, input.match_action, input.match_target, tenant.tenantId);
             await requireTimeConditionRoute(client, input.nomatch_action, input.nomatch_target, tenant.tenantId);
@@ -1025,16 +1139,17 @@ export const ivrRouter = router({
               ],
             );
             updated = result.rows[0];
-            await client.query(`DELETE FROM time_condition_rules WHERE time_condition_id = $1`, [input.id]);
+            oldRules = (await client.query(`DELETE FROM time_condition_rules WHERE time_condition_id = $1 RETURNING id, time_condition_id, day_of_week, start_time, end_time, start_date, end_date, is_holiday, sort_order`, [input.id])).rows;
             for (const rule of input.rules) {
-              await client.query(
+              const inserted = await client.query(
                 `INSERT INTO time_condition_rules (time_condition_id, day_of_week, start_time, end_time, start_date, end_date, is_holiday, label, sort_order)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id, time_condition_id, day_of_week, start_time, end_time, start_date, end_date, is_holiday, sort_order`,
                 [input.id, rule.day_of_week || null, rule.start_time || null, rule.end_time || null, rule.start_date || null, rule.end_date || null, rule.is_holiday, rule.label, rule.sort_order],
               );
+              newRules.push(...inserted.rows);
             }
           });
-          await auditAfterCommit({ tenantId: tenant.tenantId, actorUserId: ctx.user.id, action: "time_condition.updated", resourceType: "time_condition", resourceId: String(input.id), newValue: { name: input.name }, ipAddress: ctx.req.ip });
+          await audit({ tenantId: tenant.tenantId, actorUserId: ctx.user.id, action: "time_condition.updated", resourceType: "time_condition", resourceId: String(input.id), oldValue: { resource: routingAuditRow(before), rules: routingAuditRows(oldRules) }, newValue: { resource: routingAuditRow(updated), rules: routingAuditRows(newRules) }, ipAddress: ctx.req.ip });
           await invalidateAfterCommit(`timecondition:${input.id}`);
           await invalidateAfterCommit(`dialplan:timecondition:${tenant.tenantId}:${input.id}`);
           return updated;
@@ -1047,18 +1162,22 @@ export const ivrRouter = router({
         rules: z.array(timeConditionRuleInput),
       }))
       .mutation(async ({ ctx, input }) => {
-        return withRoutingMutation(ctx, undefined, "businessHours", async (tenant, client, { query, runInTransaction, auditAfterCommit, invalidateAfterCommit }) => {
+        return withRoutingMutation(ctx, undefined, "businessHours", async (tenant, client, { query, runInTransaction, audit, invalidateAfterCommit }) => {
           await requireTenantResource("time_conditions", input.time_condition_id, tenant.tenantId, client);
+          let oldRows: Record<string, unknown>[] = [];
+          const newRows: Record<string, unknown>[] = [];
           await runInTransaction(async (client) => {
-            await client.query(`DELETE FROM time_condition_rules WHERE time_condition_id = $1`, [input.time_condition_id]);
+            oldRows = (await client.query(`DELETE FROM time_condition_rules WHERE time_condition_id = $1 RETURNING id, time_condition_id, day_of_week, start_time, end_time, start_date, end_date, is_holiday, sort_order`, [input.time_condition_id])).rows;
             for (const rule of input.rules) {
-              await client.query(
+              const inserted = await client.query(
                 `INSERT INTO time_condition_rules (time_condition_id, day_of_week, start_time, end_time, start_date, end_date, is_holiday, label, sort_order)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id, time_condition_id, day_of_week, start_time, end_time, start_date, end_date, is_holiday, sort_order`,
                 [input.time_condition_id, rule.day_of_week || null, rule.start_time || null, rule.end_time || null, rule.start_date || null, rule.end_date || null, rule.is_holiday, rule.label, rule.sort_order]
               );
+              newRows.push(...inserted.rows);
             }
           });
+          await audit({ tenantId: tenant.tenantId, actorUserId: ctx.user.id, action: "time_condition.rules_replaced", resourceType: "time_condition", resourceId: String(input.time_condition_id), oldValue: routingAuditRows(oldRows), newValue: routingAuditRows(newRows), ipAddress: ctx.req.ip });
           await invalidateAfterCommit(`timecondition:${input.time_condition_id}`);
           await invalidateAfterCommit(`dialplan:timecondition:${tenant.tenantId}:${input.time_condition_id}`);
           return { ok: true, count: input.rules.length };
@@ -1068,9 +1187,10 @@ export const ivrRouter = router({
     delete: protectedProcedure
       .input(z.object({ id: z.number() }))
       .mutation(async ({ ctx, input }) => {
-        return withRoutingMutation(ctx, undefined, "businessHours", async (tenant, client, { query, runInTransaction, auditAfterCommit, invalidateAfterCommit }) => {
+        return withRoutingMutation(ctx, undefined, "businessHours", async (tenant, client, { query, runInTransaction, audit, invalidateAfterCommit }) => {
           await requireTenantResource("time_conditions", input.id, tenant.tenantId, client);
-          await query(`DELETE FROM time_conditions WHERE id = $1 AND tenant_id = $2`, [input.id, tenant.tenantId]);
+          const deleted = await query(`DELETE FROM time_conditions WHERE id = $1 AND tenant_id = $2 RETURNING ${routingAuditColumns.time_conditions}`, [input.id, tenant.tenantId]);
+          await audit({ tenantId: tenant.tenantId, actorUserId: ctx.user.id, action: "time_condition.deleted", resourceType: "time_condition", resourceId: String(input.id), oldValue: routingAuditRows(deleted.rows), ipAddress: ctx.req.ip });
           await invalidateAfterCommit(`timecondition:${input.id}`);
           await invalidateAfterCommit(`dialplan:timecondition:${tenant.tenantId}:${input.id}`);
           return { ok: true };

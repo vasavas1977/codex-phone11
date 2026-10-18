@@ -19,6 +19,7 @@ import { kamailioRouter } from "../pbx/kamailio-routes";
 import { storageRouter } from "../pbx/recording-storage";
 import { wsManager } from "../pbx/websocket";
 import { fsEventListener } from "../pbx/fs-event-listener";
+import { closeFraudPolicyPool } from "../pbx/fraud-policy-db";
 import { registerWakeRoutes } from "../push/wake-routes";
 import {
   createPhone11RuntimeLifecycle,
@@ -149,7 +150,12 @@ export async function startServer() {
     runtime.background.start();
   });
 
-  const shutdown = createPhone11Shutdown(server, runtime.background);
+  const shutdown = createPhone11Shutdown(
+    server,
+    runtime.background,
+    undefined,
+    closeFraudPolicyPool,
+  );
   let signalHandled = false;
   const handleSignal = (signal: "SIGTERM" | "SIGINT") => {
     if (signalHandled) return;

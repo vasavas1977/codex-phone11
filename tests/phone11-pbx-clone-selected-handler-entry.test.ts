@@ -3,6 +3,10 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { build } from "esbuild";
+import ts from "typescript";
+import { RESTORED_WORKER_SOURCE_CONTRACT } from "../scripts/phone11-pbx-clone/restored-worker-source-contract-v1";
+import { custodyObservation } from "./fixtures/phone11-pbx-clone-custody-v2";
+import { ATOMIC_AUDIT_SOURCE_FIXTURE } from "./fixtures/phone11-atomic-audit-source-v1";
 import type { CloneAdapter, ClonePool } from "../scripts/phone11-pbx-clone/real-pg-adapter";
 import { parseSelectedHandlerInput, runSelectedHandler, SELECTED_BUILD_CONTRACT, SELECTED_PRODUCT_PINS, SELECTED_LANES } from "../scripts/phone11-pbx-clone/selected-handler-entry";
 vi.mock("pg", () => { throw new Error("OFFLINE_DRIVER_IMPORT_FORBIDDEN"); });
@@ -17,6 +21,19 @@ const digest = (value: string | Uint8Array) => createHash("sha256").update(value
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
 describe("selected entry pure refusal; no real product or pg imports", () => {
+  it.each(SELECTED_LANES)("does not inspect separate custody observations while %s is unbound", async lane => {
+    const touch = vi.fn(() => { throw new Error("PRIVATE_OBSERVATION_MUST_NOT_ESCAPE"); });
+    const getter = Object.defineProperty({}, "schema", { enumerable: true, get: touch });
+    const proxy = new Proxy({}, { get: touch, ownKeys: touch, getPrototypeOf: touch, getOwnPropertyDescriptor: touch });
+    for (const observation of [undefined, null, custodyObservation(), {}, getter, proxy]) {
+      const result = await runSelectedHandler(JSON.stringify({ ...input(), lane }), new AbortController().signal, observation);
+      expect(result.code).toBe("ENTRY_BINDING_UNBOUND");
+      expect(result.outcome).toBe("REFUSED"); expect(result.adapterClosed).toBe(false);
+      expect(result.runtimeAcceptance).toBe(false); expect(result.productionAcceptance).toBe(false);
+      expect(JSON.stringify(result)).not.toContain("PRIVATE_OBSERVATION");
+    }
+    expect(touch).not.toHaveBeenCalled();
+  });
   it.each(SELECTED_LANES)("keeps %s execution unbound despite valid-shaped fake pins", async lane => {
     const value = { ...input(), lane };
     expect(() => parseSelectedHandlerInput(JSON.stringify(value))).toThrow("ENTRY_BINDING_UNBOUND");
@@ -127,10 +144,31 @@ describe("injected transport bridge only; not actual handler or driver execution
 });
 
 describe("static build identities, never evaluate product modules or resulting bundle", () => {
-  it("binds all ten inspected source files and real adapter bytes", () => {
-    for (const pin of SELECTED_PRODUCT_PINS) expect(digest(readFileSync(pin.path))).toBe(pin.sha256);
+  it("binds the exact two-file atomic delta and all eight unchanged historical source pins", () => {
+    expect(ATOMIC_AUDIT_SOURCE_FIXTURE.sourceRevision).toBe("e9f5831de8d3ef27f628cfdeb4ad57369ba01dc9");
+    expect(ATOMIC_AUDIT_SOURCE_FIXTURE.runtimeAuthority).toBe(false);
+    expect(ATOMIC_AUDIT_SOURCE_FIXTURE.updates.map(pin => pin.path).sort()).toEqual(["server/pbx/audit.ts", "server/pbx/ivr-router.ts"]);
+    const currentPins = SELECTED_PRODUCT_PINS.map(pin => {
+      const update = ATOMIC_AUDIT_SOURCE_FIXTURE.updates.find(item => item.path === pin.path);
+      if (update) expect(pin.sha256).toBe(update.historicalSha256);
+      const expected = update?.sha256 ?? pin.sha256;
+      expect(digest(readFileSync(pin.path))).toBe(expected);
+      return { path: pin.path, sha256: expected };
+    });
+    expect(currentPins.filter((pin, index) => pin.sha256 !== SELECTED_PRODUCT_PINS[index].sha256)).toHaveLength(2);
+    expect(digest(JSON.stringify(currentPins))).toBe(ATOMIC_AUDIT_SOURCE_FIXTURE.graphSha256);
+    expect(ATOMIC_AUDIT_SOURCE_FIXTURE.graphSha256).not.toBe(SELECTED_BUILD_CONTRACT.graphSha256);
     expect(digest(JSON.stringify(SELECTED_PRODUCT_PINS))).toBe(SELECTED_BUILD_CONTRACT.graphSha256);
-    expect(digest(readFileSync("scripts/phone11-pbx-clone/real-pg-adapter.ts"))).toBe(SELECTED_BUILD_CONTRACT.adapterSha256);
+    expect(SELECTED_BUILD_CONTRACT.adapterSha256).toBe("3a82401460aa46622b1a155f9b073b0e8ddbb1719ddcc7de665b358a548d8a08");
+    expect(digest(readFileSync("scripts/phone11-pbx-clone/real-pg-adapter.ts"))).toBe(RESTORED_WORKER_SOURCE_CONTRACT.adapterSha256);
+    expect(RESTORED_WORKER_SOURCE_CONTRACT.adapterSha256).not.toBe(SELECTED_BUILD_CONTRACT.adapterSha256);
+  });
+  it.each(SELECTED_LANES)("refuses the current atomic source graph as a historical %s build before imports", async lane => {
+    const current = { ...input(), lane, build: { ...input().build, graphSha256: ATOMIC_AUDIT_SOURCE_FIXTURE.graphSha256 } };
+    expect(() => parseSelectedHandlerInput(JSON.stringify(current))).toThrow("BUILD_BINDING_REFUSED");
+    expect((await runSelectedHandler(JSON.stringify(current), new AbortController().signal)).code).toBe("BUILD_BINDING_REFUSED");
+    // Supplying the unchanged historical identity does not admit the changed source either.
+    expect(() => parseSelectedHandlerInput(JSON.stringify({ ...input(), lane }))).toThrow("ENTRY_BINDING_UNBOUND");
   });
   it("compiles actual selected modules with only DB and ioredis transport aliases; excludes unrelated graph", async () => {
     const bridge = resolve(SELECTED_BUILD_CONTRACT.databaseAlias);
@@ -149,15 +187,25 @@ describe("static build identities, never evaluate product modules or resulting b
       } }],
     });
     const inputs = Object.keys(result.metafile!.inputs).sort();
+    expect(inputs.filter(path => path.startsWith("scripts/"))).toEqual([
+      "scripts/phone11-pbx-clone/bootstrap-restore-custody-v4.ts",
+      "scripts/phone11-pbx-clone/custodian-permit-v1.ts",
+      "scripts/phone11-pbx-clone/custody-v2.ts",
+      "scripts/phone11-pbx-clone/real-pg-adapter.ts",
+      "scripts/phone11-pbx-clone/restored-worker-source-contract-v1.ts",
+      "scripts/phone11-pbx-clone/selected-handler-entry.ts",
+      "scripts/phone11-pbx-clone/selected-product-contract-v2.ts",
+      "scripts/phone11-pbx-clone/selected-resource-bridge.ts",
+    ]);
     const product = inputs.filter(path => path.startsWith("server/") || path.startsWith("shared/"));
     expect(product).toEqual(SELECTED_PRODUCT_PINS.map(pin => pin.path).filter(path => path !== "server/pbx/db.ts").sort());
     expect(new Set(aliases.map(path => path.slice(process.cwd().length + 1)))).toEqual(new Set(["server/pbx/ivr-router.ts", "server/pbx/audit.ts", "server/pbx/tenant-middleware.ts", "server/pbx/schema-capabilities.ts", "server/phone-provisioning.ts", "server/pbx/redis.ts"]));
     expect(inputs).not.toContain("server/pbx/db.ts"); expect(inputs).not.toContain("server/_core/context.ts");
     expect(inputs.some(path => /routers\.ts|pbx-router|profile\/|sdk\.ts|auth\/|cloud-record|gemini/i.test(path))).toBe(false);
     const externals = Object.values(result.metafile!.inputs).flatMap(value => value.imports.filter(item => item.external).map(item => item.path));
-    expect([...new Set(externals)].sort()).toEqual(["@trpc/server", "crypto", "pg", "superjson", "zod"]);
+    expect([...new Set(externals)].sort()).toEqual(["@trpc/server", "crypto", "node:crypto", "node:fs", "node:util", "pg", "superjson", "zod"]);
     const code = result.outputFiles![0].text;
-    expect(code).not.toContain("createCloneAdapterForTests"); expect(code).not.toContain("buildPgConfig"); expect(code).not.toContain("new Redis(");
+    expect(code).not.toContain("createCloneAdapterForTests"); expect(code).not.toContain("createCustodianAdapterForTests"); expect(code).not.toContain("createCustodianVerifierForTests"); expect(code).not.toContain("issueCustodianPermitFromPrivateFds"); expect(code).not.toContain("buildPgConfig"); expect(code).not.toContain("new Redis(");
     expect(code).toContain("ENTRY_BINDING_UNBOUND"); expect(code).toContain("EXECUTION_UNBOUND");
     // Only hashes, not source/rows/results, are emitted into the retained validation log.
     console.info(`SELECTED_COMPILE_ONLY bundleSha256=${digest(code)} metafileSha256=${digest(JSON.stringify(result.metafile))} localInputs=${inputs.length}`);
@@ -169,5 +217,71 @@ describe("static build identities, never evaluate product modules or resulting b
     expect(source).toContain("true, input.tenantId, input.actorUserId");
     expect(source).not.toContain("createCloneAdapterForTests"); expect(source).not.toContain("appRouter"); expect(source).not.toContain("ensurePhoneProvisioningSchema");
     expect(source.indexOf("adapter = await createRealPgAdapter")).toBeLessThan(source.indexOf('await import("../../server/pbx/ivr-router")'));
+  });
+  it("forwards the separate optional observation directly to admission without serializing it", () => {
+    const file = ts.createSourceFile("entry.ts", readFileSync("scripts/phone11-pbx-clone/selected-handler-entry.ts", "utf8"), ts.ScriptTarget.Latest, true);
+    const entry = file.statements.find((node): node is ts.FunctionDeclaration => ts.isFunctionDeclaration(node) && node.name?.text === "runSelectedHandler");
+    expect(entry?.parameters).toHaveLength(3);
+    const observation = entry!.parameters[2];
+    expect(ts.isIdentifier(observation.name)).toBe(true);
+    expect(observation.questionToken).toBeDefined(); expect(observation.type?.kind).toBe(ts.SyntaxKind.UnknownKeyword);
+    const calls: ts.CallExpression[] = [];
+    const visit = (node: ts.Node): void => {
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "admitCloneConnectionInput") calls.push(node);
+      ts.forEachChild(node, visit);
+    };
+    visit(entry!);
+    expect(calls).toHaveLength(1); expect(calls[0].arguments).toHaveLength(2);
+    expect(calls[0].arguments[0].getText(file)).toBe("input.cloneAdmission");
+    const forwarded = calls[0].arguments[1];
+    expect(ts.isIdentifier(forwarded)).toBe(true);
+    expect((forwarded as ts.Identifier).text).toBe((observation.name as ts.Identifier).text);
+  });
+});
+
+
+describe("versioned selected product contract", () => {
+  it("binds the reviewed committed IVR source with a distinct v2 build identity", () => {
+    expect(SELECTED_BUILD_CONTRACT.schema).toBe("phone11-pbx-selected-build/v2");
+    expect(SELECTED_BUILD_CONTRACT.sourceCommit).toBe("5ee87227983d0d7dc039d148102d53b35f0821dd");
+    expect(SELECTED_BUILD_CONTRACT.graphSha256).toBe("e81ae5036b7b073d47b38fc15805c856ba5039f71f4d49e43ea5f3c40877f3c6");
+    expect(SELECTED_PRODUCT_PINS).toHaveLength(10);
+    expect(SELECTED_PRODUCT_PINS.find(pin => pin.path === "server/pbx/ivr-router.ts")?.sha256)
+      .toBe("c4346a33f2826bc37d52f916a3c37eaf31cf65955d2a5a70cd535347aad52eef");
+  });
+  it.each(SELECTED_LANES)("rejects the old v1 product contract before %s admission/imports", async lane => {
+    const legacyBuild = {
+      ...input().build, schema: "phone11-pbx-selected-build/v1",
+      sourceCommit: "f2fa504dbad22d0966b9f1d43dae86865ef80158",
+      graphSha256: "b0ecf11d87b2f96e6efd57fbc1339415564a1c0edbfb19ce5f982983b7318cf6",
+    };
+    const text = JSON.stringify({ ...input(), lane, build: legacyBuild });
+    expect(() => parseSelectedHandlerInput(text)).toThrow("BUILD_BINDING_REFUSED");
+    const status = await runSelectedHandler(text, new AbortController().signal);
+    expect(status.code).toBe("BUILD_BINDING_REFUSED");
+    expect(status.adapterClosed).toBe(false); expect(status.runtimeAcceptance).toBe(false);
+  });
+  it("keeps the additional contract module pure static metadata", () => {
+    const source = readFileSync("scripts/phone11-pbx-clone/selected-product-contract-v2.ts", "utf8");
+    const file = ts.createSourceFile("contract.ts", source, ts.ScriptTarget.Latest, true);
+    expect(file.statements.every(ts.isVariableStatement)).toBe(true);
+    const visit = (node: ts.Node): void => {
+      expect(ts.isImportDeclaration(node) || ts.isNewExpression(node) || ts.isAwaitExpression(node)).toBe(false);
+      if (ts.isCallExpression(node)) {
+        const freeze = node.expression.getText(file) === "Object.freeze";
+        const staticMap = ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "map"
+          && ts.isArrayLiteralExpression(node.expression.expression) && node.arguments.length === 1
+          && ts.isArrowFunction(node.arguments[0]);
+        expect(freeze || staticMap).toBe(true);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(file);
+    expect(source).not.toMatch(/\bprocess\b|\bfetch\b|\bconsole\b|\brequire\b/);
+    const entry = readFileSync("scripts/phone11-pbx-clone/selected-handler-entry.ts", "utf8");
+    const adapter = readFileSync("scripts/phone11-pbx-clone/real-pg-adapter.ts", "utf8");
+    expect(entry).toContain("const BUILD_ADMISSION_SHA256: string | null = null;");
+    expect(entry).toContain("const FIXTURE_ADMISSION_SHA256: string | null = null;");
+    expect(adapter).toContain("const EXECUTION_ADMISSION_SHA256: string | null = null;");
   });
 });

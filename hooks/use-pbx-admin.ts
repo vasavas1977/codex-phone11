@@ -5,7 +5,7 @@
  * Provides type-safe access to tenant, extensions, phone numbers,
  * call records, fraud controls, and dashboard stats.
  */
-import { trpc } from "@/lib/trpc";
+import { createTRPCClient, trpc } from "@/lib/trpc";
 import {
   createContext,
   createElement,
@@ -337,6 +337,8 @@ export type PbxManagementCapabilities = {
   explicitTenantReads?: boolean;
   /** All five DID destination lists and assignRoute honor the selected tenant. */
   explicitDidRouteDirectories?: boolean;
+  /** Both fraud-policy operations accept an explicit workspace under live authority. */
+  explicitFraudControls?: boolean;
   phoneNumbers: boolean;
   sites: boolean;
   ringGroups: boolean;
@@ -667,19 +669,73 @@ export function useCreateEmergencyAddress() {
 // ============================================================================
 // Fraud Controls
 // ============================================================================
+// Distinguish reauthentication even when the numeric account ID is unchanged.
+// Neither credentials nor serialized user/profile fields enter the query key.
+const fraudAuthIdentities = new WeakMap<object, number>();
+let nextFraudAuthIdentity = 0;
+function fraudAuthIdentity(user: object | null | undefined): number | null {
+  if (!user) return null;
+  let identity = fraudAuthIdentities.get(user);
+  if (identity === undefined) {
+    identity = ++nextFraudAuthIdentity;
+    fraudAuthIdentities.set(user, identity);
+  }
+  return identity;
+}
+
 export function useFraudControls() {
-  return trpc.pbx.fraudControls.get.useQuery(undefined, {
-    staleTime: 300_000,
+  const { user, loading } = useAuth({ autoFetch: false });
+  const workspace = usePbxAdminWorkspace();
+  const tenantId = workspace.selectedTenantId;
+  const admissionScope = workspace.admissionScope;
+  const authIdentity = fraudAuthIdentity(user);
+  const enabled = Boolean(user) && !loading && workspace.isAdmitted &&
+    tenantId !== null && admissionScope !== null &&
+    workspace.capabilitiesQuery.data?.explicitFraudControls === true;
+  const query = useQuery({
+    // tRPC's tenant-only cache is never the admission identity of this editor.
+    queryKey: ["phone11-admin-fraud-controls", user?.id, authIdentity, tenantId, admissionScope],
+    enabled,
+    queryFn: async ({ signal }) => {
+      if (!enabled || !user || tenantId === null || admissionScope === null)
+        throw new Error("Workspace access must be confirmed before reading outbound call policy.");
+      signal.throwIfAborted();
+      const before = Auth.getAuthSnapshot();
+      if (before.loading || before.user !== user)
+        throw new Error("Your account changed. Reopen workspace settings.");
+      // Each outer request gets its own typed RPC operation. An inner tenant-only
+      // cache could otherwise share a prior account's or pre-save request.
+      const row = await createTRPCClient().pbx.fraudControls.get.query({ tenantId }, { signal });
+      signal.throwIfAborted();
+      const auth = Auth.getAuthSnapshot();
+      if (auth.loading || auth.user !== user)
+        throw new Error("Your account changed. Reopen workspace settings.");
+      if (row !== null && (row?.tenant_id !== tenantId ||
+        typeof row.international_enabled !== "boolean" ||
+        typeof row.premium_rate_enabled !== "boolean"))
+        throw new Error("Phone11 could not confirm this workspace's outbound call policy.");
+      return {
+        ownerId: user.id,
+        authIdentity,
+        tenantId,
+        admissionScope,
+        configured: row !== null,
+        internationalEnabled: row?.international_enabled === true,
+        premiumRateEnabled: row?.premium_rate_enabled === true,
+      };
+    },
+    staleTime: 0,
+    gcTime: 0,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: true,
+    retry: false,
   });
+  return { ...query, authIdentity };
 }
 
 export function useUpdateFraudControls() {
-  const utils = trpc.useUtils();
-  return trpc.pbx.fraudControls.update.useMutation({
-    onSuccess: () => {
-      utils.pbx.fraudControls.get.invalidate();
-    },
-  });
+  // The editor owns scoped readback and discards retired action results.
+  return trpc.pbx.fraudControls.update.useMutation();
 }
 
 // ============================================================================

@@ -13,6 +13,12 @@ const db = vi.hoisted(() => ({
   memberActorRole: null as string | null,
 }));
 
+const fraud = vi.hoisted(() => ({ query: vi.fn(), transaction: vi.fn(), binding: vi.fn() }));
+vi.mock("../server/pbx/fraud-policy-db", () => ({
+  getFraudPolicyBindingStatus: fraud.binding,
+  withFraudPolicyTransaction: fraud.transaction,
+}));
+
 vi.mock("../server/pbx/db", () => ({
   query: db.query,
   withTransaction: db.withTransaction,
@@ -30,7 +36,7 @@ vi.mock("../server/pbx/tenant-middleware", async (importOriginal) => ({
   requireLiveTenantAdminMembership: vi.fn(async () => db.lastRole),
 }));
 vi.mock("../server/pbx/audit", () => ({
-  writeAuditLog: vi.fn(),
+  insertAuditLog: vi.fn(),
   queryAuditLogs: vi.fn(),
 }));
 vi.mock("../server/pbx/sip-secrets", () => ({
@@ -54,7 +60,7 @@ import { getCallStats, getVoicemails } from "../server/pbx/cdr-processor";
 // eslint-disable-next-line import/first
 import { createSipCredentials, regenerateSipCredentials } from "../server/pbx/sip-secrets";
 // eslint-disable-next-line import/first
-import { writeAuditLog } from "../server/pbx/audit";
+import { insertAuditLog } from "../server/pbx/audit";
 // eslint-disable-next-line import/first
 import { profilePhotoDescriptors } from "../server/profile/photo";
 // eslint-disable-next-line import/first
@@ -138,6 +144,13 @@ const advancedRoutingSchemaRows = schemaRows({
 beforeEach(() => {
   vi.clearAllMocks();
   db.query.mockReset();
+  fraud.binding.mockReset().mockReturnValue({ available: true });
+  fraud.query.mockReset().mockImplementation(async (sql: string) => ({ rows:
+    sql.includes("phone11_lock_fixed_fraud_admin")
+      ? db.memberActorRole === "revoked" ? [] : [{ role: db.memberActorRole ?? db.lastRole }]
+      : [],
+  }));
+  fraud.transaction.mockReset().mockImplementation(async (_tenantId, callback) => callback({ query: fraud.query }));
   db.lastRole = "admin";
   db.interceptMemberActorLock = false;
   db.memberActorRole = null;
@@ -166,6 +179,7 @@ describe("PBX selected workspace reads", () => {
     (caller: ReturnType<typeof pbxRouter.createCaller>) => caller.tenant.members(),
     (caller: ReturnType<typeof pbxRouter.createCaller>) => caller.extensions.list(),
     (caller: ReturnType<typeof pbxRouter.createCaller>) => caller.phoneNumbers.list(),
+    (caller: ReturnType<typeof pbxRouter.createCaller>) => caller.fraudControls.get(),
   ])("refuses an unselected multi-workspace admin read", async (read) => {
     db.query.mockResolvedValueOnce({ rows: memberships });
     await expect(read(pbxRouter.createCaller(context()))).rejects.toMatchObject({ code: "FORBIDDEN" });
@@ -187,6 +201,7 @@ describe("PBX selected workspace reads", () => {
   });
 
   it.each([
+    (caller: ReturnType<typeof pbxRouter.createCaller>) => caller.fraudControls.update({ internationalEnabled: false }),
     (caller: ReturnType<typeof pbxRouter.createCaller>) => caller.tenant.updateMember({ userId: 88, status: "inactive" }),
     (caller: ReturnType<typeof pbxRouter.createCaller>) => caller.extensions.create({ extensionNumber: "3101" }),
     (caller: ReturnType<typeof pbxRouter.createCaller>) => caller.extensions.update({ id: 1, displayName: "Nok" }),
@@ -197,6 +212,7 @@ describe("PBX selected workspace reads", () => {
     db.query.mockResolvedValueOnce({ rows: memberships });
     await expect(write(pbxRouter.createCaller(context()))).rejects.toMatchObject({ code: "FORBIDDEN" });
     expect(db.withTransaction).not.toHaveBeenCalled();
+    expect(fraud.transaction).not.toHaveBeenCalled();
   });
 
   it("rejects a cached administrator after live membership revocation", async () => {
@@ -299,7 +315,7 @@ describe("PBX selected workspace reads", () => {
     db.query.mockResolvedValueOnce({ rows: memberships })
       .mockResolvedValueOnce({ rows: phoneNumberSchemaRows });
     await expect(pbxRouter.createCaller(context()).capabilities({ tenantId: 12 }))
-      .resolves.toMatchObject({ phoneNumbers: true, explicitTenantReads: true, explicitDidRouteDirectories: true });
+      .resolves.toMatchObject({ phoneNumbers: true, explicitTenantReads: true, explicitDidRouteDirectories: true, explicitFraudControls: true });
     expect(requireLiveTenantAdminMembership).toHaveBeenCalledWith(9, 12);
     expect(db.query.mock.calls[1][0]).toContain("information_schema.columns");
   });
@@ -390,6 +406,7 @@ describe("PBX management capabilities", () => {
     ).resolves.toEqual({
       explicitTenantReads: true,
       explicitDidRouteDirectories: true,
+      explicitFraudControls: false,
       phoneNumbers: false,
       sites: false,
       ringGroups: false,
@@ -400,6 +417,7 @@ describe("PBX management capabilities", () => {
 
     expect(db.query).toHaveBeenCalledTimes(1);
     expect(String(db.query.mock.calls[0][0])).toContain("information_schema.columns");
+    expect(fraud.binding).not.toHaveBeenCalled(); expect(fraud.transaction).not.toHaveBeenCalled();
   });
 
   it("recognizes the reviewed queue and IVR migration column names", async () => {
@@ -795,13 +813,75 @@ describe("PBX workspace administrator authorization", () => {
 });
 
 describe("fraud-control authorization at commit", () => {
+  it("reads only the selected policy on the dedicated connection without creating a row", async () => {
+    db.query.mockResolvedValueOnce({ rows: [membership("admin", 7), membership("owner", 12)] });
+    await expect(pbxRouter.createCaller(context()).fraudControls.get({ tenantId: 12 })).resolves.toBeNull();
+    expect(requireLiveTenantAdminMembership).toHaveBeenCalledWith(9, 12);
+    expect(fraud.binding).toHaveBeenCalledWith(12);
+    expect(fraud.transaction).toHaveBeenCalledWith(12, expect.any(Function));
+    expect(fraud.query.mock.calls[0]).toEqual(["SELECT phone11_lock_fixed_fraud_admin($1) AS role", [9]]);
+    expect(fraud.query).toHaveBeenCalledWith(expect.stringContaining("FROM fraud_controls WHERE tenant_id = $1"), [12]);
+    expect(db.query).toHaveBeenCalledTimes(1);
+    expect(db.withTransaction).not.toHaveBeenCalled(); expect(insertAuditLog).not.toHaveBeenCalled();
+  });
+  it.each(["read", "write"])("rejects an unjoined selected policy %s", async operation => {
+    db.query.mockResolvedValueOnce({ rows: [membership("admin", 7)] });
+    const caller = pbxRouter.createCaller(context());
+    await expect(operation === "read" ? caller.fraudControls.get({ tenantId: 99 })
+      : caller.fraudControls.update({ tenantId: 99, internationalEnabled: false })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(db.query).toHaveBeenCalledTimes(1); expect(db.withTransaction).not.toHaveBeenCalled();
+    expect(fraud.binding).not.toHaveBeenCalled(); expect(fraud.transaction).not.toHaveBeenCalled();
+    expect(fraud.query).not.toHaveBeenCalled();
+  });
+  it.each(["read", "write"])("rejects a selected workspace nonadmin policy %s", async operation => {
+    db.query.mockResolvedValueOnce({ rows: [membership("admin", 7), membership("user", 12)] });
+    const caller = pbxRouter.createCaller(context());
+    await expect(operation === "read" ? caller.fraudControls.get({ tenantId: 12 })
+      : caller.fraudControls.update({ tenantId: 12, internationalEnabled: false })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(db.query).toHaveBeenCalledTimes(1); expect(db.withTransaction).not.toHaveBeenCalled();
+    expect(fraud.binding).not.toHaveBeenCalled(); expect(fraud.transaction).not.toHaveBeenCalled();
+    expect(fraud.query).not.toHaveBeenCalled();
+  });
+  it("passes selected tenant through the dedicated live commit lock, upsert and strict audit", async () => {
+    db.query.mockResolvedValueOnce({ rows: [membership("admin", 7), membership("owner", 12)] });
+    fraud.query.mockResolvedValueOnce({ rows: [{ role: "owner" }] })
+      .mockResolvedValueOnce({ rows: [{ tenant_id: 12 }] });
+    await expect(pbxRouter.createCaller(context()).fraudControls.update({ tenantId: 12, internationalEnabled: true })).resolves.toEqual({ success: true });
+    expect(requireLiveTenantAdminMembership).toHaveBeenCalledWith(9, 12);
+    expect(fraud.transaction).toHaveBeenCalledWith(12, expect.any(Function));
+    expect(fraud.query.mock.calls[0]).toEqual(["SELECT phone11_lock_fixed_fraud_admin($1) AS role", [9]]);
+    expect(fraud.query.mock.calls[1]![1]).toEqual([true, 12]);
+    expect(db.query).toHaveBeenCalledTimes(1); expect(db.withTransaction).not.toHaveBeenCalled();
+    expect(vi.mocked(insertAuditLog).mock.calls[0]![1]).toMatchObject({ tenantId: 12, resourceId: "12", newValue: { tenantId: 12, internationalEnabled: true } });
+  });
+  it.each(["read", "write"])("rejects malformed selected tenant input before policy %s", async operation => {
+    const caller = pbxRouter.createCaller(context());
+    for (const tenantId of [0, -1, 1.5]) {
+      await expect(operation === "read" ? caller.fraudControls.get({ tenantId })
+        : caller.fraudControls.update({ tenantId, internationalEnabled: false })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    }
+    expect(db.query).not.toHaveBeenCalled(); expect(db.withTransaction).not.toHaveBeenCalled();
+    expect(fraud.binding).not.toHaveBeenCalled(); expect(fraud.transaction).not.toHaveBeenCalled();
+  });
+  it.each(["read", "write"])("fails closed before %s when no dedicated binding exists", async operation => {
+    db.query.mockResolvedValueOnce({ rows: [membership("admin")] });
+    fraud.binding.mockReturnValue({ available: false });
+    const caller = pbxRouter.createCaller(context());
+    await expect(operation === "read" ? caller.fraudControls.get()
+      : caller.fraudControls.update({ internationalEnabled: false })).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect(db.query).toHaveBeenCalledTimes(1); expect(db.withTransaction).not.toHaveBeenCalled();
+    expect(fraud.transaction).not.toHaveBeenCalled(); expect(fraud.query).not.toHaveBeenCalled();
+    expect(insertAuditLog).not.toHaveBeenCalled();
+  });
   it("rejects a revoked administrator after the initial tenant check", async () => {
     db.query.mockResolvedValueOnce({ rows: [membership("admin")] });
-    db.interceptMemberActorLock = true;
     db.memberActorRole = "revoked";
     await expect(pbxRouter.createCaller(context()).fraudControls.update({ internationalEnabled: true }))
       .rejects.toMatchObject({ code: "FORBIDDEN" });
-    expect(db.query.mock.calls.some(([sql]) => String(sql).includes("UPDATE fraud_controls"))).toBe(false);
+    expect(fraud.query).toHaveBeenCalledOnce();
+    expect(fraud.query.mock.calls[0]).toEqual(["SELECT phone11_lock_fixed_fraud_admin($1) AS role", [9]]);
+    expect(db.query).toHaveBeenCalledTimes(1); expect(db.withTransaction).not.toHaveBeenCalled();
+    expect(insertAuditLog).not.toHaveBeenCalled();
   });
 });
 
@@ -887,9 +967,9 @@ describe("admin SIP credential writes", () => {
       return undefined;
     });
     await expect(pbxRouter.createCaller(context()).extensions.create({ extensionNumber: "3101", userId: 88 }))
-      .rejects.toThrow("SIP account write failed");
+      .rejects.toMatchObject({ code: "INTERNAL_SERVER_ERROR", message: "Could not complete PBX change", cause: undefined });
     expect(db.withTransaction).toHaveBeenCalledOnce();
-    expect(writeAuditLog).not.toHaveBeenCalled();
+    expect(insertAuditLog).not.toHaveBeenCalled();
     expect(db.query.mock.calls.some(([sql]) => String(sql).includes("INSERT INTO user_extensions"))).toBe(false);
   });
 
@@ -947,7 +1027,7 @@ describe("admin SIP credential writes", () => {
       .rejects.toMatchObject({ code: "CONFLICT" });
     expect(regenerateSipCredentials).not.toHaveBeenCalled();
     expect(db.query.mock.calls.some(([sql]) => String(sql).includes("UPDATE sip_accounts SET ha1"))).toBe(false);
-    expect(writeAuditLog).not.toHaveBeenCalled();
+    expect(insertAuditLog).not.toHaveBeenCalled();
   });
 
   it("does not insert a replacement during a missing-subscriber reset", async () => {
@@ -959,7 +1039,7 @@ describe("admin SIP credential writes", () => {
     await expect(pbxRouter.createCaller(context()).extensions.resetPassword({ extensionId: 44 }))
       .rejects.toMatchObject({ code: "CONFLICT" });
     expect(db.query.mock.calls.some(([sql]) => String(sql).includes("INSERT INTO subscriber"))).toBe(false);
-    expect(writeAuditLog).not.toHaveBeenCalled();
+    expect(insertAuditLog).not.toHaveBeenCalled();
   });
 
   it("aborts reset if the subscriber write fails after the account update", async () => {
@@ -968,10 +1048,10 @@ describe("admin SIP credential writes", () => {
       return undefined;
     });
     await expect(pbxRouter.createCaller(context()).extensions.resetPassword({ extensionId: 44 }))
-      .rejects.toThrow("subscriber write failed");
+      .rejects.toMatchObject({ code: "INTERNAL_SERVER_ERROR", message: "Could not complete PBX change", cause: undefined });
     expect(db.withTransaction).toHaveBeenCalledOnce();
     expect(db.query.mock.calls.some(([sql]) => String(sql).includes("UPDATE sip_accounts SET ha1"))).toBe(true);
-    expect(writeAuditLog).not.toHaveBeenCalled();
+    expect(insertAuditLog).not.toHaveBeenCalled();
   });
 });
 
@@ -1011,6 +1091,7 @@ describe.skipIf(!credentialTestDatabaseUrl)("admin SIP credentials on isolated P
           status text, deleted_at timestamptz, updated_at timestamptz
         );
         CREATE TABLE subscriber(
+          id serial PRIMARY KEY,
           username text, domain text, password text, ha1 text, ha1b text,
           UNIQUE(username, domain)
         );
@@ -1060,7 +1141,7 @@ describe.skipIf(!credentialTestDatabaseUrl)("admin SIP credentials on isolated P
       expect(JSON.stringify(listed)).not.toContain("legacy-secret");
       expect(JSON.stringify(detail)).not.toContain("legacy-secret");
       await pbxRouter.createCaller(context()).extensions.update({ id: extensionId, displayName: "Renamed" });
-      expect(writeAuditLog).toHaveBeenCalledWith(expect.objectContaining({
+      expect(insertAuditLog).toHaveBeenCalledWith(expect.any(Function), expect.objectContaining({
         resourceType: "extension", oldValue: expect.not.objectContaining({ sip_password: "legacy-secret" }),
       }));
 
@@ -1116,9 +1197,14 @@ describe.skipIf(!credentialTestDatabaseUrl)("admin SIP credentials on isolated P
         secretIv: Buffer.from("recovered-iv"), secretTag: Buffer.from("recovered-tag"), dekId: "dek-v1",
       });
       await expect(pbxRouter.createCaller(context()).extensions.resetPassword({ extensionId }))
-        .resolves.toMatchObject({ sipCredentials: { username: "3101" } });
-      expect((await database.query("SELECT password FROM subscriber WHERE username='3101'")).rows[0].password)
-        .toBe("recovered-reset");
+        .rejects.toMatchObject({ code: "CONFLICT" });
+      expect((await database.query("SELECT password FROM subscriber WHERE username='3101'")).rows).toHaveLength(0);
+      expect((await database.query("SELECT ha1 FROM sip_accounts WHERE extension_id=$1", [extensionId])).rows[0].ha1)
+        .toBe("rotated-ha1");
+      // Restore the previously matched fixture row for the independent transfer
+      // checks below; password reset must never adopt an absent subscriber.
+      await database.query(`INSERT INTO subscriber(username,domain,password,ha1,ha1b)
+        VALUES('3101','sip.phone11.ai','rotated-reset','rotated-ha1','rotated-ha1b')`);
 
       vi.mocked(regenerateSipCredentials).mockReturnValue({
         sipUsername: "3101", sipDomain: "sip.phone11.ai", plaintextPassword: "transfer-secret",
@@ -1180,7 +1266,7 @@ describe.skipIf(!credentialTestDatabaseUrl)("admin SIP credentials on isolated P
 
       await database.query("UPDATE subscriber SET ha1='foreign-ha1' WHERE username='3101'");
       await expect(pbxRouter.createCaller(context()).extensions.delete({ id: extensionId }))
-        .rejects.toThrow("do not match");
+        .rejects.toMatchObject({ code: "INTERNAL_SERVER_ERROR", message: "Could not complete PBX change", cause: undefined });
       expect((await database.query("SELECT status FROM extensions WHERE id=$1", [extensionId])).rows[0].status)
         .toBe("active");
       await database.query("UPDATE subscriber SET ha1='transfer-ha1' WHERE username='3101'");
