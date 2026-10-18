@@ -4,9 +4,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // replace only transports and unrelated integrations. No database is contacted.
 const f = vi.hoisted(() => ({
   events: [] as string[], audits: [] as unknown[][], pending: 0, committed: 0,
-  releases: 0, role: "admin", ownership: true, missing: false, available: true, fraudRows: 1,
+  releases: 0, role: "admin", ownership: true, missing: false, available: true, fraudRows: 1, fraudTenant: 7,
   failAudit: false, auditCode: "42501", failCommit: false, failRollback: false,
   failRelease: false, failDml: false, pooled: vi.fn(), client: vi.fn(),
+  fraudAvailable: true, fraudReadRows: [] as Record<string, unknown>[], failFraudRead: false,
+  fraudTransaction: vi.fn(), fraudBinding: vi.fn(),
 }));
 vi.mock("pg", () => ({ default: { Pool: class {
   on() {}
@@ -18,6 +20,17 @@ vi.mock("pg", () => ({ default: { Pool: class {
     } };
   }
 } } }));
+// Route fraud calls explicitly through the adapter seam while preserving the
+// real db.ts transaction lifecycle and strict audit path with this fake pg client.
+vi.mock("../server/pbx/fraud-policy-db", async () => {
+  const { withTransaction } = await import("../server/pbx/db");
+  return { getFraudPolicyBindingStatus: f.fraudBinding,
+    withFraudPolicyTransaction: f.fraudTransaction.mockImplementation((tenantId, callback) => {
+      expect(tenantId).toBe(7);
+      return withTransaction(callback);
+    }),
+  };
+});
 const cache = vi.hoisted(() => ({ invalidateCache: vi.fn() }));
 vi.mock("../server/pbx/redis", () => ({ ...cache, cacheGetOrSet: vi.fn() }));
 vi.mock("../server/pbx/tenant-middleware", async importOriginal => ({
@@ -72,8 +85,11 @@ const cases = [
 beforeEach(() => {
   vi.stubEnv("PG_CONNECTION_STRING", "postgres://offline:synthetic@invalid.invalid/offline");
   Object.assign(f, { events: [], audits: [], pending: 0, committed: 0, releases: 0,
-    role: "admin", ownership: true, missing: false, available: true, fraudRows: 1, failAudit: false,
+    role: "admin", ownership: true, missing: false, available: true, fraudRows: 1, fraudTenant: 7, failAudit: false,
+    fraudAvailable: true, fraudReadRows: [], failFraudRead: false,
     auditCode: "42501", failCommit: false, failRollback: false, failRelease: false, failDml: false });
+  f.fraudBinding.mockReset().mockImplementation(() => ({ available: f.fraudAvailable }));
+  f.fraudTransaction.mockClear();
   f.pooled.mockReset().mockImplementation(() => { throw new Error("POOLED_QUERY_FORBIDDEN"); });
   cache.invalidateCache.mockReset().mockImplementation(async () => { f.events.push("CACHE"); });
   f.client.mockReset().mockImplementation(async (sql: string, parameters: unknown[] = []) => {
@@ -92,6 +108,15 @@ beforeEach(() => {
       f.events.push("AUDIT"); f.audits.push(parameters);
       if (f.failAudit) throw Object.assign(new Error("PRIVATE_AUDIT"), { code: f.auditCode, detail: "PRIVATE_ROW" });
       return { rows: [] };
+    }
+    if (text === "SELECT phone11_lock_fixed_fraud_admin($1) AS role") {
+      expect(parameters).toEqual([9]);
+      return { rows: f.role === "admin" ? [{ role: "admin" }] : [] };
+    }
+    if (text.startsWith("SELECT tenant_id,") && text.includes("FROM fraud_controls")) {
+      expect(parameters).toEqual([7]);
+      if (f.failFraudRead) throw new Error("PRIVATE_FRAUD_STORAGE");
+      return { rows: f.fraudReadRows };
     }
     if (text.includes("tm.role::text AS role")) {
       expect(parameters).toEqual([9, 7]);
@@ -121,11 +146,11 @@ beforeEach(() => {
       if (f.failDml) throw Object.assign(new Error("PRIVATE_DML"), { detail: "PRIVATE_ROW" });
       // Missing tenant-owned target must not be fabricated by RETURNING.
       if (f.missing && text.startsWith("UPDATE extensions SET deleted_at")) return { rows: [] };
-      if (text.startsWith("UPDATE fraud_controls")) {
-        expect(text).toMatch(/WHERE tenant_id = \$\d+ RETURNING tenant_id$/);
+      if (text.startsWith("INSERT INTO fraud_controls")) {
+        expect(text).toMatch(/ON CONFLICT \(tenant_id\) DO UPDATE SET .+, updated_at = NOW\(\) RETURNING tenant_id$/);
         expect(parameters.at(-1)).toBe(7);
         f.pending += f.fraudRows;
-        return { rows: Array.from({ length: f.fraudRows }, () => ({ tenant_id: 7 })) };
+        return { rows: Array.from({ length: f.fraudRows }, () => ({ tenant_id: f.fraudTenant })) };
       }
       f.pending++;
       if (text.startsWith("INSERT INTO tenant_settings")) return { rows: [{ business_hours_timezone: "Asia/Bangkok" }] };
@@ -142,6 +167,100 @@ function expectPrivateError(error: any, message: string) {
   expect(error).toMatchObject({ code: "INTERNAL_SERVER_ERROR", message });
   expect(error.cause).toBeUndefined(); expect(JSON.stringify(error)).not.toContain("PRIVATE_");
 }
+
+describe("fraud storage API contract", () => {
+  it("first flag configuration supplies only the requested field and tenant, relying on false storage defaults", async () => {
+    await caller().fraudControls.update({ internationalEnabled: false });
+    const [sql, values] = f.client.mock.calls.find(([sql]) => sql.includes("INSERT INTO fraud_controls"))!;
+    expect(sql.replace(/\s+/g, " ")).toContain("(international_enabled, tenant_id) VALUES ($1, $2) ON CONFLICT (tenant_id) DO UPDATE SET international_enabled = EXCLUDED.international_enabled, updated_at = NOW()");
+    expect(values).toEqual([false, 7]);
+    expect(sql).not.toMatch(/premium_rate_enabled|daily_cost_ceiling|alert_email/);
+    expect(JSON.parse(f.audits[0]![6] as string)).toEqual({ internationalEnabled: false });
+    expect(f.events).toEqual(["BEGIN", "DML", "AUDIT", "COMMIT", "RELEASE"]);
+    expect(f.fraudTransaction).toHaveBeenCalledWith(7, expect.any(Function));
+    expect(f.pooled).not.toHaveBeenCalled();
+  });
+  it.each([
+    { maxConcurrentOutbound: 1.5 }, { callsPerMinuteLimit: 2.25 }, { dailyCostCeiling: 0.125 },
+    { geoBlockList: ["TH", '\"quoted'] }, { geoAllowList: [] }, { alertEmail: "admin@example.invalid" },
+    { alertOnDailyCeiling: false }, { autoDisableOnCeiling: true }, { unknownFlag: true },
+  ])("rejects unsupported fields without silently discarding them: %j", async unsupported => {
+    // Even an otherwise valid flag cannot hide unsupported input.
+    await expect(caller().fraudControls.update({ internationalEnabled: false, ...unsupported } as any))
+      .rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(f.events).toEqual([]); expect(f.audits).toEqual([]);
+    expect(f.fraudTransaction).not.toHaveBeenCalled(); expect(f.pooled).not.toHaveBeenCalled();
+  });
+  it("rejects a legacy alert-only update before audit or policy configuration", async () => {
+    await expect(caller().fraudControls.update({ alertEmail: "admin@example.invalid" }))
+      .rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect(f.events).toEqual([]); expect(f.audits).toEqual([]); expect(f.fraudTransaction).not.toHaveBeenCalled();
+  });
+  it.each([8, "7", null, undefined])("refuses malformed/foreign returned tenant %s before audit", async tenantId => {
+    f.fraudTenant = tenantId as number;
+    await expect(caller().fraudControls.update({ internationalEnabled: false })).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect(f.events).toEqual(["BEGIN", "DML", "ROLLBACK", "RELEASE"]);
+    expect(f.audits).toEqual([]); expect(f.committed).toBe(0);
+  });
+  it("rolls back first flag configuration on strict audit rejection", async () => {
+    f.failAudit = true;
+    expectPrivateError(await caller().fraudControls.update({ internationalEnabled: false }).catch(error => error), "Could not record PBX change");
+    expect(f.events).toEqual(["BEGIN", "DML", "AUDIT", "ROLLBACK", "RELEASE"]);
+    expect(f.pending).toBe(0); expect(f.committed).toBe(0);
+  });
+  it.each([8, "7", null, undefined])("GET refuses malformed/foreign returned tenant identity %s", async tenantId => {
+    f.fraudReadRows = [{ tenant_id: tenantId, international_enabled: true, premium_rate_enabled: true }];
+    await expect(caller().fraudControls.get({ tenantId: 7 })).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect(f.events).toEqual(["BEGIN", "ROLLBACK", "RELEASE"]); expect(f.audits).toEqual([]);
+    expect(f.pooled).not.toHaveBeenCalled();
+  });
+  it("sanitizes storage failure without configuring a policy or reporting defaults as observed", async () => {
+    f.failFraudRead = true;
+    const error = await caller().fraudControls.get({ tenantId: 7 }).catch(error => error);
+    expect(error).toMatchObject({ code: "PRECONDITION_FAILED", message: "Fraud controls are unavailable" });
+    expect(error.cause).toBeUndefined(); expect(JSON.stringify(error)).not.toContain("PRIVATE_");
+    expect(f.events).toEqual(["BEGIN", "ROLLBACK", "RELEASE"]); expect(f.audits).toEqual([]);
+  });
+  it.each(["read", "write"])("refuses %s without a dedicated binding and never falls back to the shared pool", async operation => {
+    f.fraudAvailable = false;
+    await expect(operation === "read" ? caller().fraudControls.get({ tenantId: 7 })
+      : caller().fraudControls.update({ internationalEnabled: false })).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect(f.events).toEqual([]); expect(f.audits).toEqual([]);
+    expect(f.fraudTransaction).not.toHaveBeenCalled(); expect(f.pooled).not.toHaveBeenCalled();
+  });
+  it("writes explicit flags for a selected tenant and audits on the same transaction", async () => {
+    const input = { tenantId: 7, internationalEnabled: true, premiumRateEnabled: false };
+    await caller().fraudControls.update(input);
+    const [sql, values] = f.client.mock.calls.find(([sql]) => sql.includes("INSERT INTO fraud_controls"))!;
+    expect(values).toEqual([true, false, 7]);
+    expect(sql).toContain("international_enabled = EXCLUDED.international_enabled");
+    expect(sql).toContain("premium_rate_enabled = EXCLUDED.premium_rate_enabled");
+    expect(sql).not.toMatch(/daily_cost_ceiling|max_concurrent_outbound/);
+    expect(f.audits[0]!.slice(0, 5)).toEqual([7, 9, "update", "fraud_controls", "7"]);
+    expect(JSON.parse(f.audits[0]![6] as string)).toEqual(input);
+    expect(f.events).toEqual(["BEGIN", "DML", "AUDIT", "COMMIT", "RELEASE"]);
+  });
+  it.each([0, 1, 2])("GET is read-only and refuses duplicate policy rows (%i)", async count => {
+    const row = { tenant_id: 7, max_concurrent_outbound: 1.5, calls_per_minute_limit: null, daily_cost_ceiling: null,
+      international_enabled: false, premium_rate_enabled: false, geo_block_list: ["TH"], geo_allow_list: [],
+      alert_email: null, alert_on_daily_ceiling: null, auto_disable_on_ceiling: null, updated_at: new Date(0) };
+    f.fraudReadRows = Array.from({ length: count }, () => row);
+    if (count === 2) await expect(caller().fraudControls.get()).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    else expect(await caller().fraudControls.get()).toEqual(count ? row : null);
+    const policyCalls = f.client.mock.calls.filter(([sql]) => sql.includes("FROM fraud_controls"));
+    expect(policyCalls).toHaveLength(1);
+    const [sql, values] = policyCalls[0]!;
+    expect(sql).toMatch(/^SELECT tenant_id,/); expect(sql).not.toMatch(/SELECT \*|INSERT|UPDATE/);
+    expect(values).toEqual([7]); expect(f.audits).toEqual([]); expect(f.pooled).not.toHaveBeenCalled();
+    expect(f.events).toEqual(["BEGIN", count === 2 ? "ROLLBACK" : "COMMIT", "RELEASE"]);
+  });
+  it("GET refuses authority revoked after the shared membership check before reading policy rows", async () => {
+    f.role = "user";
+    await expect(caller().fraudControls.get({ tenantId: 7 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(f.client.mock.calls.some(([sql]) => sql.includes("FROM fraud_controls"))).toBe(false);
+    expect(f.events).toEqual(["BEGIN", "ROLLBACK", "RELEASE"]); expect(f.audits).toEqual([]);
+  });
+});
 
 describe("all nine core PBX audits on the real withTransaction and insertAuditLog path", () => {
   it.each([0, 2])("refuses a fraud update affecting %i rows before audit and rolls back", async rows => {
@@ -192,16 +311,21 @@ describe("all nine core PBX audits on the real withTransaction and insertAuditLo
     expectPrivateError(await caller().extensions.update({ id: 41, displayName: "Synthetic" }).catch(error => error), "Could not record PBX change");
     expect(f.events).toContain("ROLLBACK"); expect(f.events).not.toContain("COMMIT"); expect(f.releases).toBe(1);
   });
-  it.each(["rollback", "release", "rollback-and-release"])("keeps audit failure private when %s also fails", async phase => {
+  it.each(["rollback", "release", "rollback-and-release"].flatMap(phase =>
+    ["extension", "fraud"].map(kind => [phase, kind] as const)))("keeps audit failure private when %s also fails for %s", async (phase, kind) => {
     f.failAudit = true; f.failRollback = phase.includes("rollback"); f.failRelease = phase.includes("release");
-    expectPrivateError(await caller().extensions.update({ id: 41, displayName: "Synthetic" }).catch(error => error), "Could not record PBX change");
+    const invoke = kind === "fraud" ? () => caller().fraudControls.update({ internationalEnabled: false })
+      : () => caller().extensions.update({ id: 41, displayName: "Synthetic" });
+    expectPrivateError(await invoke().catch(error => error), "Could not record PBX change");
     expect(f.events).toContain("ROLLBACK"); expect(f.events).not.toContain("COMMIT");
     expect(f.releases).toBe(1); expect(cache.invalidateCache).not.toHaveBeenCalled();
   });
-  it.each(["commit", "commit-and-rollback", "commit-and-release", "release-after-commit"])("sanitizes %s after audit without promising rollback", async phase => {
+  it.each(["commit", "commit-and-rollback", "commit-and-release", "release-after-commit"].flatMap(phase =>
+    ["extension", "fraud"].map(kind => [phase, kind] as const)))("sanitizes %s after %s audit without promising rollback", async (phase, kind) => {
     f.failCommit = phase.startsWith("commit"); f.failRollback = phase === "commit-and-rollback";
     f.failRelease = phase === "commit-and-release" || phase === "release-after-commit";
-    const error = await caller().extensions.update({ id: 41, displayName: "Synthetic" }).catch(error => error);
+    const error = await (kind === "fraud" ? caller().fraudControls.update({ internationalEnabled: false })
+      : caller().extensions.update({ id: 41, displayName: "Synthetic" })).catch(error => error);
     expectPrivateError(error, "Could not complete PBX change");
     expect(error.message).not.toMatch(/roll.?back|not committed|nothing committed/i);
     expect(f.audits).toHaveLength(1); expect(f.events).toContain("COMMIT"); expect(f.releases).toBe(1);
@@ -219,7 +343,7 @@ describe("all nine core PBX audits on the real withTransaction and insertAuditLo
   it.each(["settings", "extension", "fraud"])("does not fabricate a %s audit for an id-only/no-op input", async kind => {
     if (kind === "settings") await caller().tenant.updateSettings({ tenantId: 7 });
     else if (kind === "extension") await caller().extensions.update({ id: 41 });
-    else await caller().fraudControls.update({});
+    else await expect(caller().fraudControls.update({})).rejects.toMatchObject({ code: "BAD_REQUEST" });
     expect(f.events).toEqual([]); expect(f.audits).toHaveLength(0); expect(cache.invalidateCache).not.toHaveBeenCalled();
   });
   it.each(["extension update", "extension reset", "membership"])("rejects missing tenant-owned %s before DML/audit", async kind => {

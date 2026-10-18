@@ -9,6 +9,7 @@ import { TRPCError } from "@trpc/server";
 import type { PoolClient } from "pg";
 import { router, protectedProcedure } from "../_core/trpc";
 import { query, withTransaction } from "./db";
+import { getFraudPolicyBindingStatus, withFraudPolicyTransaction } from "./fraud-policy-db";
 import { insertAuditLog, queryAuditLogs, type AuditEntry } from "./audit";
 import { createSipCredentials, regenerateSipCredentials } from "./sip-secrets";
 import { normalizeToE164 } from "./e164";
@@ -130,9 +131,10 @@ async function withPbxMutation<T>(
   tenantId: number,
   actorUserId: number,
   operation: (client: PoolClient, audit: (entry: AuditEntry) => Promise<void>) => Promise<T>,
+  transaction: typeof withTransaction = withTransaction,
 ): Promise<T> {
   let auditFailed = false;
-  return withTransaction(async client => operation(client, async entry => {
+  return transaction(async client => operation(client, async entry => {
     try {
       await insertAuditLog((sql, parameters) => client.query(sql, parameters), {
         ...entry, tenantId, actorUserId,
@@ -148,6 +150,15 @@ async function withPbxMutation<T>(
       ["FORBIDDEN", "NOT_FOUND", "PRECONDITION_FAILED", "BAD_REQUEST", "CONFLICT"].includes(error.code)) throw error;
     throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Could not complete PBX change" });
   });
+}
+
+/** Called only on the dedicated lease, whose adapter pins the exact helper
+ * schema, identity and definition before dispatching any operation. */
+async function lockFixedFraudPolicyAdmin(client: PoolClient, actorUserId: number): Promise<void> {
+  const actor = await client.query("SELECT phone11_lock_fixed_fraud_admin($1) AS role", [actorUserId]);
+  if (actor.rows.length !== 1 || !["owner", "admin"].includes(actor.rows[0]?.role)) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "Workspace administrator access changed before accessing fraud controls" });
+  }
 }
 
 /** Hold the actor's admin role through a PBX write's transaction commit. */
@@ -468,6 +479,10 @@ export const pbxRouter = router({
         // and assignRoute enforce fresh owner/admin authority and tenant scope.
         // Distinct from tenant.get/members; old APIs must omit this capability.
         explicitDidRouteDirectories: true as const,
+        // Advertise only for the selected tenant with its dedicated restricted
+        // LOGIN binding. Generic tenant reads never confer fraud authority.
+        explicitFraudControls: input?.tenantId !== undefined &&
+          getFraudPolicyBindingStatus(input.tenantId).available,
       };
     }),
 
@@ -1857,18 +1872,36 @@ export const pbxRouter = router({
   // FRAUD CONTROLS
   // ========================================================================
   fraudControls: router({
-    get: protectedProcedure.query(async ({ ctx }) => {
-      const tc = await getTenantAdminLegacyReadCtx(ctx);
-      const result = await query(
-        `SELECT * FROM fraud_controls WHERE tenant_id = $1`,
-        [tc.tenantId],
-      );
-      return result.rows[0] || null;
+    get: protectedProcedure.input(selectedTenantSchema.optional()).query(async ({ ctx, input }) => {
+      const tc = await getTenantAdminReadCtx(ctx, input?.tenantId);
+      if (!getFraudPolicyBindingStatus(tc.tenantId).available) {
+        throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Fraud controls are unavailable" });
+      }
+      try {
+        return await withFraudPolicyTransaction(tc.tenantId, async client => {
+          await lockFixedFraudPolicyAdmin(client, ctx.user!.id);
+          const result = await client.query(
+            `SELECT tenant_id, max_concurrent_outbound, calls_per_minute_limit, daily_cost_ceiling,
+                    international_enabled, premium_rate_enabled, geo_block_list, geo_allow_list,
+                    alert_email, alert_on_daily_ceiling, auto_disable_on_ceiling, updated_at
+               FROM fraud_controls WHERE tenant_id = $1`,
+            [tc.tenantId],
+          );
+          if (result.rows.length > 1 || (result.rows.length === 1 && result.rows[0]?.tenant_id !== tc.tenantId)) {
+            throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Fraud controls are unavailable" });
+          }
+          return result.rows[0] || null;
+        });
+      } catch (error) {
+        if (error instanceof TRPCError && error.cause === undefined && error.code === "FORBIDDEN") throw error;
+        throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Fraud controls are unavailable" });
+      }
     }),
 
     update: protectedProcedure
       .input(
         z.object({
+          tenantId: z.number().int().positive().optional(),
           maxConcurrentOutbound: z.number().min(1).max(100).optional(),
           callsPerMinuteLimit: z.number().min(1).max(100).optional(),
           dailyCostCeiling: z.number().min(0).optional(),
@@ -1879,55 +1912,49 @@ export const pbxRouter = router({
           alertEmail: z.string().email().optional(),
           alertOnDailyCeiling: z.boolean().optional(),
           autoDisableOnCeiling: z.boolean().optional(),
-        }),
+        }).strict(),
       )
       .mutation(async ({ ctx, input }) => {
-        const tc = await getTenantAdminMutationCtx(ctx);
+        const tc = await getTenantAdminMutationCtx(ctx, input.tenantId);
         if (!hasRole(tc.role, "admin"))
           throw new TRPCError({ code: "FORBIDDEN" });
 
-        const sets: string[] = [];
-        const vals: any[] = [];
-        let idx = 1;
-
-        const fieldMap: Record<string, string> = {
-          maxConcurrentOutbound: "max_concurrent_outbound",
-          callsPerMinuteLimit: "calls_per_minute_limit",
-          dailyCostCeiling: "daily_cost_ceiling",
-          internationalEnabled: "international_enabled",
-          premiumRateEnabled: "premium_rate_enabled",
-          alertEmail: "alert_email",
-          alertOnDailyCeiling: "alert_on_daily_ceiling",
-          autoDisableOnCeiling: "auto_disable_on_ceiling",
-        };
-
-        for (const [key, col] of Object.entries(fieldMap)) {
-          if ((input as any)[key] !== undefined) {
-            sets.push(`${col} = $${idx++}`);
-            vals.push((input as any)[key]);
-          }
+        // The fixed LOGIN has column grants only for these call flags. Keep
+        // legacy fields parseable, but reject every supplied unsupported field.
+        const unsupported = ["maxConcurrentOutbound", "callsPerMinuteLimit", "dailyCostCeiling",
+          "geoBlockList", "geoAllowList", "alertEmail", "alertOnDailyCeiling", "autoDisableOnCeiling"] as const;
+        if (unsupported.some(field => Object.prototype.hasOwnProperty.call(input, field))) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Only international and premium-rate call flags can be changed" });
         }
-        if (input.geoBlockList !== undefined) {
-          sets.push(`geo_block_list = $${idx++}`);
-          vals.push(JSON.stringify(input.geoBlockList));
+        const columns: string[] = [];
+        const vals: (boolean | number)[] = [];
+        for (const [field, column] of [["internationalEnabled", "international_enabled"],
+          ["premiumRateEnabled", "premium_rate_enabled"]] as const) {
+          if (input[field] !== undefined) { columns.push(column); vals.push(input[field]); }
         }
-        if (input.geoAllowList !== undefined) {
-          sets.push(`geo_allow_list = $${idx++}`);
-          vals.push(JSON.stringify(input.geoAllowList));
+        if (columns.length === 0) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Supply a call flag to change" });
+        }
+        if (!getFraudPolicyBindingStatus(tc.tenantId).available) {
+          throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Fraud controls are unavailable" });
         }
 
-        if (sets.length === 0) return { success: true };
-
-        sets.push(`updated_at = NOW()`);
+        // Only supplied fields participate in the conflict update. A first row
+        // receives the storage contract's false call flags and unset limits.
+        const updates = columns.map((column) => `${column} = EXCLUDED.${column}`);
+        columns.push("tenant_id");
         vals.push(tc.tenantId);
 
         await withPbxMutation(tc.tenantId, ctx.user!.id, async (client, audit) => {
-          await lockLivePbxAdmin(client, ctx.user!.id, tc.tenantId, "fraud controls");
+          await lockFixedFraudPolicyAdmin(client, ctx.user!.id);
           const updated = await client.query(
-            `UPDATE fraud_controls SET ${sets.join(", ")} WHERE tenant_id = $${idx} RETURNING tenant_id`,
+            `INSERT INTO fraud_controls (${columns.join(", ")})
+             VALUES (${vals.map((_, index) => `$${index + 1}`).join(", ")})
+             ON CONFLICT (tenant_id) DO UPDATE SET ${updates.join(", ")}, updated_at = NOW()
+             RETURNING tenant_id`,
             vals,
           );
-          if (updated.rows.length !== 1) {
+          if (updated.rows.length !== 1 || updated.rows[0]?.tenant_id !== tc.tenantId) {
             throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Fraud controls are unavailable" });
           }
           await audit({
@@ -1939,7 +1966,7 @@ export const pbxRouter = router({
             newValue: input,
             ipAddress: ctx.req.ip,
           });
-        });
+        }, operation => withFraudPolicyTransaction(tc.tenantId, operation));
 
         return { success: true };
       }),

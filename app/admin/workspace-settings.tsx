@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { AdminWorkspaceBoundary } from "@/components/admin/admin-workspace-boundary";
+import { OutboundCallPolicy } from "@/components/admin/outbound-call-policy";
 import {
   ActivityIndicator,
   Pressable,
@@ -45,7 +46,6 @@ function WorkspaceSettingsState({
 }) {
   const colors = useColors();
   return (
-    <ScreenContainer>
       <View style={styles.state}>
         {checking ? <ActivityIndicator color={colors.primary} /> : null}
         <Text
@@ -73,7 +73,6 @@ function WorkspaceSettingsState({
           </Pressable>
         ) : null}
       </View>
-    </ScreenContainer>
   );
 }
 
@@ -86,6 +85,33 @@ export default function WorkspaceSettingsScreen() {
 }
 
 function WorkspaceSettingsScreenContent() {
+  const colors = useColors();
+  const workspace = usePbxAdminWorkspace();
+  const goBack = () => {
+    if (router.canGoBack()) router.back();
+    else router.replace("/admin");
+  };
+  return (
+    <ScreenContainer>
+      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+        <View style={[styles.header, { borderBottomColor: colors.border }]}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Back to workspace administration"
+            onPress={goBack} style={styles.backButton}>
+            <IconSymbol name="chevron.left" size={22} color={colors.primary} />
+          </Pressable>
+          <View style={{ flex: 1 }}>
+            <Text accessibilityRole="header" style={[styles.title, { color: colors.foreground }]}>Workspace settings</Text>
+            <Text style={[styles.subtitle, { color: colors.muted }]}>{workspace.tenantQuery?.data?.name || "Active workspace"}</Text>
+          </View>
+        </View>
+        <OutboundCallPolicy />
+        <WorkspaceTimezoneSettings />
+      </ScrollView>
+    </ScreenContainer>
+  );
+}
+
+function WorkspaceTimezoneSettings() {
   const colors = useColors();
   const { user } = useAuth({ autoFetch: false });
   const workspace = usePbxAdminWorkspace();
@@ -231,33 +257,6 @@ function WorkspaceSettingsScreenContent() {
     updateSettings.isPending || (!isEdited && draft === (savedTimezone || ""));
 
   return (
-    <ScreenContainer>
-      <ScrollView
-        contentContainerStyle={styles.content}
-        showsVerticalScrollIndicator={false}
-      >
-        <View style={[styles.header, { borderBottomColor: colors.border }]}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Back to workspace administration"
-            onPress={goBack}
-            style={styles.backButton}
-          >
-            <IconSymbol name="chevron.left" size={22} color={colors.primary} />
-          </Pressable>
-          <View style={{ flex: 1 }}>
-            <Text
-              accessibilityRole="header"
-              style={[styles.title, { color: colors.foreground }]}
-            >
-              Workspace settings
-            </Text>
-            <Text style={[styles.subtitle, { color: colors.muted }]}>
-              {tenant.name || "Active workspace"}
-            </Text>
-          </View>
-        </View>
-
         <View
           style={[
             styles.card,
@@ -363,8 +362,6 @@ function WorkspaceSettingsScreenContent() {
             </Text>
           </Pressable>
         </View>
-      </ScrollView>
-    </ScreenContainer>
   );
 }
 
