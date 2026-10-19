@@ -99,8 +99,7 @@ function ProfileStatusAdminScreenContent() {
   const [savedMessage, setSavedMessage] = useState<string | null>(null);
 
   const goBack = () => {
-    if (router.canGoBack()) router.back();
-    else router.replace("/admin");
+    router.replace("/admin");
   };
 
   if (!user) {
