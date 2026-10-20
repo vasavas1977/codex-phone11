@@ -125,9 +125,12 @@ jobs:
           assert len(installed) == 1, 'Required installed-consumer case must execute exactly once'
           print(f'Installed braces consumer regressions: {count} passed, zero skips')
           PYBRACES
+      - name: Test installed Android recording route and resume state
+        run: node --test tests/phone11-android-playback-route-state.test.mjs
       - name: Test shared Android and iOS meeting and admin parity
         run: |
           pnpm exec vitest run \
+            tests/phone11-selected-sip-provisioning.test.ts \
             tests/phone11-meeting-gallery-pages.test.tsx \
             tests/phone11-meeting-video-layout.test.ts \
             tests/phone11-native-video-stage.test.tsx \
