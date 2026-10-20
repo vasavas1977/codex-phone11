@@ -11,6 +11,9 @@ patchedDependencies:
   braces@3.0.3:
     hash: z5dn2cikq3bclbpyfwz5ssf4ay
     path: patches/braces@3.0.3.patch
+  expo-audio@1.1.0:
+    hash: y3g3ve2xiglslocon5jjig5dje
+    path: patches/expo-audio@1.1.0.patch
   livekit-client@2.22.3:
     hash: 3xvkeotbxeycdqx5fushnmvuie
     path: patches/livekit-client@2.22.3.patch
@@ -93,7 +96,7 @@ importers:
         version: 12.0.11(expo@54.0.29)(react-native@0.81.5(@babel/core@7.28.5(supports-color@8.1.1))(@types/react@19.1.17)(react@19.1.0)(supports-color@8.1.1))(react@19.1.0)(supports-color@8.1.1)
       expo-audio:
         specifier: ~1.1.0
-        version: 1.1.0(expo-asset@12.0.11(expo@54.0.29)(react-native@0.81.5(@babel/core@7.28.5(supports-color@8.1.1))(@types/react@19.1.17)(react@19.1.0)(supports-color@8.1.1))(react@19.1.0)(supports-color@8.1.1))(expo@54.0.29)(react-native@0.81.5(@babel/core@7.28.5(supports-color@8.1.1))(@types/react@19.1.17)(react@19.1.0)(supports-color@8.1.1))(react@19.1.0)
+        version: 1.1.0(patch_hash=y3g3ve2xiglslocon5jjig5dje)(expo-asset@12.0.11(expo@54.0.29)(react-native@0.81.5(@babel/core@7.28.5(supports-color@8.1.1))(@types/react@19.1.17)(react@19.1.0)(supports-color@8.1.1))(react@19.1.0)(supports-color@8.1.1))(expo@54.0.29)(react-native@0.81.5(@babel/core@7.28.5(supports-color@8.1.1))(@types/react@19.1.17)(react@19.1.0)(supports-color@8.1.1))(react@19.1.0)
       expo-build-properties:
         specifier: ^1.0.10
         version: 1.0.10(expo@54.0.29)
@@ -10811,7 +10814,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  expo-audio@1.1.0(expo-asset@12.0.11(expo@54.0.29)(react-native@0.81.5(@babel/core@7.28.5(supports-color@8.1.1))(@types/react@19.1.17)(react@19.1.0)(supports-color@8.1.1))(react@19.1.0)(supports-color@8.1.1))(expo@54.0.29)(react-native@0.81.5(@babel/core@7.28.5(supports-color@8.1.1))(@types/react@19.1.17)(react@19.1.0)(supports-color@8.1.1))(react@19.1.0):
+  expo-audio@1.1.0(patch_hash=y3g3ve2xiglslocon5jjig5dje)(expo-asset@12.0.11(expo@54.0.29)(react-native@0.81.5(@babel/core@7.28.5(supports-color@8.1.1))(@types/react@19.1.17)(react@19.1.0)(supports-color@8.1.1))(react@19.1.0)(supports-color@8.1.1))(expo@54.0.29)(react-native@0.81.5(@babel/core@7.28.5(supports-color@8.1.1))(@types/react@19.1.17)(react@19.1.0)(supports-color@8.1.1))(react@19.1.0):
     dependencies:
       expo: 54.0.29(@babel/core@7.28.5(supports-color@8.1.1))(@expo/metro-runtime@6.1.2)(expo-router@6.0.19)(react-native@0.81.5(@babel/core@7.28.5(supports-color@8.1.1))(@types/react@19.1.17)(react@19.1.0)(supports-color@8.1.1))(react@19.1.0)(supports-color@8.1.1)
       expo-asset: 12.0.11(expo@54.0.29)(react-native@0.81.5(@babel/core@7.28.5(supports-color@8.1.1))(@types/react@19.1.17)(react@19.1.0)(supports-color@8.1.1))(react@19.1.0)(supports-color@8.1.1)

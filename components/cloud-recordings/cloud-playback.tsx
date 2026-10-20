@@ -31,7 +31,10 @@ const earpieceOutput: PlaybackAudioRouteStatus = {
 export const playbackOutputForPreference = (
   output: PlaybackAudioRouteStatus,
   routeApplied: boolean,
-) => (routeApplied || output.route === "external" ? output : earpieceOutput);
+) =>
+  Platform.OS === "android" || routeApplied || output.route === "external"
+    ? output
+    : earpieceOutput;
 
 export function revokePlaybackAuthorization(
   authorization: { current: boolean },
@@ -123,6 +126,7 @@ export function Playback({
         const nextOutput = await setPlaybackAudioRoute(
           nextRoute,
           () => !callBusy(),
+          player,
         );
         if (
           focusGeneration.current !== generation ||
@@ -136,7 +140,9 @@ export function Playback({
             (!routeChangeInFlight.current ||
               routeChangeInFlight.current === operation)
           ) {
-            await resetPlaybackAudioRoute(() => !callBusy()).catch(() => {});
+            await resetPlaybackAudioRoute(() => !callBusy(), player).catch(
+              () => {},
+            );
           }
           return false;
         }
@@ -178,7 +184,11 @@ export function Playback({
       routePreference.current = "earpiece";
       setError(false);
       setRoute("earpiece");
-      setOutput(earpieceOutput);
+      setOutput(
+        Platform.OS === "android"
+          ? { route: "unknown", label: "Audio output" }
+          : earpieceOutput,
+      );
       setRouteError(undefined);
       const unsubscribeRoute = subscribeToPlaybackAudioRoute((nextOutput) => {
         if (
@@ -190,12 +200,16 @@ export function Playback({
             routePreference.current = "system";
             setRoute("system");
           }
+          if (nextOutput.unavailable) {
+            safePause(player);
+            setRouteError("Private listening is unavailable on this device.");
+          }
           setOutput(
             playbackOutputForPreference(nextOutput, routeApplied.current),
           );
         }
-      });
-      void readPlaybackAudioRoute()
+      }, player);
+      void readPlaybackAudioRoute(player)
         .then((nextOutput) => {
           if (
             focusGeneration.current === generation &&
@@ -241,7 +255,9 @@ export function Playback({
             if (routeApplied.current) {
               routeApplied.current = false;
               if (!callBusy())
-                void resetPlaybackAudioRoute(() => !callBusy()).catch(() => {});
+                void resetPlaybackAudioRoute(() => !callBusy(), player).catch(
+                  () => {},
+                );
             }
           };
           const auth = Auth.addAuthChangeListener(invalidate);
@@ -272,7 +288,9 @@ export function Playback({
         session.dispose();
         if (routeApplied.current) {
           routeApplied.current = false;
-          void resetPlaybackAudioRoute(() => !callBusy()).catch(() => {});
+          void resetPlaybackAudioRoute(() => !callBusy(), player).catch(
+            () => {},
+          );
         }
       };
     }, [applyRoute, callUuid, failPlayback, path, player, sourceURL]),
@@ -362,27 +380,31 @@ export function Playback({
         const effectiveOutput = normalizePlaybackAudioRoute(selectedOutput);
         if (effectiveOutput.route !== "unknown") setOutput(effectiveOutput);
       }}
-      onShare={allowShare ? async () => {
-        if (sharing || callBusy()) return;
-        controller.current?.pause();
-        setSharing(true);
-        setShareError(undefined);
-        try {
-          await shareAuthenticatedRecording({
-            callUuid,
-            path,
-            platform: Platform.OS,
-          });
-        } catch (error) {
-          setShareError(
-            error instanceof Error
-              ? error.message
-              : "Recording could not be shared.",
-          );
-        } finally {
-          setSharing(false);
-        }
-      } : undefined}
+      onShare={
+        allowShare
+          ? async () => {
+              if (sharing || callBusy()) return;
+              controller.current?.pause();
+              setSharing(true);
+              setShareError(undefined);
+              try {
+                await shareAuthenticatedRecording({
+                  callUuid,
+                  path,
+                  platform: Platform.OS,
+                });
+              } catch (error) {
+                setShareError(
+                  error instanceof Error
+                    ? error.message
+                    : "Recording could not be shared.",
+                );
+              } finally {
+                setSharing(false);
+              }
+            }
+          : undefined
+      }
     />
   );
 }

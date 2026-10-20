@@ -5,8 +5,9 @@
  * them to active workspace people through the authoritative PBX update path.
  */
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { AdminWorkspaceBoundary } from "@/components/admin/admin-workspace-boundary";
+import { useAdminActionScope } from "@/components/admin/use-admin-action-scope";
 import {
   ActivityIndicator,
   Alert,
@@ -29,6 +30,7 @@ import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColors } from "@/hooks/use-colors";
 import { useAuth } from "@/hooks/use-auth";
 import { useDirectory } from "@/hooks/use-directory";
+import { lastRegistrationLabel } from "@/lib/pbx/registration-history";
 import {
   useCreateExtension,
   useExtensions,
@@ -89,10 +91,11 @@ function AdminExtensionsContent() {
     100,
     tenantQuery.isSuccess && canManage,
   );
-  const createExtension = useCreateExtension();
-  const updateExtension = useUpdateExtension();
+  const createExtension = useCreateExtension(false);
+  const updateExtension = useUpdateExtension(false);
   const peopleQuery = useTenantPeople(tenantQuery.isSuccess && canManage);
   const directory = useDirectory(tenantId, tenantQuery.isSuccess && canManage);
+  const actions = useAdminActionScope(tenantId ?? 0, tenantQuery.isSuccess && canManage);
 
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<ExtensionFilter>("all");
@@ -103,6 +106,10 @@ function AdminExtensionsContent() {
   const [selectedPersonId, setSelectedPersonId] = useState<number | null>(null);
   const [assignmentError, setAssignmentError] = useState<string | null>(null);
   const [pageWidth, setPageWidth] = useState(0);
+  const createLifetime = useRef(0);
+  const assignmentLifetime = useRef(0);
+  const createRevision = createLifetime.current;
+  const assignmentRevision = assignmentLifetime.current;
   const desktop = pageWidth >= 820;
 
   const rows = useMemo(
@@ -137,6 +144,10 @@ function AdminExtensionsContent() {
     () => (peopleQuery.data || []) as TenantPerson[],
     [peopleQuery.data],
   );
+  const inventoryReady = extensionsQuery.isSuccess && !extensionsQuery.isFetching && !extensionsQuery.isError;
+  const peopleReady = peopleQuery.isSuccess && !peopleQuery.isFetching && !peopleQuery.isError;
+  const liveEditor = useRef({ rows, people, inventoryReady, peopleReady, editingAssignment, selectedPersonId, extension, displayName, showCreate });
+  liveEditor.current = { rows, people, inventoryReady, peopleReady, editingAssignment, selectedPersonId, extension, displayName, showCreate };
   const directoryPhotos = useMemo(() => {
     if (
       !user?.id ||
@@ -155,12 +166,18 @@ function AdminExtensionsContent() {
   }, [directory.owner, directory.people, directory.requestedTenant, directory.workspace?.id, tenantId, user?.id]);
 
   const resetCreate = () => {
+    createLifetime.current++;
     setExtension("");
     setDisplayName("");
     setShowCreate(false);
   };
 
   const handleCreate = async () => {
+    if (
+      !actions.current() || !liveEditor.current.showCreate ||
+      createLifetime.current !== createRevision ||
+      liveEditor.current.extension !== extension || liveEditor.current.displayName !== displayName
+    ) return;
     if (!tenantId) {
       Alert.alert("Choose a workspace", "Select a workspace before creating an extension.");
       return;
@@ -174,6 +191,8 @@ function AdminExtensionsContent() {
       return;
     }
 
+    const action = actions.reserve();
+    if (!action) return;
     try {
       await createExtension.mutateAsync({
         tenantId,
@@ -182,34 +201,70 @@ function AdminExtensionsContent() {
         type: "user",
         transport: "UDP",
       });
-      resetCreate();
-      Alert.alert(
-        "Extension created",
-        `Extension ${number} is ready to assign to an active workspace person.`,
-      );
+      if (action.current() && createLifetime.current === createRevision) {
+        resetCreate();
+        void actions.utils.pbx.extensions.list.invalidate({
+          page, pageSize: 100, sortBy: "extension_number", sortOrder: "asc", tenantId,
+        }, { exact: true }).catch(() => undefined);
+        if (action.current() && actions.canRefreshImplicitStats())
+          void actions.utils.pbx.dashboard.stats.invalidate(undefined, { exact: true }).catch(() => undefined);
+        if (!action.current()) return;
+        Alert.alert(
+          "Extension created",
+          `Extension ${number} is ready to assign to an active workspace person.`,
+        );
+      }
     } catch (error) {
-      Alert.alert("Extension not created", errorMessage(error));
+      if (action.current() && createLifetime.current === createRevision)
+        Alert.alert("Extension not created", errorMessage(error));
+    } finally {
+      action.finish();
     }
   };
 
   const closeAssignmentEditor = () => {
+    assignmentLifetime.current++;
     setEditingAssignment(null);
     setSelectedPersonId(null);
     setAssignmentError(null);
   };
 
   const openAssignmentEditor = (row: ExtensionRow) => {
+    if (!actions.current() || actions.busy() || !liveEditor.current.inventoryReady ||
+      !liveEditor.current.rows.some((item) => item === row)) return;
+    assignmentLifetime.current++;
     setEditingAssignment(row);
     setSelectedPersonId(row.user_id ?? null);
     setAssignmentError(null);
   };
 
   const saveAssignment = async () => {
-    if (!editingAssignment) return;
+    if (!actions.current() || !editingAssignment ||
+      assignmentLifetime.current !== assignmentRevision ||
+      liveEditor.current.editingAssignment !== editingAssignment ||
+      liveEditor.current.selectedPersonId !== selectedPersonId) return;
+    // Read the cache at action time: a query update can precede React's rerender.
+    const currentRows = actions.utils.pbx.extensions.list.getData({
+      page, pageSize: 100, sortBy: "extension_number", sortOrder: "asc", tenantId: tenantId ?? 0,
+    })?.data;
+    const currentRow = currentRows?.find((row) => row.id === editingAssignment.id);
+    if (!liveEditor.current.inventoryReady || !currentRow ||
+      JSON.stringify(currentRow) !== JSON.stringify(editingAssignment)) {
+      setAssignmentError("This extension changed or is refreshing. Close the editor and reopen it from the current list.");
+      return;
+    }
+    const currentPeople = actions.utils.pbx.tenant.people.getData({ tenantId: tenantId ?? 0 });
+    if (!liveEditor.current.peopleReady || !currentPeople || (selectedPersonId !== null &&
+      !currentPeople.some((person) => person.id === selectedPersonId))) {
+      setAssignmentError("Refresh active workspace people and choose an available person before saving.");
+      return;
+    }
     if (!tenantId) {
       setAssignmentError("Select a workspace before assigning an extension.");
       return;
     }
+    const action = actions.reserve();
+    if (!action) return;
     try {
       await updateExtension.mutateAsync({
         tenantId,
@@ -217,26 +272,32 @@ function AdminExtensionsContent() {
         userId: selectedPersonId,
       });
       // Close before refetching so a slow best-effort refresh cannot reopen it.
-      closeAssignmentEditor();
-      void extensionsQuery.refetch().catch(() => undefined);
-      void peopleQuery.refetch().catch(() => undefined);
+      if (action.current() && assignmentLifetime.current === assignmentRevision) {
+        closeAssignmentEditor();
+        void actions.utils.pbx.extensions.list.invalidate({
+          page, pageSize: 100, sortBy: "extension_number", sortOrder: "asc", tenantId,
+        }, { exact: true }).catch(() => undefined);
+        if (action.current())
+          void actions.utils.pbx.tenant.people.invalidate({ tenantId }, { exact: true }).catch(() => undefined);
+      }
     } catch (error) {
       // Keep the chosen person visible so an administrator can retry or change it.
-      setAssignmentError(errorMessage(error));
+      if (action.current() && assignmentLifetime.current === assignmentRevision)
+        setAssignmentError(errorMessage(error));
+    } finally {
+      action.finish();
     }
   };
 
   const renderExtension = ({ item }: { item: ExtensionRow }) => {
     const assigned = Boolean(item.user_id);
-    const registration =
-      item.sip_status === "active" && item.last_registered_at
-        ? "Registered"
-        : "Not registered";
+    const registration = lastRegistrationLabel(item.last_registered_at);
     const personName = item.user_name || item.display_name || "Unassigned extension";
     const assignmentAction = (
       <TouchableOpacity
         accessibilityRole="button"
         accessibilityLabel={`${assigned ? "Change" : "Assign"} person for extension ${extensionNumber(item)}`}
+        disabled={!inventoryReady || updateExtension.isPending || createExtension.isPending}
         onPress={() => openAssignmentEditor(item)}
         style={[styles.assignmentButton, { borderColor: colors.primary }]}
       >
@@ -265,7 +326,6 @@ function AdminExtensionsContent() {
             </View>
           </View>
           <View style={[styles.registrationColumn, styles.desktopCell]}>
-            <View style={[styles.registrationDot, { backgroundColor: registration === "Registered" ? "#00A876" : colors.border }]} />
             <Text style={[styles.cellText, { color: colors.foreground }]}>{registration}</Text>
           </View>
           <View style={[styles.assignmentColumn, styles.desktopCell]}>
@@ -287,7 +347,7 @@ function AdminExtensionsContent() {
           <Text style={[styles.number, { color: colors.foreground }]}>{extensionNumber(item)}</Text>
           <Text style={[styles.name, { color: colors.muted }]}>{personName}</Text>
           <Text style={[styles.meta, { color: colors.muted }]}>
-            {assigned ? item.user_email || "Assigned to a workspace member" : "No person assigned"} · {registration}
+            {assigned ? item.user_email || "Assigned to a workspace member" : "No person assigned"} · Last registration: {registration}
           </Text>
         </View>
         <View style={[styles.badge, { backgroundColor: assigned ? "#00C89620" : "#FF950020" }]}>
@@ -373,7 +433,7 @@ function AdminExtensionsContent() {
           <View style={[styles.tableHeader, { backgroundColor: colors.background, borderBottomColor: colors.border }]}>
             <Text style={[styles.extensionColumn, styles.tableHeading, { color: colors.muted }]}>Extension</Text>
             <Text style={[styles.personColumn, styles.tableHeading, { color: colors.muted }]}>Person</Text>
-            <Text style={[styles.registrationColumn, styles.tableHeading, { color: colors.muted }]}>Registration</Text>
+            <Text style={[styles.registrationColumn, styles.tableHeading, { color: colors.muted }]}>Last registration</Text>
             <Text style={[styles.assignmentColumn, styles.tableHeading, { color: colors.muted }]}>Assignment</Text>
             <Text style={[styles.actionColumn, styles.tableHeading, { color: colors.muted }]}>Actions</Text>
           </View>
@@ -412,7 +472,12 @@ function AdminExtensionsContent() {
           <TouchableOpacity
             accessibilityRole="button"
             accessibilityLabel="Create extension"
-            onPress={() => setShowCreate(true)}
+            disabled={createExtension.isPending || updateExtension.isPending}
+            onPress={() => {
+              if (!actions.current() || actions.busy()) return;
+              createLifetime.current++;
+              setShowCreate(true);
+            }}
             style={[styles.addButton, { backgroundColor: colors.primary }]}
           >
             <IconSymbol name="plus" size={18} color="#fff" />
@@ -494,7 +559,7 @@ function AdminExtensionsContent() {
               <Text style={[styles.modalTitle, { color: colors.foreground }]}>
                 New extension
               </Text>
-              <TouchableOpacity onPress={resetCreate}>
+              <TouchableOpacity accessibilityRole="button" accessibilityLabel="Close extension creation" onPress={resetCreate}>
                 <IconSymbol
                   name="xmark.circle.fill"
                   size={24}
@@ -506,6 +571,7 @@ function AdminExtensionsContent() {
               Extension number
             </Text>
             <TextInput
+              accessibilityLabel="Extension number"
               style={[
                 styles.input,
                 {
@@ -525,6 +591,7 @@ function AdminExtensionsContent() {
               Display name
             </Text>
             <TextInput
+              accessibilityLabel="Extension display name"
               style={[
                 styles.input,
                 {
@@ -544,6 +611,8 @@ function AdminExtensionsContent() {
               after creating it.
             </Text>
             <TouchableOpacity
+              accessibilityRole="button"
+              accessibilityLabel="Confirm create extension"
               style={[
                 styles.createButton,
                 {
@@ -552,7 +621,7 @@ function AdminExtensionsContent() {
                 },
               ]}
               onPress={handleCreate}
-              disabled={createExtension.isPending}
+              disabled={createExtension.isPending || updateExtension.isPending}
             >
               {createExtension.isPending ? (
                 <ActivityIndicator color="#fff" />
@@ -622,7 +691,7 @@ function AdminExtensionsContent() {
                     <TouchableOpacity
                       key={person.id}
                       accessibilityRole="radio"
-                      accessibilityState={{ selected }}
+                      aria-checked={selected}
                       accessibilityLabel={`Assign ${person.name || person.email || `member ${person.id}`}${existingAssignments.length ? `. Currently assigned to ${existingAssignments.join(", ")}` : ""}`}
                       onPress={() => {
                         setSelectedPersonId(person.id);
@@ -677,7 +746,7 @@ function AdminExtensionsContent() {
               <TouchableOpacity
                 accessibilityRole="button"
                 accessibilityLabel={selectedPersonId === null ? "Save unassigned extension" : "Save person assignment"}
-                disabled={updateExtension.isPending || (selectedPersonId !== null && !people.some((person) => person.id === selectedPersonId))}
+                disabled={updateExtension.isPending || createExtension.isPending || !inventoryReady || !peopleReady || (selectedPersonId !== null && !people.some((person) => person.id === selectedPersonId))}
                 onPress={() => void saveAssignment()}
                 style={[styles.saveAssignmentButton, { backgroundColor: colors.primary, opacity: updateExtension.isPending ? 0.65 : 1 }]}
               >
@@ -757,7 +826,6 @@ const styles = StyleSheet.create({
   assignmentColumn: { flex: 1.3, minWidth: 110 },
   actionColumn: { flex: 1, minWidth: 85, justifyContent: "flex-end" },
   cellText: { fontSize: 13, fontWeight: "500" },
-  registrationDot: { width: 8, height: 8, borderRadius: 4 },
   card: {
     flexDirection: "row",
     alignItems: "center",

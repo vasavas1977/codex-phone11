@@ -13,7 +13,7 @@ vi.mock("react-native", () => ({
   ActivityIndicator: () => createElement("span", { "data-loading": true }),
   Modal: ({ children, visible }: any) =>
     visible ? createElement("section", null, children) : null,
-  Platform: { OS: "web" },
+  Platform: { OS: "android" },
   ScrollView: ({ children }: any) => createElement("div", null, children),
   UIManager: { getViewManagerConfig: () => null },
   View: ({ children }: any) => createElement("div", null, children),
@@ -37,7 +37,11 @@ import { defaultPlaybackColors } from "../components/cloud-recordings/playback-c
 beforeEach(() => ui.buttons.clear());
 
 function renderPicker(
-  output: { route: "earpiece" | "speaker" | "external"; label: string },
+  output: {
+    route: "earpiece" | "speaker" | "external" | "unknown";
+    label: string;
+    availableRoutes?: readonly ("earpiece" | "speaker" | "system")[];
+  },
   availableOutputs: readonly PlaybackExternalOutput[] = [],
   onRouteChange = vi.fn(),
   onOutputSelect?: (output: PlaybackExternalOutput) => void,
@@ -58,7 +62,7 @@ function renderPicker(
   };
 }
 
-it("offers only the two controllable built-in outputs by default", () => {
+it("offers built-in preferences and the Android system output fallback", () => {
   const { html, onRouteChange } = renderPicker({
     route: "earpiece",
     label: "Earpiece",
@@ -131,4 +135,29 @@ it("selects an external output only when a real adapter is supplied", () => {
   expect(ui.buttons.get("USB audio").disabled).toBe(false);
   ui.buttons.get("USB audio").onPress();
   expect(select).toHaveBeenCalledWith(external);
+});
+
+it("disables absent receiver hardware and offers only the real system fallback", () => {
+  const { html, onRouteChange } = renderPicker({
+    route: "unknown",
+    label: "Audio output",
+    availableRoutes: ["speaker", "system"],
+  });
+  expect(ui.buttons.get("Phone").disabled).toBe(true);
+  expect(ui.buttons.get("Speaker").disabled).toBe(false);
+  expect(html).not.toContain("iPhone audio output picker");
+  expect(html).not.toContain("Bluetooth audio");
+  ui.buttons.get("System audio").onPress();
+  expect(onRouteChange).toHaveBeenCalledWith("system");
+});
+
+it("disables route choices when the Android native capability is missing", () => {
+  renderPicker({
+    route: "unknown",
+    label: "Audio output",
+    availableRoutes: [],
+  });
+  expect(ui.buttons.get("Phone").disabled).toBe(true);
+  expect(ui.buttons.get("Speaker").disabled).toBe(true);
+  expect(ui.buttons.has("System audio")).toBe(false);
 });

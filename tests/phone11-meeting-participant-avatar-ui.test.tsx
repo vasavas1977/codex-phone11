@@ -28,6 +28,18 @@ const mocks = vi.hoisted(() => ({
   workspaceId: 7,
   stateIndex: 0,
   openParticipants: false,
+  stageTargets: [] as {
+    identity: string;
+    local: boolean;
+    name: string;
+    size: number;
+  }[],
+  directoryOwner: 3001,
+  ownPhoto: null as null | {
+    userId: number;
+    photoUrl: string;
+    photoVersion: string;
+  },
   authOwner: { id: 3001, name: "Current Person" },
   people: [
     {
@@ -71,7 +83,7 @@ vi.mock("../lib/_core/auth", () => ({
 }));
 vi.mock("../hooks/use-directory", () => ({
   useDirectory: () => ({
-    owner: 3001,
+    owner: mocks.directoryOwner,
     workspace: { id: mocks.workspaceId },
     people: mocks.people,
     reload: vi.fn(),
@@ -79,7 +91,7 @@ vi.mock("../hooks/use-directory", () => ({
   useDirectoryFocusRefresh: vi.fn(),
 }));
 vi.mock("../lib/profile/use-workspace-profile", () => ({
-  useWorkspaceProfile: () => ({ photoDescriptor: null }),
+  useWorkspaceProfile: () => ({ photoDescriptor: mocks.ownPhoto }),
 }));
 vi.mock("../components/profile/profile-avatar", () => ({
   ProfileAvatar: ({
@@ -99,7 +111,12 @@ vi.mock("../components/profile/profile-avatar", () => ({
   useProfilePhotoCacheScope: vi.fn(),
 }));
 vi.mock("../components/meetings/native-video-stage", () => ({
-  NativeVideoStage: () => null,
+  NativeVideoStage: ({ renderAvatar }: any) =>
+    createElement(
+      "div",
+      { "data-stage": "camera-off" },
+      ...mocks.stageTargets.map((target) => renderAvatar?.(target)),
+    ),
 }));
 vi.mock("../components/ui/icon-symbol", () => ({
   IconSymbol: ({ name }: { name: string }) =>
@@ -109,6 +126,10 @@ vi.mock("../components/ui/icon-symbol", () => ({
 beforeEach(() => {
   mocks.stateIndex = 0;
   mocks.openParticipants = false;
+  mocks.stageTargets = [];
+  mocks.directoryOwner = 3001;
+  mocks.workspaceId = 7;
+  mocks.ownPhoto = null;
 });
 
 function room(
@@ -149,6 +170,7 @@ function room(
         getSnapshot: () => ({ status: "connected", participants, error: null }),
       } as any,
       captions,
+      nativeRoom: {} as any,
       onBack: () => {},
     }),
   );
@@ -217,4 +239,50 @@ it("shows a compact caption only when supplied by the meeting service", () => {
   expect(html).toContain("The meeting starts now.");
   expect(html).toContain("Teammate");
   expect(html).not.toContain("Captions will appear here");
+});
+
+const stagePhoto = (html: string) =>
+  html.match(/<div data-stage="camera-off">(.*?)<\/div>/)?.[1] ?? "";
+it("shows a camera-off teammate's photo only through the current admitted roster and workspace", () => {
+  mocks.stageTargets = [
+    { identity: "p11-t7-u1020", local: false, name: "Teammate", size: 72 },
+  ];
+  expect(stagePhoto(room())).toContain('data-photo="/api/profile/photo/7/1020');
+  expect(stagePhoto(room())).toContain('data-tenant="7" data-user="1020"');
+});
+it("uses the current owner's workspace photo for their camera-off tile", () => {
+  mocks.stageTargets = [
+    { identity: "p11-t7-u3001", local: true, name: "You", size: 40 },
+  ];
+  mocks.ownPhoto = {
+    userId: 3001,
+    photoUrl:
+      "/api/profile/photo/7/3001?v=11111111-1111-4111-8111-111111111111",
+    photoVersion: "11111111-1111-4111-8111-111111111111",
+  };
+  expect(stagePhoto(room())).toContain('data-photo="/api/profile/photo/7/3001');
+  mocks.ownPhoto.userId = 1020;
+  expect(stagePhoto(room())).not.toContain('data-photo="/api/profile/photo');
+});
+it.each(["directory-owner", "workspace", "foreign-identity"] as const)(
+  "omits a camera-off photo with a retired or unmatched %s",
+  (mismatch) => {
+    if (mismatch === "directory-owner") mocks.directoryOwner = 1020;
+    if (mismatch === "workspace") mocks.workspaceId = 8;
+    const identity =
+      mismatch === "foreign-identity" ? "p11-t8-u1020" : "p11-t7-u1020";
+    mocks.stageTargets = [
+      { identity, local: false, name: "Teammate", size: 72 },
+    ];
+    expect(stagePhoto(room("p11-t7-u3001", identity))).not.toContain(
+      'data-photo="/api/profile/photo',
+    );
+  },
+);
+it("ignores a stale stage identity or a falsely local roster target", () => {
+  mocks.stageTargets = [
+    { identity: "p11-t7-u1996", local: false, name: "Stale person", size: 72 },
+    { identity: "p11-t7-u1020", local: true, name: "False self", size: 40 },
+  ];
+  expect(stagePhoto(room())).toBe("");
 });

@@ -104,7 +104,7 @@ it("renders camera and screen together with full-frame screen fitting and tracks
     remotePublications.delete("screen");
     room.localParticipant.videoTrackPublications.clear();
     expect(render()).not.toContain("<video");
-    expect(render()).toContain("Waiting for video");
+    expect(render()).toContain("Camera off");
   } finally { hooks.capture = false; hooks.effects = []; }
 });
 
@@ -121,5 +121,25 @@ it("ignores unavailable subscriptions even when their stale track remains presen
   } as any;
   const html = renderToStaticMarkup(createElement(NativeVideoStage, { room, reconnecting: false, receiveOnly: true }));
   expect(html).not.toContain("<video");
-  expect(html).toContain("listen-only membership");
+  expect(html).toContain("Listen-only membership");
+});
+
+it("renders supplied authenticated avatars only for browser camera-off tiles", () => {
+  const remoteVideos = new Map<string, { videoTrack: { id: string } }>();
+  const room = {
+    localParticipant: { identity: "self", videoTrackPublications: new Map([["camera", { videoTrack: { id: "local-camera" } }]]) },
+    remoteParticipants: new Map([["remote", { identity: "remote", name: "Nadia", videoTrackPublications: remoteVideos }]]),
+  } as any;
+  const renderAvatar = vi.fn(({ name }: { name: string }) => createElement("span", { "data-avatar": name }));
+  const render = (layout: "speaker" | "gallery" = "speaker") => renderToStaticMarkup(createElement(NativeVideoStage, {
+    room, reconnecting: false, receiveOnly: false, layout, renderAvatar,
+  }));
+  expect(render()).toContain('data-avatar="Nadia"');
+  expect(renderAvatar).toHaveBeenCalledTimes(1);
+  expect(renderAvatar).toHaveBeenCalledWith({ identity: "remote", local: false, name: "Nadia", size: 72 });
+  expect(render("gallery")).toContain('data-avatar="Nadia"');
+  remoteVideos.set("camera", { videoTrack: { id: "remote-camera" } });
+  renderAvatar.mockClear();
+  expect(render()).not.toContain("data-avatar");
+  expect(renderAvatar).not.toHaveBeenCalled();
 });

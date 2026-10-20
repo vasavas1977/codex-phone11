@@ -10,13 +10,19 @@ const preload = readFileSync(resolve(source, 'meeting-preload.ts'), 'utf8');
 const meetingWindow = readFileSync(resolve(source, 'meeting-window.ts'), 'utf8');
 
 test('active desktop meeting has accessible gallery, speaker, and participant controls', () => {
-  assert.match(html, /id="layout-gallery"[^>]*aria-pressed="true"/);
-  assert.match(html, /id="layout-speaker"[^>]*aria-pressed="false"/);
+  assert.match(html, /id="layout-gallery"[^>]*aria-pressed="false"/);
+  assert.match(html, /id="layout-speaker"[^>]*aria-pressed="true"/);
   assert.match(html, /id="participant-roster" aria-label="Participants"/);
   assert.match(html, /id="participant-list" aria-live="polite"/);
+  assert.match(html, /id="gallery-grid" hidden/);
+  assert.match(html, /id="speaker-view"><div/);
   assert.match(html, /id="speaker-main"/);
   assert.match(html, /id="speaker-strip"/);
-  assert.match(css, /#gallery-grid\s*\{[^}]*grid-template-columns:\s*repeat\(auto-fit/s);
+  assert.match(css, /#gallery-grid\s*\{[^}]*height:\s*clamp/s);
+  assert.match(css, /#gallery-grid \.gallery-offpage\s*\{[^}]*position:\s*absolute[^}]*width:\s*240px[^}]*height:\s*180px[^}]*opacity:\s*0[^}]*pointer-events:\s*none/s);
+  assert.match(html, /id="gallery-prev" type="button"[^>]*aria-label="Previous gallery page"/);
+  assert.match(html, /id="gallery-next" type="button"[^>]*aria-label="Next gallery page"/);
+  assert.match(html, /id="gallery-page-status" role="status" aria-live="polite"/);
   assert.match(css, /#speaker-view\s*\{[^}]*grid-template-columns:/s);
   assert.match(css, /#prejoin\[hidden\], #room\[hidden\], #gallery-grid\[hidden\], #speaker-view\[hidden\], #empty-stage\[hidden\]\s*\{\s*display:\s*none/s);
   assert.match(css, /\.tile-media\.has-video \.tile-placeholder\s*\{\s*display:\s*none/s);

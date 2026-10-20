@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Platform,
   StyleSheet,
@@ -25,6 +25,7 @@ export type AdminPeopleMember = {
 };
 
 type Props = {
+  header?: ReactNode;
   members: AdminPeopleMember[];
   tenantId?: number;
   directoryPhotos: ReadonlyMap<number, string>;
@@ -43,6 +44,7 @@ function roleLabel(role: AdminPeopleMember["role"]) {
 
 /** Responsive, presentation-only member inventory shared by the authenticated page and dev preview. */
 export function AdminPeopleTable({
+  header,
   members,
   tenantId,
   directoryPhotos,
@@ -325,6 +327,7 @@ export function AdminPeopleTable({
       keyboardShouldPersistTaps="handled"
       onLayout={(event) => setWidth(event.nativeEvent.layout.width)}
     >
+      {header}
       <View style={[styles.controls, { borderColor: colors.border }]}>
         <View
           style={[

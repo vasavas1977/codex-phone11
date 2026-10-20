@@ -121,9 +121,14 @@ export type AdminShellProps = {
 export function AdminShell(props: AdminShellProps) {
   const colors = useColors();
   const { width } = useWindowDimensions();
-  const wide = width >= 1000;
+  const [hasMounted, setHasMounted] = useState(false);
+  // Static export has no viewport. Match its compact markup until hydration finishes.
+  const wide = (Platform.OS !== "web" || hasMounted) && width >= 1000;
   const [menuOpen, setMenuOpen] = useState(false);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  useEffect(() => {
+    setHasMounted(true);
+  }, []);
   useEffect(() => {
     setMenuOpen(false);
     setWorkspaceOpen(false);

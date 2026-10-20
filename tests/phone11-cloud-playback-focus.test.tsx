@@ -5,12 +5,28 @@ const { renderToStaticMarkup } = createRequire(import.meta.url)(
   "react-dom/server",
 ) as { renderToStaticMarkup(node: ReactNode): string };
 const m = vi.hoisted(() => ({
+  platform: { OS: "ios" },
+  authListener: undefined as undefined | (() => void),
+  callListener: undefined as undefined | (() => void),
+  routeRemoved: vi.fn(),
   focus: undefined as undefined | (() => () => void),
   identity: { id: 1 },
   busy: false,
   buttons: new Map<string, any>(),
   controls: undefined as any,
   player: {
+    getPlaybackAudioRoute: vi.fn((): unknown => ({
+      route: "unknown",
+      availableRoutes: ["earpiece", "speaker", "system"],
+    })),
+    setPlaybackAudioRoute: vi.fn((_route: string): unknown => ({
+      route: "unknown",
+      availableRoutes: ["earpiece", "speaker", "system"],
+    })),
+    addListener: vi.fn((_event: string, listener: (value: unknown) => void) => {
+      m.routeListener = listener;
+      return { remove: m.routeRemoved };
+    }),
     pause: vi.fn(),
     replace: vi.fn(),
     play: vi.fn(),
@@ -47,7 +63,7 @@ const m = vi.hoisted(() => ({
 }));
 vi.mock("react-native", () => ({
   ActivityIndicator: () => createElement("span", null),
-  Platform: { OS: "ios" },
+  Platform: m.platform,
   NativeModules: { Phone11Siprix: m.nativeRoute },
   NativeEventEmitter: class {
     addListener(_name: string, listener: (event: unknown) => void) {
@@ -102,7 +118,10 @@ vi.mock("../hooks/use-colors", () => ({
 vi.mock("../lib/_core/auth", () => ({
   getAuthSnapshot: () => ({ user: m.identity }),
   getSessionToken: () => m.token(),
-  addAuthChangeListener: () => vi.fn(),
+  addAuthChangeListener: (listener: () => void) => {
+    m.authListener = listener;
+    return vi.fn();
+  },
 }));
 vi.mock("../lib/cloud-recordings/recording-share", () => ({
   shareAuthenticatedRecording: (options: unknown) => m.share(options),
@@ -116,7 +135,10 @@ vi.mock("../lib/sip/call-store", () => ({
       incomingCall: null,
       activeCalls: m.busy ? { live: { id: "live", status: "connected" } } : {},
     }),
-    subscribe: () => vi.fn(),
+    subscribe: (listener: () => void) => {
+      m.callListener = listener;
+      return vi.fn();
+    },
   },
 }));
 import {
@@ -131,6 +153,14 @@ const props = {
 beforeEach(() => {
   vi.clearAllMocks();
   m.focus = undefined;
+  m.platform.OS = "ios";
+  m.authListener = undefined;
+  m.callListener = undefined;
+  m.identity = { id: 1 };
+  m.player.setPlaybackAudioRoute.mockImplementation(() => ({
+    route: "unknown",
+    availableRoutes: ["earpiece", "speaker", "system"],
+  }));
   m.busy = false;
   m.buttons.clear();
   m.controls = undefined;
@@ -471,4 +501,106 @@ it("a late credential result after navigation blur cannot restore hidden playbac
   await Promise.resolve();
   expect(m.player.replace).toHaveBeenCalledTimes(1);
   expect(m.player.replace).toHaveBeenLastCalledWith(null);
+});
+
+it("Android keeps paused/unrouted output truthful and configures only this player before explicit Play", async () => {
+  m.platform.OS = "android";
+  expect(
+    playbackOutputForPreference(
+      { route: "unknown", label: "Audio output" },
+      false,
+    ),
+  ).toEqual({ route: "unknown", label: "Audio output" });
+  renderToStaticMarkup(createElement(Playback, props));
+  const blur = m.focus!();
+  await Promise.resolve();
+  await Promise.resolve();
+  await m.controls.onToggle();
+  expect(m.player.setPlaybackAudioRoute).toHaveBeenCalledWith("earpiece");
+  expect(m.player.play).toHaveBeenCalledOnce();
+  expect(m.nativeRoute.setPlaybackAudioRoute).not.toHaveBeenCalled();
+  expect(m.setAudioMode).not.toHaveBeenCalled();
+  blur();
+  expect(m.routeRemoved).toHaveBeenCalledOnce();
+  expect(m.player.setPlaybackAudioRoute).toHaveBeenLastCalledWith("system");
+});
+
+it("Android suppresses stale route completion and queued output events after blur", async () => {
+  m.platform.OS = "android";
+  let finish!: (value: unknown) => void;
+  m.player.setPlaybackAudioRoute.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  renderToStaticMarkup(createElement(Playback, props));
+  const blur = m.focus!();
+  await Promise.resolve();
+  await Promise.resolve();
+  const playing = m.controls.onToggle();
+  await vi.waitFor(() =>
+    expect(m.player.setPlaybackAudioRoute).toHaveBeenCalledOnce(),
+  );
+  blur();
+  finish({ route: "speaker" });
+  await playing;
+  expect(m.player.play).not.toHaveBeenCalled();
+  m.player.pause.mockClear();
+  m.routeListener?.({ route: "speaker", unavailable: true });
+  expect(m.player.pause).not.toHaveBeenCalled();
+});
+
+it("Android call takeover cancels pending Play without changing global call audio", async () => {
+  m.platform.OS = "android";
+  let finish!: (value: unknown) => void;
+  m.player.setPlaybackAudioRoute.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  renderToStaticMarkup(createElement(Playback, props));
+  const blur = m.focus!();
+  await Promise.resolve();
+  await Promise.resolve();
+  const playing = m.controls.onToggle();
+  await vi.waitFor(() =>
+    expect(m.player.setPlaybackAudioRoute).toHaveBeenCalledOnce(),
+  );
+  m.busy = true;
+  m.callListener?.();
+  finish({ route: "speaker" });
+  await playing;
+  expect(m.player.play).not.toHaveBeenCalled();
+  expect(m.player.pause).toHaveBeenCalled();
+  expect(m.setAudioMode).not.toHaveBeenCalled();
+  expect(m.player.setPlaybackAudioRoute).toHaveBeenCalledTimes(1);
+  blur();
+});
+
+it("Android auth revocation clears the source and rejects later route completion", async () => {
+  m.platform.OS = "android";
+  let finish!: (value: unknown) => void;
+  m.player.setPlaybackAudioRoute.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  renderToStaticMarkup(createElement(Playback, props));
+  const blur = m.focus!();
+  await Promise.resolve();
+  await Promise.resolve();
+  const playing = m.controls.onToggle();
+  await vi.waitFor(() =>
+    expect(m.player.setPlaybackAudioRoute).toHaveBeenCalledOnce(),
+  );
+  m.identity = { id: 2 };
+  m.authListener?.();
+  finish({ route: "speaker" });
+  await playing;
+  expect(m.player.play).not.toHaveBeenCalled();
+  expect(m.player.replace).toHaveBeenLastCalledWith(null);
+  blur();
 });

@@ -48,7 +48,13 @@ vi.mock("expo-router", () => ({
 vi.mock("../components/screen-container", () => ({ ScreenContainer: box }));
 vi.mock("../components/ui/icon-symbol", () => ({ IconSymbol: () => null }));
 vi.mock("../constants/oauth", () => ({ portalSignInRoute: () => "/sign-in" }));
-vi.mock("../hooks/use-auth", () => ({ useAuth: () => ({ user: m.user }) }));
+vi.mock("../components/admin/use-admin-auth-state", () => ({
+  useAdminAuthState: () => ({
+    user: m.user,
+    checking: false,
+    unavailable: false,
+  }),
+}));
 vi.mock("../hooks/use-colors", () => ({
   useColors: () => ({
     foreground: "#111",

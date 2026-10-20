@@ -8,16 +8,19 @@ import { test } from 'node:test';
 
 // Run the real isolated preload, with the SDK/IPC boundary replaced by a deterministic replay.
 class Element {
-  value = ''; textContent = ''; disabled = false; checked = false; hidden = false;
+  value = ''; textContent = ''; disabled = false; checked = false; hidden = false; inert = false;
   srcObject: unknown = null; className = ''; style = {}; dataset = {};
+  clientWidth = 640; clientHeight = 380; childMutations = 0;
+  classes = new Set<string>();
   children: Element[] = []; parentElement: Element | null = null;
   listeners = new Map<string, () => void>();
   attributes = new Map<string, string>();
-  classList = { toggle() {} };
+  classList = { toggle: (name: string, active: boolean) => { if (active) this.classes.add(name); else this.classes.delete(name); } };
   get firstChild() { return this.children[0] ?? null; }
-  appendChild(child: Element) { child.parentElement = this; this.children.push(child); return child; }
+  appendChild(child: Element) { child.remove(); child.parentElement = this; this.children.push(child); this.childMutations++; return child; }
+  prepend(child: Element) { child.remove(); child.parentElement = this; this.children.unshift(child); this.childMutations++; }
   append(...children: Element[]) { children.forEach(child => this.appendChild(child)); }
-  replaceChildren(...children: Element[]) { this.children = []; this.append(...children); }
+  replaceChildren(...children: Element[]) { for (const child of [...this.children]) child.remove(); this.append(...children); }
   querySelector(selector: string): Element | null {
     return this.children.find(child => child.className.split(' ').includes(selector.slice(1))) ??
       this.children.map(child => child.querySelector(selector)).find(Boolean) ?? null;
@@ -25,9 +28,9 @@ class Element {
   querySelectorAll() { return []; }
   setAttribute(name: string, value: string) { this.attributes.set(name, value); }
   focus() {} pause() {}
-  remove() { if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(child => child !== this); }
+  remove() { if (this.parentElement) { this.parentElement.children = this.parentElement.children.filter(child => child !== this); this.parentElement.childMutations++; this.parentElement = null; } }
   addEventListener(event: string, listener: () => void) { this.listeners.set(event, listener); }
-  click() { this.listeners.get('click')?.(); }
+  click() { if (!this.disabled) this.listeners.get('click')?.(); }
 }
 
 const meetingId = '12345678-1234-4234-8234-123456789012';
@@ -61,6 +64,14 @@ async function harness(initialState: MeetingState | Promise<MeetingState> | Erro
   const calls: string[] = [];
   const inputs: { channel: string; input: unknown }[] = [];
   const rooms: FakeRoom[] = [];
+  const windowEvents = new Map<string, (() => void)[]>();
+  const resizeObservers: { notify(): void; active: boolean }[] = [];
+  class FakeResizeObserver {
+    active = true;
+    constructor(private callback: () => void) { resizeObservers.push(this); }
+    observe() {} disconnect() { this.active = false; }
+    notify() { if (this.active) this.callback(); }
+  }
   let meetingState = initialState;
   let directStart: Promise<{ meetingId: string }> | undefined;
   let admission: Promise<unknown> | undefined;
@@ -117,12 +128,17 @@ async function harness(initialState: MeetingState | Promise<MeetingState> | Erro
   runInNewContext(bundled.outputFiles[0].text, {
     module, exports: module.exports, require: (name: string) => name === 'electron' ? { ipcRenderer: ipc } : sdk,
     document: { readyState: 'loading', addEventListener() {}, getElementById: element, createElement: () => new Element() },
-    window: { addEventListener() {} }, navigator: { mediaDevices: { addEventListener() {} } },
+    ResizeObserver: FakeResizeObserver,
+    window: { addEventListener(event: string, callback: () => void) { windowEvents.set(event, [...(windowEvents.get(event) ?? []), callback]); } }, navigator: { mediaDevices: { addEventListener() {} } },
     Option: Element, setTimeout, clearTimeout, cancelAnimationFrame() {}, console, TextDecoder, TextEncoder,
   });
   await module.exports.load();
   if (element('meeting-select').children.some(option => option.value === meetingId)) element('meeting-select').value = meetingId;
   return { ...module.exports, element, ipc, calls, inputs, rooms, grant,
+    resize: () => { for (const callback of windowEvents.get('resize') ?? []) callback(); },
+    notifySize: () => { for (const observer of resizeObservers) observer.notify(); },
+    unload: () => { for (const callback of windowEvents.get('beforeunload') ?? []) callback(); },
+    resizeObservers,
     setMeetingState: (value: MeetingState | Promise<MeetingState> | Error) => { meetingState = value; },
     setDirectStart: (value: Promise<{ meetingId: string }>) => { directStart = value; },
     setAdmission: (value: Promise<unknown>) => { admission = value; },
@@ -454,4 +470,153 @@ test('real preload connection-loss event permanently retires controls before imm
   assert.equal(h.calls.filter(channel => channel === 'phone11:meeting-host-controls').length, 1);
   assert.equal(h.calls.includes('phone11:meeting-remove-member'), false);
   await h.leave();
+});
+
+
+function assertLayout(h: Awaited<ReturnType<typeof harness>>, mode: 'speaker' | 'gallery'): void {
+  assert.equal(h.element('layout-speaker').attributes.get('aria-pressed'), String(mode === 'speaker'));
+  assert.equal(h.element('layout-gallery').attributes.get('aria-pressed'), String(mode === 'gallery'));
+  assert.equal(h.element('speaker-view').hidden, mode !== 'speaker');
+  assert.equal(h.element('gallery-grid').hidden, mode !== 'gallery');
+}
+
+test('desktop first connected display defaults to Speaker and keeps explicit Gallery in the same room', async () => {
+  const h = await harness(); h.setConnection(Promise.resolve()); await h.join();
+  assert.equal(h.element('room').hidden, false); assertLayout(h, 'speaker');
+  h.element('layout-gallery').click(); assertLayout(h, 'gallery');
+  const active = h.rooms[0];
+  for (const event of ['TrackMuted', 'TrackUnmuted', 'ParticipantConnected', 'ActiveSpeakersChanged']) {
+    active.emit(event, event === 'ActiveSpeakersChanged' ? [] : active.localParticipant);
+    assertLayout(h, 'gallery');
+  }
+  active.emit('Reconnected'); assertLayout(h, 'gallery');
+  assert.equal(active.microphoneCalls, 0); assert.equal(active.cameraCalls, 0);
+  assert.equal(active.disconnectCalls, 0);
+  h.element('layout-speaker').click(); assertLayout(h, 'speaker');
+});
+
+test('desktop teardown resets Gallery to Speaker and a rejoined window starts with Speaker', async () => {
+  const h = await harness(); h.setConnection(Promise.resolve()); await h.join();
+  h.element('layout-gallery').click(); assertLayout(h, 'gallery');
+  await h.leave(); assertLayout(h, 'speaker');
+  assert.equal(h.element('room').hidden, true);
+  assert.equal(h.rooms[0].disconnectCalls, 1);
+  // leave is terminal for an isolated meeting window. Rejoin creates another preload.
+  const rejoined = await harness(); rejoined.setConnection(Promise.resolve()); await rejoined.join();
+  assertLayout(rejoined, 'speaker');
+});
+
+test('desktop failed admission retries in the same window with the Speaker default', async () => {
+  const h = await harness(); await h.join();
+  assert.match(h.element('prejoin-error').textContent, /Could not join/);
+  assertLayout(h, 'speaker');
+  h.setConnection(Promise.resolve()); await h.join();
+  assert.equal(h.rooms.length, 2); assert.equal(h.element('room').hidden, false);
+  assertLayout(h, 'speaker');
+});
+
+
+function mediaTrack(kind: 'audio' | 'video' = 'video') {
+  const node = new Element(); let attaches = 0; let detaches = 0;
+  return { node, kind, attach: () => { attaches++; return node; },
+    detach: (_node?: Element) => { detaches++; return [node]; },
+    counts: () => ({ attaches, detaches }) };
+}
+function galleryParticipant(index: number) {
+  const camera = mediaTrack(); const publications = new Map<string, any>([['camera', { videoTrack: camera, track: camera }]]);
+  return { identity: `p11-t1-u${index + 2}`, sid: `remote-${index}`, name: `Person ${index}`,
+    isLocal: false, isSpeaking: false, isCameraEnabled: true, isMicrophoneEnabled: true,
+    trackPublications: publications, getTrackPublication: (source: string) => publications.get(source), camera };
+}
+async function galleryRoom(count = 14) {
+  const h = await harness(); h.setConnection(Promise.resolve()); await h.join();
+  const active = h.rooms[0]; const people = Array.from({ length: count }, (_, i) => galleryParticipant(i));
+  for (const person of people) active.remoteParticipants.set(person.sid, person);
+  active.emit('ParticipantConnected'); h.element('layout-gallery').click();
+  return { ...h, active, people, visible: () => h.element('gallery-grid').children.filter(tile => !tile.inert) };
+}
+
+test('desktop Gallery pages show bounded tiles and accessible disabled navigation boundaries', async () => {
+  const h = await galleryRoom(); assert.equal(h.visible().length, 4);
+  assert.match(h.element('gallery-page-status').textContent, /Page 1 of 4/);
+  assert.equal(h.element('gallery-prev').disabled, true); assert.equal(h.element('gallery-next').disabled, false);
+  const allTiles = [...h.element('gallery-grid').children];
+  assert.ok(allTiles.slice(4).every(tile => tile.inert && tile.attributes.get('aria-hidden') === 'true' && tile.classes.has('gallery-offpage')));
+  assert.ok(allTiles.slice(0, 4).every(tile => !tile.inert && tile.attributes.get('aria-hidden') === 'false'));
+  h.element('gallery-next').click(); assert.equal(h.visible()[0], allTiles[4]);
+  h.element('gallery-next').click(); h.element('gallery-next').click();
+  assert.match(h.element('gallery-page-status').textContent, /Page 4 of 4/);
+  assert.equal(h.visible().length, 3); assert.equal(h.element('gallery-next').disabled, true);
+  h.element('gallery-next').click(); assert.equal(h.visible()[0], allTiles[12]);
+  h.element('gallery-prev').click(); assert.equal(h.visible()[0], allTiles[8]);
+});
+
+test('desktop Gallery capacity responds to container resize and clamps roster shrink without losing selection', async () => {
+  const h = await galleryRoom();
+  for (let i = 0; i < 3; i++) h.element('gallery-next').click();
+  h.element('gallery-grid').clientWidth = 2400; h.element('gallery-grid').clientHeight = 1200;
+  h.notifySize(); assert.equal(h.visible().length, 3); assert.match(h.element('gallery-page-status').textContent, /Page 2 of 2/);
+  h.element('gallery-prev').click(); assert.equal(h.visible().length, 12);
+  h.element('gallery-grid').clientWidth = 250; h.element('gallery-grid').clientHeight = 190;
+  h.resize(); assert.equal(h.visible().length, 1); assert.match(h.element('gallery-page-status').textContent, /Page 1 of 15/);
+  for (let i = 0; i < 14; i++) h.element('gallery-next').click();
+  for (const person of h.people.slice(1)) h.active.remoteParticipants.delete(person.sid);
+  h.active.emit('ParticipantDisconnected', h.people[1]);
+  assertLayout(h, 'gallery'); assert.match(h.element('gallery-page-status').textContent, /Page 2 of 2/);
+  const joined = galleryParticipant(99); h.active.remoteParticipants.set(joined.sid, joined);
+  h.active.emit('ParticipantConnected', joined);
+  assert.match(h.element('gallery-page-status').textContent, /Page 2 of 3/);
+  h.active.remoteParticipants.clear(); h.active.emit('ParticipantDisconnected', h.people[0]);
+  assert.match(h.element('gallery-page-status').textContent, /Page 1 of 1/);
+  assert.equal(h.element('gallery-next').disabled, true);
+});
+
+test('desktop page navigation keeps camera/audio nodes attached and actual shares outside pages', async () => {
+  const h = await galleryRoom(8); const gallery = h.element('gallery-grid');
+  const nodes = [...gallery.children]; const mutations = gallery.childMutations;
+  const audio = mediaTrack('audio'); h.active.emit('TrackSubscribed', audio, {}, h.people[0]);
+  const share = mediaTrack(); h.people[0].trackPublications.set('screen', { videoTrack: share, track: share });
+  h.active.emit('TrackPublished', {}, h.people[0]);
+  const shareTile = h.element('screen-shares').children[0];
+  const videoParents = h.people.map(person => person.camera.node.parentElement);
+  const roomEvents = h.active.eventNames().map(event => [event, h.active.listenerCount(event)]);
+  const ipcCalls = h.calls.length;
+  for (let i = 0; i < 5; i++) { h.element('gallery-next').click(); h.element('gallery-prev').click(); }
+  assert.equal(gallery.childMutations, mutations);
+  assert.deepEqual(gallery.children, nodes);
+  for (const [index, person] of h.people.entries()) {
+    assert.deepEqual(person.camera.counts(), { attaches: 1, detaches: 0 });
+    assert.equal(person.camera.node.parentElement, videoParents[index]);
+  }
+  assert.deepEqual(audio.counts(), { attaches: 1, detaches: 0 });
+  assert.equal(audio.node.parentElement, h.element('remote-audio'));
+  assert.equal(h.element('screen-shares').hidden, false); assert.equal(h.element('screen-shares').children[0], shareTile);
+  assert.deepEqual(share.counts(), { attaches: 1, detaches: 0 });
+  assert.equal(h.calls.length, ipcCalls); assert.deepEqual(h.active.eventNames().map(event => [event, h.active.listenerCount(event)]), roomEvents);
+  assert.equal(h.active.microphoneCalls, 0); assert.equal(h.active.cameraCalls, 0); assert.equal(h.active.disconnectCalls, 0);
+});
+
+test('desktop Gallery preserves avatar and speaking presentation across camera changes and Speaker switches', async () => {
+  const h = await galleryRoom(5); const person = h.people[4];
+  person.isSpeaking = true; person.isCameraEnabled = false; h.active.emit('TrackMuted', {}, person);
+  assert.match(h.element('gallery-page-status').textContent, /Page 1 of 2/);
+  h.element('gallery-next').click(); const tile = person.camera.node.parentElement;
+  assert.equal(tile, null); // Camera-off cleanup is a real media change, not paging.
+  const shown = h.visible().find(node => node.attributes.get('aria-label') === `${person.name}, speaking`)!;
+  assert.equal(shown.classes.has('is-speaking'), true);
+  assert.match(shown.querySelector('.person-avatar')!.attributes.get('aria-label')!, /initials/);
+  h.element('layout-speaker').click(); assert.equal(h.element('gallery-pages').hidden, true);
+  assert.ok([...h.element('speaker-main').children, ...h.element('speaker-strip').children].every(tile => !tile.inert && tile.attributes.get('aria-hidden') === 'false' && !tile.classes.has('gallery-offpage')));
+  h.element('layout-gallery').click(); assert.match(h.element('gallery-page-status').textContent, /Page 2 of 2/);
+  person.isCameraEnabled = true; h.active.emit('TrackUnmuted', {}, person);
+  assert.equal(h.visible().includes(shown), true); assert.equal(person.camera.node.parentElement !== null, true);
+});
+
+test('desktop Gallery page and observer ownership retire on leave and failed-join retry remains page one', async () => {
+  const h = await galleryRoom(8); h.element('gallery-next').click(); await h.leave();
+  assert.equal(h.element('gallery-pages').hidden, true); assertLayout(h, 'speaker');
+  h.unload(); assert.ok(h.resizeObservers.every(observer => !observer.active));
+  const fresh = await galleryRoom(8); assert.match(fresh.element('gallery-page-status').textContent, /Page 1 of 3/);
+  const retry = await harness(); await retry.join(); retry.setConnection(Promise.resolve()); await retry.join();
+  retry.element('layout-gallery').click(); assert.match(retry.element('gallery-page-status').textContent, /Page 1 of 1/);
 });
