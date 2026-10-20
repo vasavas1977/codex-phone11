@@ -1,0 +1,434 @@
+diff --git a/android/src/main/java/expo/modules/audio/AudioModule.kt b/android/src/main/java/expo/modules/audio/AudioModule.kt
+index 8f2d19f6f89ec637798065813728f9e1e09e9af8..a9172a7ed3878b3627eb1f35e34079f427e2cf5c 100644
+--- a/android/src/main/java/expo/modules/audio/AudioModule.kt
++++ b/android/src/main/java/expo/modules/audio/AudioModule.kt
+@@ -73,7 +73,7 @@ class AudioModule : Module() {
+           focusAcquired = false
+           players.values.forEach { player ->
+             if (player.ref.isPlaying) {
+-              player.isPaused = true
++              player.isPaused = player.playbackRouteState.autoResume(true)
+               player.ref.pause()
+             }
+           }
+@@ -90,7 +90,7 @@ class AudioModule : Module() {
+           } else {
+             players.values.forEach { player ->
+               if (player.ref.isPlaying) {
+-                player.isPaused = true
++                player.isPaused = player.playbackRouteState.autoResume(true)
+                 player.ref.pause()
+               }
+             }
+@@ -101,7 +101,7 @@ class AudioModule : Module() {
+           focusAcquired = true
+           players.values.forEach { player ->
+             player.setVolume(player.previousVolume)
+-            if (player.isPaused) {
++            if (player.playbackRouteState.autoResume(player.isPaused)) {
+               player.isPaused = false
+               player.ref.play()
+             }
+@@ -214,7 +214,7 @@ class AudioModule : Module() {
+         releaseAudioFocus()
+         players.values.forEach { player ->
+           if (player.ref.isPlaying) {
+-            player.isPaused = true
++            player.isPaused = player.playbackRouteState.autoResume(true)
+             player.ref.pause()
+           }
+         }
+@@ -229,13 +229,13 @@ class AudioModule : Module() {
+ 
+     OnActivityEntersForeground {
+       if (!staysActiveInBackground) {
+-        val hasPlayersToResume = players.values.any { it.isPaused }
++        val hasPlayersToResume = players.values.any { it.playbackRouteState.autoResume(it.isPaused) }
+         if (hasPlayersToResume) {
+           requestAudioFocus()
+         }
+ 
+         players.values.forEach { player ->
+-          if (player.isPaused) {
++          if (player.playbackRouteState.autoResume(player.isPaused)) {
+             player.isPaused = false
+             player.ref.play()
+           }
+@@ -288,6 +288,18 @@ class AudioModule : Module() {
+         }
+       }
+ 
++      Function("getPlaybackAudioRoute") { player: AudioPlayer ->
++        runOnMain { player.playbackAudioRoute() }
++      }
++      Function("setPlaybackAudioRoute") { player: AudioPlayer, route: String ->
++        runOnMain {
++          // Per-player routing: do not change AudioManager mode/communication devices owned by calls.
++          staysActiveInBackground = false
++          interruptionMode = InterruptionMode.DO_NOT_MIX
++          player.setPlaybackAudioRoute(route)
++        }
++      }
++
+       Property("id") { player ->
+         player.id
+       }
+@@ -395,12 +407,14 @@ class AudioModule : Module() {
+ 
+       Function("pause") { player: AudioPlayer ->
+         runOnMain {
++          if (!player.playbackRouteState.autoResume(true)) player.isPaused = false
+           player.ref.pause()
+         }
+       }
+ 
+       Function("replace") { player: AudioPlayer, source: AudioSource ->
+         runOnMain {
++          if (!player.playbackRouteState.autoResume(true)) player.isPaused = false
+           if (player.ref.availableCommands.contains(Player.COMMAND_CHANGE_MEDIA_ITEMS)) {
+             val mediaSource = createMediaItem(source)
+             val wasPlaying = player.ref.isPlaying
+diff --git a/android/src/main/java/expo/modules/audio/AudioPlayer.kt b/android/src/main/java/expo/modules/audio/AudioPlayer.kt
+index 320062e6217ddf28d290d3456fb037ea4a947a1d..0dd629a40b0f40c869608936c7f2a10e4451c25d 100644
+--- a/android/src/main/java/expo/modules/audio/AudioPlayer.kt
++++ b/android/src/main/java/expo/modules/audio/AudioPlayer.kt
+@@ -39,9 +39,11 @@ class AudioPlayer(
+   context: Context,
+   appContext: AppContext,
+   source: MediaSource?,
+-  private val updateInterval: Double
++  private val updateInterval: Double,
++  private val playbackRouting: PlaybackAudioRouting = PlaybackAudioRouting(context)
+ ) : SharedRef<ExoPlayer>(
+   ExoPlayer.Builder(context)
++    .setRenderersFactory(playbackRouting.renderersFactory())
+     .setLooper(context.mainLooper)
+     .setAudioAttributes(AudioAttributes.DEFAULT, false)
+     .setSeekForwardIncrementMs(SEEK_JUMP_INTERVAL_MS)
+@@ -49,6 +51,46 @@ class AudioPlayer(
+     .build(),
+   appContext
+ ) {
++  val playbackRouteState get() = playbackRouting.state
++  fun playbackAudioRoute(): Map<String, Any?> = playbackRouting.status().let {
++    if (ref.isPlaying) it else it + mapOf("route" to "unknown", "label" to "Audio output")
++  }
++  fun setPlaybackAudioRoute(route: String): Map<String, Any?> {
++    val target = playbackRouting.target(route)
++    isPaused = false
++    ref.volume = playbackRouteState.select(route, ref.volume)
++    playbackRouting.expectReceiver(route)
++    val epoch = playbackRouteState.epoch()
++    if (route == "earpiece") {
++      appContext?.mainQueue?.launch {
++        delay(2000)
++        if (!playbackRouteState.released() && epoch == playbackRouteState.epoch() && playbackRouteState.waiting() && ref.playWhenReady) {
++          ref.pause()
++          emit("playbackAudioRoute", playbackAudioRoute() + ("unavailable" to true))
++        }
++      }
++    }
++    ref.setAudioAttributes(if (route == "earpiece") AudioAttributes.Builder()
++      .setUsage(C.USAGE_VOICE_COMMUNICATION).setContentType(C.AUDIO_CONTENT_TYPE_SPEECH).build()
++      else AudioAttributes.DEFAULT, false)
++    ref.setPreferredAudioDevice(target)
++    return playbackAudioRoute()
++  }
++
++  private fun reportPlaybackAudioRoute() {
++    if (playbackRouteState.released()) return
++    val output = playbackAudioRoute()
++    val actual = output["route"] as String
++    val wasWaiting = playbackRouteState.waiting()
++    val volume = playbackRouteState.observe(actual, ref.volume, output["_generation"] as Int)
++    // A replacement AudioTrack was muted in the sink even if ExoPlayer cached volume=1.
++    if (wasWaiting && !playbackRouteState.waiting()) ref.volume = 0f
++    ref.volume = if (isMuted) 0f else volume
++    val rejected = playbackRouteState.rejected(actual)
++    if (rejected) ref.pause()
++    emit("playbackAudioRoute", output + ("unavailable" to rejected))
++  }
++
+   val id = UUID.randomUUID().toString()
+   var preservesPitch = true
+   var isPaused = false
+@@ -75,6 +117,10 @@ class AudioPlayer(
+   val duration get() = if (ref.duration != C.TIME_UNSET) ref.duration / 1000f else 0f
+ 
+   init {
++    playbackRouting.changed = { reportPlaybackAudioRoute() }
++    ref.addListener(object : Player.Listener {
++      override fun onIsPlayingChanged(isPlaying: Boolean) { reportPlaybackAudioRoute() }
++    })
+     addPlayerListeners()
+     source?.let {
+       setMediaSource(source)
+@@ -90,7 +136,7 @@ class AudioPlayer(
+       ref.volume = 0f
+     } else {
+       previousVolume = boundedVolume
+-      ref.volume = boundedVolume
++      ref.volume = playbackRouteState.changeVolume(boundedVolume)
+     }
+   }
+ 
+@@ -277,6 +323,9 @@ class AudioPlayer(
+   }
+ 
+   override fun sharedObjectDidRelease() {
++    playbackRouteState.close()
++    isPaused = false
++    playbackRouting.close()
+     super.sharedObjectDidRelease()
+     appContext?.mainQueue?.launch {
+       if (isActiveForLockScreen) {
+diff --git a/android/src/main/java/expo/modules/audio/PlaybackAudioRouting.kt b/android/src/main/java/expo/modules/audio/PlaybackAudioRouting.kt
+new file mode 100644
+index 0000000000000000000000000000000000000000..520ca5b7cb0bb3901849e3de95fde52f01e1c281
+--- /dev/null
++++ b/android/src/main/java/expo/modules/audio/PlaybackAudioRouting.kt
+@@ -0,0 +1,118 @@
++package expo.modules.audio
++
++import android.content.Context
++import android.media.AudioDeviceCallback
++import android.media.AudioDeviceInfo
++import android.media.AudioManager
++import android.media.AudioRouting
++import android.media.AudioTrack
++import android.os.Handler
++import android.os.Looper
++import androidx.media3.common.util.UnstableApi
++import androidx.media3.exoplayer.DefaultRenderersFactory
++import androidx.media3.exoplayer.audio.ForwardingAudioSink
++import androidx.media3.exoplayer.audio.AudioSink
++import androidx.media3.exoplayer.audio.DefaultAudioSink
++
++/** Observe this player's AudioTrack, never a requested route or the SIP communication device. */
++@UnstableApi
++class PlaybackAudioRouting(private val context: Context) {
++  val state = PlaybackRouteState()
++  private val handler = Handler(Looper.getMainLooper())
++  private val audio = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
++  private var track: AudioTrack? = null
++  private var receiverRequested = false
++  private var installedGeneration = -1
++  @Volatile private var closed = false
++  var changed: (() -> Unit)? = null
++  private val listener = AudioRouting.OnRoutingChangedListener { source -> handler.post { if (!closed && source === track && installedGeneration == state.generation()) changed?.invoke() } }
++
++  private val deviceListener = object : AudioDeviceCallback() {
++    override fun onAudioDevicesAdded(devices: Array<AudioDeviceInfo>) { if (!closed) changed?.invoke() }
++    override fun onAudioDevicesRemoved(devices: Array<AudioDeviceInfo>) { if (!closed) changed?.invoke() }
++  }
++  init { audio.registerAudioDeviceCallback(deviceListener, handler) }
++
++  fun renderersFactory() = object : DefaultRenderersFactory(context) {
++    override fun buildAudioSink(context: Context, enableFloatOutput: Boolean, enableAudioTrackPlaybackParams: Boolean): AudioSink {
++      lateinit var sink: DefaultAudioSink
++      sink = DefaultAudioSink.Builder(context)
++        .setEnableFloatOutput(enableFloatOutput)
++        .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
++        .setAudioTrackProvider { config, attributes, sessionId, trackContext ->
++          // This runs on ExoPlayer's audio thread before the new track can play.
++          val generation = state.replacingTrack()
++          if (state.waiting()) sink.setVolume(0f)
++          val next = DefaultAudioSink.AudioTrackProvider.DEFAULT.getAudioTrack(config, attributes, sessionId, trackContext)
++          handler.post {
++            if (!closed && generation == state.generation()) {
++              track?.removeOnRoutingChangedListener(listener)
++              track = next
++              installedGeneration = generation
++              next.addOnRoutingChangedListener(listener, handler)
++              changed?.invoke()
++            }
++          }
++          next
++        }.build()
++      return object : ForwardingAudioSink(sink) {
++        override fun setVolume(volume: Float) { super.setVolume(state.effectiveVolume(volume)) }
++      }
++    }
++  }
++
++  fun devices(): List<AudioDeviceInfo> = audio.getDevices(AudioManager.GET_DEVICES_OUTPUTS).toList()
++  fun expectReceiver(route: String) { receiverRequested = route == "earpiece" }
++
++  fun target(route: String): AudioDeviceInfo? {
++    if (route == "system") return null
++    val type = when (route) {
++      "earpiece" -> AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
++      "speaker" -> AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
++      else -> throw IllegalArgumentException("PLAYBACK_ROUTE_UNAVAILABLE")
++    }
++    return devices().firstOrNull { it.type == type } ?: throw IllegalStateException("PLAYBACK_ROUTE_UNAVAILABLE")
++  }
++
++  fun status(): Map<String, Any?> {
++    val observedGeneration = state.generation()
++    val current = try { track?.takeIf {
++      installedGeneration == observedGeneration &&
++      it.playState == AudioTrack.PLAYSTATE_PLAYING && (!receiverRequested ||
++        (it.audioAttributes.usage == android.media.AudioAttributes.USAGE_VOICE_COMMUNICATION &&
++          it.preferredDevice?.type == AudioDeviceInfo.TYPE_BUILTIN_EARPIECE))
++    }?.routedDevice } catch (_: IllegalStateException) { null }
++    val route = when (current?.type) {
++      null -> "unknown"
++      AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> "earpiece"
++      AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "speaker"
++      else -> "external"
++    }
++    val label = when (current?.type) {
++      AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> "Earpiece"
++      AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "Speaker"
++      AudioDeviceInfo.TYPE_BLUETOOTH_A2DP, AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
++      AudioDeviceInfo.TYPE_BLE_HEADSET, AudioDeviceInfo.TYPE_BLE_SPEAKER, AudioDeviceInfo.TYPE_HEARING_AID -> "Bluetooth"
++      AudioDeviceInfo.TYPE_WIRED_HEADPHONES, AudioDeviceInfo.TYPE_WIRED_HEADSET -> "Headphones"
++      AudioDeviceInfo.TYPE_USB_DEVICE, AudioDeviceInfo.TYPE_USB_HEADSET -> "USB audio"
++      AudioDeviceInfo.TYPE_HDMI, AudioDeviceInfo.TYPE_HDMI_ARC, AudioDeviceInfo.TYPE_HDMI_EARC -> "HDMI"
++      null -> "Audio output"
++      else -> "Connected audio"
++    }
++    val available = devices()
++    val routes = mutableListOf("system")
++    if (available.any { it.type == AudioDeviceInfo.TYPE_BUILTIN_EARPIECE }) routes.add("earpiece")
++    if (available.any { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }) routes.add("speaker")
++    return mapOf("route" to route, "label" to label, "availableRoutes" to routes, "_generation" to observedGeneration)
++  }
++
++  fun close() {
++    closed = true
++    changed = null
++    handler.post {
++      audio.unregisterAudioDeviceCallback(deviceListener)
++      track?.removeOnRoutingChangedListener(listener)
++      track = null
++    }
++  }
++}
+diff --git a/android/src/main/java/expo/modules/audio/PlaybackRouteState.java b/android/src/main/java/expo/modules/audio/PlaybackRouteState.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..b7c717894c857070e155083ff5e0f96576bc9e35
+--- /dev/null
++++ b/android/src/main/java/expo/modules/audio/PlaybackRouteState.java
+@@ -0,0 +1,56 @@
++package expo.modules.audio;
++
++/** Pure per-player state; no global Android audio or calling state is changed. */
++public final class PlaybackRouteState {
++  private String preference = "system";
++  private Float desiredVolume;
++  private int epoch, generation;
++  private float lastVolume = 1f;
++  private boolean configured, released;
++  public synchronized float select(String route, float volume) {
++    if (released || !(route.equals("earpiece") || route.equals("speaker") || route.equals("system")))
++      throw new IllegalStateException("PLAYBACK_ROUTE_UNAVAILABLE");
++    lastVolume = desiredVolume == null ? volume : desiredVolume;
++    configured = true;
++    preference = route;
++    ++epoch;
++    if (route.equals("earpiece")) {
++      if (desiredVolume == null) desiredVolume = volume;
++      return 0f;
++    }
++    float restore = desiredVolume == null ? volume : desiredVolume;
++    desiredVolume = null;
++    return restore;
++  }
++  public synchronized float observe(String route, float volume) { return observe(route, volume, generation); }
++  public synchronized float observe(String route, float volume, int observedGeneration) {
++    if (observedGeneration != generation) return effectiveVolume(volume);
++    if (released || !preference.equals("earpiece")) return volume;
++    if (route.equals("earpiece") || route.equals("external")) {
++      float restore = desiredVolume == null ? volume : desiredVolume;
++      desiredVolume = null;
++      lastVolume = restore;
++      return restore;
++    }
++    if (desiredVolume == null) desiredVolume = volume;
++    return 0f;
++  }
++  public synchronized boolean rejected(String actual) { return !released && preference.equals("earpiece") && actual.equals("speaker"); }
++  public synchronized boolean waiting() { return !released && desiredVolume != null; }
++  public synchronized int replacingTrack() {
++    ++generation;
++    if (!released && preference.equals("earpiece") && desiredVolume == null) desiredVolume = lastVolume;
++    return generation;
++  }
++  public synchronized int generation() { return generation; }
++  public synchronized float effectiveVolume(float requested) { return waiting() || released ? 0f : requested; }
++  public synchronized float changeVolume(float requested) {
++    lastVolume = requested;
++    if (desiredVolume != null) { desiredVolume = requested; return 0f; }
++    return requested;
++  }
++  public synchronized int epoch() { return epoch; }
++  public synchronized boolean released() { return released; }
++  public synchronized boolean autoResume(boolean wasPaused) { return wasPaused && !configured && !released; }
++  public synchronized void close() { released = true; ++epoch; desiredVolume = null; }
++}
+diff --git a/build/AudioModule.types.d.ts b/build/AudioModule.types.d.ts
+index b30a75a61acbaf2af7c56e3c39a834c64400dd65..4d8fbc31668dce4504108210b000f8c5c4132d7d 100644
+--- a/build/AudioModule.types.d.ts
++++ b/build/AudioModule.types.d.ts
+@@ -12,7 +12,18 @@ export declare class NativeAudioModule extends NativeModule {
+     readonly AudioPlayer: typeof AudioPlayer;
+     readonly AudioRecorder: typeof AudioRecorder;
+ }
++export type PlaybackAudioRouteStatus = {
++  route: 'speaker' | 'earpiece' | 'external' | 'unknown';
++  label: string;
++  availableRoutes: ('speaker' | 'earpiece' | 'system')[];
++  unavailable?: boolean;
++};
++
+ export declare class AudioPlayer extends SharedObject<AudioEvents> {
++  /** Phone11 per-player output observation. @platform android */
++  getPlaybackAudioRoute(): PlaybackAudioRouteStatus;
++  /** Phone11 per-player output preference, never a claim of an observed route. @platform android */
++  setPlaybackAudioRoute(route: 'speaker' | 'earpiece' | 'system'): PlaybackAudioRouteStatus;
+     /**
+      * Initializes a new audio player instance with the given source.
+      * @hidden
+@@ -205,6 +216,8 @@ export type AudioSampleChannel = {
+  * Use `player.addListener()` to subscribe to these events.
+  */
+ export type AudioEvents = {
++  /** Phone11 actual AudioTrack route observation. @platform android */
++  playbackAudioRoute(status: PlaybackAudioRouteStatus): void;
+     /** Fired when the player's status changes (play/pause/seek/load and so on.). */
+     playbackStatusUpdate(status: AudioStatus): void;
+     /** Fired when audio sampling is enabled and new sample data is available. */
+diff --git a/src/AudioModule.types.ts b/src/AudioModule.types.ts
+index 376f63874c0885e5523a959cbf9bdfcb584685c1..b0be12a1da4a420716bb8f657189e65966d6ed76 100644
+--- a/src/AudioModule.types.ts
++++ b/src/AudioModule.types.ts
+@@ -27,7 +27,18 @@ export declare class NativeAudioModule extends NativeModule {
+   readonly AudioRecorder: typeof AudioRecorder;
+ }
+ 
++export type PlaybackAudioRouteStatus = {
++  route: 'speaker' | 'earpiece' | 'external' | 'unknown';
++  label: string;
++  availableRoutes: ('speaker' | 'earpiece' | 'system')[];
++  unavailable?: boolean;
++};
++
+ export declare class AudioPlayer extends SharedObject<AudioEvents> {
++  /** Phone11 per-player output observation. @platform android */
++  getPlaybackAudioRoute(): PlaybackAudioRouteStatus;
++  /** Phone11 per-player output preference, never a claim of an observed route. @platform android */
++  setPlaybackAudioRoute(route: 'speaker' | 'earpiece' | 'system'): PlaybackAudioRouteStatus;
+   /**
+    * Initializes a new audio player instance with the given source.
+    * @hidden
+@@ -255,6 +266,8 @@ export type AudioSampleChannel = {
+  * Use `player.addListener()` to subscribe to these events.
+  */
+ export type AudioEvents = {
++  /** Phone11 actual AudioTrack route observation. @platform android */
++  playbackAudioRoute(status: PlaybackAudioRouteStatus): void;
+   /** Fired when the player's status changes (play/pause/seek/load and so on.). */
+   playbackStatusUpdate(status: AudioStatus): void;
+   /** Fired when audio sampling is enabled and new sample data is available. */

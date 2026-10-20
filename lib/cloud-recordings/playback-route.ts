@@ -10,6 +10,19 @@ export type EffectivePlaybackAudioRoute =
 export interface PlaybackAudioRouteStatus {
   route: EffectivePlaybackAudioRoute;
   label: string;
+  /** Android reports only routes present in the actual output inventory. */
+  availableRoutes?: readonly PlaybackAudioRoute[];
+  unavailable?: boolean;
+}
+
+/** Optional patched Expo methods live on the individual recording player. */
+export interface PlaybackRoutePlayer {
+  getPlaybackAudioRoute?(): unknown;
+  setPlaybackAudioRoute?(route: PlaybackAudioRoute): unknown;
+  addListener?(
+    event: string,
+    listener: (value: unknown) => void,
+  ): { remove(): void };
 }
 
 interface NativePlaybackRouteBridge {
@@ -54,7 +67,22 @@ export const normalizePlaybackAudioRoute = (
     externalLabels.has(raw.label)
       ? raw.label
       : labels[route];
-  return { route, label };
+  const capabilities = value as {
+    availableRoutes?: unknown;
+    unavailable?: unknown;
+  };
+  const rawRoutes = capabilities.availableRoutes;
+  const availableRoutes = Array.isArray(rawRoutes)
+    ? (["earpiece", "speaker", "system"] as const).filter((candidate) =>
+        rawRoutes.includes(candidate),
+      )
+    : undefined;
+  return {
+    route,
+    label,
+    ...(availableRoutes ? { availableRoutes } : {}),
+    ...(capabilities.unavailable === true ? { unavailable: true } : {}),
+  };
 };
 
 export const playbackAudioMode = (route: PlaybackAudioRoute) => ({
@@ -69,6 +97,7 @@ export const playbackAudioMode = (route: PlaybackAudioRoute) => ({
 export async function setPlaybackAudioRoute(
   route: PlaybackAudioRoute,
   canChangeRoute: () => boolean,
+  player?: object,
 ) {
   if (!canChangeRoute()) throw new Error("CALL_AUDIO_ACTIVE");
   if (Platform.OS === "ios") {
@@ -78,6 +107,14 @@ export async function setPlaybackAudioRoute(
       await bridge.setPlaybackAudioRoute(route),
     );
   }
+  if (Platform.OS === "android") {
+    const nativePlayer = player as PlaybackRoutePlayer | undefined;
+    if (!nativePlayer?.setPlaybackAudioRoute)
+      throw new Error("PLAYBACK_ROUTE_UNAVAILABLE");
+    const result = await nativePlayer.setPlaybackAudioRoute(route);
+    if (!canChangeRoute()) throw new Error("CALL_AUDIO_ACTIVE");
+    return normalizePlaybackAudioRoute(result);
+  }
   // The system picker owns this choice on iOS. Never map it to an invented
   // speaker route on platforms without that native picker.
   if (route === "system") throw new Error("PLAYBACK_ROUTE_UNAVAILABLE");
@@ -86,18 +123,35 @@ export async function setPlaybackAudioRoute(
 }
 
 /** Restore normal media playback only after this screen actually changed it. */
-export async function resetPlaybackAudioRoute(canChangeRoute: () => boolean) {
+export async function resetPlaybackAudioRoute(
+  canChangeRoute: () => boolean,
+  player?: object,
+) {
   if (!canChangeRoute()) return false;
   if (Platform.OS === "ios") {
     if (!bridge?.resetPlaybackAudioRoute) return false;
     await bridge.resetPlaybackAudioRoute();
     return true;
   }
+  if (Platform.OS === "android") {
+    const nativePlayer = player as PlaybackRoutePlayer | undefined;
+    if (!nativePlayer?.setPlaybackAudioRoute) return false;
+    await nativePlayer.setPlaybackAudioRoute("system");
+    return canChangeRoute();
+  }
   await setAudioModeAsync(playbackAudioMode("speaker"));
   return canChangeRoute();
 }
 
-export async function readPlaybackAudioRoute() {
+export async function readPlaybackAudioRoute(player?: object) {
+  if (Platform.OS === "android") {
+    const nativePlayer = player as PlaybackRoutePlayer | undefined;
+    return normalizePlaybackAudioRoute(
+      nativePlayer?.getPlaybackAudioRoute
+        ? await nativePlayer.getPlaybackAudioRoute()
+        : { route: "unknown", availableRoutes: [] },
+    );
+  }
   if (Platform.OS !== "ios" || !bridge?.getPlaybackAudioRoute)
     return {
       route: "unknown",
@@ -108,7 +162,24 @@ export async function readPlaybackAudioRoute() {
 
 export function subscribeToPlaybackAudioRoute(
   listener: (status: PlaybackAudioRouteStatus) => void,
+  player?: object,
 ) {
+  if (Platform.OS === "android") {
+    const nativePlayer = player as PlaybackRoutePlayer | undefined;
+    if (!nativePlayer?.addListener || !nativePlayer.getPlaybackAudioRoute)
+      return () => {};
+    let active = true;
+    const subscription = nativePlayer.addListener(
+      "playbackAudioRoute",
+      (value) => {
+        if (active) listener(normalizePlaybackAudioRoute(value));
+      },
+    );
+    return () => {
+      active = false;
+      subscription.remove();
+    };
+  }
   if (Platform.OS !== "ios" || !bridge) return () => {};
   const subscription = new NativeEventEmitter(bridge as never).addListener(
     "Phone11SiprixEvent",

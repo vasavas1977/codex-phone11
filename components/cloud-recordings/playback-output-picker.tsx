@@ -157,6 +157,8 @@ export function PlaybackOutputPickerSheet({
     void Promise.resolve(onOutputSelect(externalOutput)).catch(() => undefined);
   };
   const deviceLabel = Platform.OS === "ios" ? "iPhone" : "Phone";
+  const supportsRoute = (route: PlaybackAudioRoute) =>
+    !output.availableRoutes || output.availableRoutes.includes(route);
 
   return (
     <Modal
@@ -251,6 +253,7 @@ export function PlaybackOutputPickerSheet({
           >
             <OutputRow
               label={deviceLabel}
+              disabled={!supportsRoute("earpiece")}
               description="Private listening"
               icon="phone-iphone"
               selected={output.route === "earpiece"}
@@ -260,6 +263,7 @@ export function PlaybackOutputPickerSheet({
             />
             <OutputRow
               label="Speaker"
+              disabled={!supportsRoute("speaker")}
               description="Play aloud"
               icon="volume-up"
               selected={output.route === "speaker"}
@@ -267,6 +271,24 @@ export function PlaybackOutputPickerSheet({
               onPress={() => selectBuiltIn("speaker")}
               colors={colors}
             />
+            {Platform.OS === "android" && supportsRoute("system") ? (
+              <OutputRow
+                label={
+                  output.route === "external" ? output.label : "System audio"
+                }
+                description="Use your connected headphones or system audio output"
+                icon="headphones"
+                selected={output.route === "external"}
+                busy={routeChanging}
+                onPress={() => {
+                  onClose();
+                  void Promise.resolve(onRouteChange("system")).catch(
+                    () => undefined,
+                  );
+                }}
+                colors={colors}
+              />
+            ) : null}
             {availableOutputs.map((item) => {
               const selected =
                 item.selected === true ||
@@ -360,7 +382,11 @@ export function PlaybackOutputPickerButton({
               fontWeight: "600",
             }}
           >
-            {routeChanging ? "Changing…" : "Speaker"}
+            {routeChanging
+              ? "Changing…"
+              : Platform.OS === "android"
+                ? output.label
+                : "Speaker"}
           </Text>
         </TouchableOpacity>
         {NativeRoutePicker ? (
