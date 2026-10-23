@@ -1,5 +1,12 @@
 # Voicemail delivery runtime commissioning — 23 October 2026
 
+**Current runtime update:** the compatible derivative backend is built, running
+with restricted TLS database access, and serves the main admin tRPC route.
+Its owner-epoch absent-tenant check passed without creating an admission.
+The public voicemail route, loaded ingress and relay remain uncommissioned;
+delivery is not complete. See the [live database/API release record](PBX-DATABASE-RELEASE-20261023.md).
+The preparation observations below describe the earlier baseline where stated.
+
 The producer, deposit helper and relay must be deployed as one reviewed bundle.
 The accepted runtime inventory found older installed bytes, a missing
 `phone11_legacy_voicemail.lua`, and no `phone11-voicemail-relay.service`.
