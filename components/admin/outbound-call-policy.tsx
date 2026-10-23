@@ -69,6 +69,7 @@ export function OutboundCallPolicy() {
   latest.current = { admitted, ready, values };
   const changed = values.internationalEnabled !== saved.internationalEnabled ||
     values.premiumRateEnabled !== saved.premiumRateEnabled;
+  const needsSave = changed || policy.data?.configured === false;
   const busy = saving === renderedScope || update.isPending;
   const editable = ready && !busy;
   const change = (key: keyof Values, value: boolean) => {
@@ -78,7 +79,7 @@ export function OutboundCallPolicy() {
   };
   const save = async () => {
     const captured = renderedScope;
-    if (pending.current || !editable || !latest.current.ready || latest.current.values !== values || !changed || !owns(captured)) return;
+    if (pending.current || !editable || !latest.current.ready || latest.current.values !== values || !needsSave || !owns(captured)) return;
     const intended = { ...values };
     pending.current = captured;
     setSaving(captured);
@@ -130,8 +131,8 @@ export function OutboundCallPolicy() {
       {message ? <Text accessibilityRole={message.error ? "alert" : undefined} accessibilityLiveRegion="polite"
         style={[styles.description, { color: message.error ? colors.error : colors.success }]}>{message.text}</Text> : null}
       <Pressable accessibilityRole="button" accessibilityLabel="Save outbound call policy"
-        accessibilityState={{ disabled: !editable || !changed, busy }} disabled={!editable || !changed}
-        onPress={save} style={[styles.button, { backgroundColor: colors.primary }, (!editable || !changed) && styles.disabled]}>
+        accessibilityState={{ disabled: !editable || !needsSave, busy }} disabled={!editable || !needsSave}
+        onPress={save} style={[styles.button, { backgroundColor: colors.primary }, (!editable || !needsSave) && styles.disabled]}>
         <Text style={styles.buttonText}>{busy ? "Saving and confirming…" : "Save policy"}</Text>
       </Pressable>
       {supported && admitted && !busy ? <Pressable accessibilityRole="button" accessibilityLabel="Refresh outbound call policy"

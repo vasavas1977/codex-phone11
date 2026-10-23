@@ -89,14 +89,52 @@ beforeEach(() => {
 afterEach(unmount);
 
 describe("selected-workspace outbound call policy", () => {
-  it("shows absent policy as off and does not write defaults or no-op saves", async () => {
+  it("shows absent policy as off and allows an explicit initial save without writing on render", () => {
     m.query.data = observation({ configured: false });
     expect(render()).toContain("No policy has been configured");
     expect(m.switches.get("Allow international calls").value).toBe(false);
     expect(m.switches.get("Allow premium-rate calls").value).toBe(false);
+    expect(m.presses.get("Save outbound call policy").disabled).toBe(false);
+    expect(m.presses.get("Save outbound call policy").accessibilityState.disabled).toBe(false);
+    expect(m.mutate).not.toHaveBeenCalled();
+    expect(render()).toContain("Domestic, internal and emergency calling behavior is unchanged");
+  });
+  it("does not save an unchanged configured policy", async () => {
+    render();
     expect(m.presses.get("Save outbound call policy").disabled).toBe(true);
     await save(); expect(m.mutate).not.toHaveBeenCalled();
-    expect(render()).toContain("Domestic, internal and emergency calling behavior is unchanged");
+  });
+  it("saves initial off/off only on request, confirms fresh configured readback, and blocks repeat saves", async () => {
+    m.query.data = observation({ configured: false }); render();
+    const readback = deferred(); m.refetch.mockReturnValueOnce(readback.promise);
+    const handler = m.presses.get("Save outbound call policy").onPress;
+    const request = handler(); await handler(); await Promise.resolve();
+    expect(m.mutate).toHaveBeenCalledOnce();
+    expect(m.mutate).toHaveBeenCalledWith({ tenantId: 18, internationalEnabled: false, premiumRateEnabled: false });
+    expect(m.refetch).toHaveBeenCalledOnce();
+    expect(m.refetch).toHaveBeenCalledWith({ cancelRefetch: true });
+    expect(render()).not.toContain("saved and confirmed");
+    expect(m.presses.get("Save outbound call policy").disabled).toBe(true);
+    m.query.data = observation(); readback.resolve({ isError: false, data: m.query.data }); await request;
+    expect(render()).toContain("Outbound call policy saved and confirmed.");
+    expect(m.presses.get("Save outbound call policy").disabled).toBe(true);
+    await save(); await handler(); expect(m.mutate).toHaveBeenCalledOnce();
+  });
+  it.each([undefined, { success: false }])("does not confirm initial save without mutation acknowledgement: %j", async acknowledgement => {
+    m.query.data = observation({ configured: false }); render();
+    m.mutate.mockResolvedValueOnce(acknowledgement);
+    await save();
+    expect(render()).toContain("could not be confirmed");
+    expect(m.refetch).not.toHaveBeenCalled();
+  });
+  it.each(["error", "unconfigured", "wrong-tenant", "mismatch"])("does not confirm initial off/off save with unsuccessful readback: %s", async mode => {
+    m.query.data = observation({ configured: false }); render();
+    const patch = mode === "unconfigured" ? { configured: false } : mode === "wrong-tenant" ? { tenantId: 19 } :
+      mode === "mismatch" ? { internationalEnabled: true } : {};
+    m.refetch.mockResolvedValueOnce({ isError: mode === "error", data: observation(patch) });
+    await save(); const html = render();
+    expect(html).not.toContain("saved and confirmed");
+    expect(html).toContain("Refresh the policy");
   });
   it.each([undefined, false, "true", 1])("refuses old or malformed capability %s", async bit => {
     m.workspace.capabilitiesQuery.data.explicitFraudControls = bit;
@@ -151,8 +189,10 @@ describe("selected-workspace outbound call policy", () => {
     m.query.isFetching = true; render(); await oldSave();
     expect(m.mutate).not.toHaveBeenCalled();
   });
-  it.each(["workspace", "account", "revoked", "membership-refresh", "unmount"])("discards a late mutation after %s", async mode => {
-    render(); toggle(); const wait = deferred(); m.mutate.mockReturnValueOnce(wait.promise);
+  it.each([true, false].flatMap(configured => ["workspace", "account", "revoked", "membership-refresh", "unmount"]
+    .map(mode => ({ configured, mode }))))("discards a late mutation after $mode with configured=$configured", async ({ configured, mode }) => {
+    m.query.data = observation({ configured }); render(); if (configured) toggle();
+    const wait = deferred(); m.mutate.mockReturnValueOnce(wait.promise);
     const request = save();
     if (mode === "workspace") { m.workspace.selectedTenantId = 19; m.workspace.admissionScope = "7:19:1"; render(); }
     if (mode === "account") auth({ id: 8 });
