@@ -26,7 +26,12 @@ Siprix trial remains; Android and physical-phone testing are deferred.
   active. No reboot or container restart was performed to test recovery.
 - A public anonymous readiness request returned the expected 401. This is not
   signed-in portal acceptance or independent attribution of that public response
-  to the new backend. Auth, policy-map, photo and voicemail routes were unchanged.
+  to the new backend. Auth, policy-map and photo routes were unchanged.
+- At 14:26 UTC, the two voicemail recording routes also moved from 3013 to
+  3026. The directory and local fallback issuer/redemption routes remain on
+  3013. The new worker generation was observed, and protected processes remained
+  unchanged. Anonymous recording retrieval returned 401; unauthenticated
+  admission returned 403. These are denial checks, not successful delivery.
 
 The new image is
 `sha256:17b8553fb5ad57b5c766b8396f0dd65bdaea11d8b1593003264a8504578d3d62`;
@@ -52,15 +57,23 @@ Local operational receipts are under
 | Boot policy, unchanged processes | `PBX-COMBINED-API-RESTART-20261023-v1.json` |
 | Main tRPC route cutover | `PBX-COMBINED-API-ROUTE-20261023-v1.json` |
 | Anonymous public denial | `PBX-COMBINED-PUBLIC-DENIAL-20261023-v1.json` |
+| Voicemail route cutover | `PBX-VOICEMAIL-UPLOAD-ROUTE-20261023-v1.json` |
+| Voicemail public denial | `PBX-VOICEMAIL-PUBLIC-DENIAL-20261023-v1.json` |
+| FreeSWITCH replacement | `PBX-VOICEMAIL-FS-REPLACE-20261023-v2.json` |
+| Loaded voicemail XML, modules and artifact closure | `PBX-VOICEMAIL-FS-LOADED-PROOF-20261023-v2.json` |
+| Actual FS credential compatibility | `PBX-VOICEMAIL-FS-AUTH-COMPATIBILITY-20261023-v1.json` |
 | Consolidated state | `PBX-COMMISSIONING-PROGRESS-20261023-v2.json` |
 
 Native route evidence and retained original configuration are bound by
 `/var/lib/phone11-combined-api-route-oct23-v1/99-result.json`, SHA
 `5ba65b640ac64e07b2a19d5c0634689a1a32785c632cf5988b5e2d7bf6c2b008`.
-The active site SHA is
-`069da1227b90baff9a7a88198a9d965033611f862ffddb85356c57d33fcda8fc`.
-Rollback must be prepared against this current state and the retained original
-inode, restoring only the main tRPC upstream to 3023. Do not rerun an old cutover
+The subsequent voicemail route cutover changed the active site SHA to
+`97ab043b2776972ad9702a6ab6cec3c31d72684511d4670d4d4d6c2cdfa17148`.
+Its native proof is `/var/lib/phone11-voicemail-upload-route-oct23-v1/99-result.json`,
+SHA `5547b6c3559c06ed53db026209984984dd0ea053214fef8da67924574e94ad4f`.
+The reviewed voicemail rollback restores only its two routes to 3013 and can
+operate when 3026 is unhealthy. Main tRPC rollback must account for this newer
+configuration instead of using the old site pin. Do not rerun an old cutover
 or rollback packet with stale configuration pins. Keep database changes and
 backups; do not drop new tables as an application rollback.
 
@@ -68,15 +81,32 @@ backups; do not drop new tables as an application rollback.
 
 The running combined API passed the owner-epoch admission protocol's absent-tenant
 404 check with no admission created. That proves the deployed protocol boundary,
-not delivery. The public voicemail upload route still targets its older backend.
-The loaded trusted fallback context is absent, and FreeSWITCH needs a controlled
-replacement to change inherited configuration and immutable helper mounts.
+not delivery. The public voicemail upload route now targets this compatible API.
+FreeSWITCH was replaced successfully at 15:58 UTC with the corrected immutable
+runtime and matching startup manifest. Its original four running profile/transport
+pairs remain up, including the private TLS profile. Recording/voicemail volumes
+and outbox are unchanged. The new service uses restart `always`; the old container
+is retained stopped with restart `no`. The switch observed zero active core,
+channel and call counts twice under an owned pause, then used graceful shutdown.
+No force kill was requested and other protected service processes were unchanged.
 
-Finish that runtime transition with the retained recording/outbox volumes,
-trusted caller identity, compatible upload routing and complete rollback before
-enabling the guarded relay timer. Matching integrated media and mailbox-delivery
-evidence remains missing. Global voicemail hooks remain off; no queued audio was
-processed. See [voicemail commissioning](VOICEMAIL-DELIVERY-COMMISSIONING-20261023.md).
+The actual new FreeSWITCH child credential authenticated against the new upload
+backend: an absent owner-epoch sentinel returned 404, missing/wrong credentials
+returned 403, and read-only checks confirmed no tenant/extension/admission was
+created. Seven mounted artifacts and the complete ten-file startup manifest
+matched; both loaded voicemail guard structures matched. The public entry is
+18th by zero-based index after eighteen earlier extensions, including thirteen
+terminal actions, so routing reachability is not established by presence alone.
+The completed native XML lookup also confirmed the directory and protected
+endpoint/binding configuration, unique scalar parameters and expected repeated
+form-field sets. The protected HTTPS binding has its certificate/key/CA fields
+present and certificate/hostname verification enabled. Lua, voicemail and
+XML-curl modules are loaded. XML configuration observation does not itself prove
+a directory request, protected call resolution or TLS negotiation.
+
+Trusted ingress, relay scheduling and matching integrated media/mailbox-delivery
+evidence remain outstanding. Global voicemail hooks remain off; no queued audio
+was processed. See [voicemail commissioning](VOICEMAIL-DELIVERY-COMMISSIONING-20261023.md).
 
 Legacy services retain their existing database roles. This release restricts the
 ordinary admin API; it does not establish whole-stack least privilege or generic

@@ -3,22 +3,31 @@
 **Current runtime update:** the compatible derivative backend is built, running
 with restricted TLS database access, and serves the main admin tRPC route.
 Its owner-epoch absent-tenant check passed without creating an admission.
-The public voicemail route, loaded ingress and relay remain uncommissioned;
-delivery is not complete. See the [live database/API release record](PBX-DATABASE-RELEASE-20261023.md).
+The public voicemail recording routes also switched to that API at 14:26 UTC,
+with the old directory and fallback redemption service retained on 3013.
+FreeSWITCH was then replaced successfully at 15:58 UTC. All four previously
+running profile/transport pairs, shared storage and other protected processes
+were preserved. The new container has restart `always`; the previous container
+is retained stopped with restart `no`. The actual FS child credential passed
+the new backend's absent-sentinel check, with no admission or media created.
+Loaded voicemail guard structures match, but trusted ingress reachability and
+relay remain uncommissioned; delivery is not complete. See the
+[live database/API release record](PBX-DATABASE-RELEASE-20261023.md).
 The preparation observations below describe the earlier baseline where stated.
 
 The producer, deposit helper and relay must be deployed as one reviewed bundle.
-The accepted runtime inventory found older installed bytes, a missing
-`phone11_legacy_voicemail.lua`, and no `phone11-voicemail-relay.service`.
-Those observations establish a compatibility gap; the current portal release
-does not establish which voicemail protocol the ordinary backend implements.
-The retained `c5140f4cb0caebce1225b8e45d41c5b9a40af9a9` source has a deposit
-helper digest exactly matching the installed older helper. Its backend lacks
-`/voicemail/admission/idempotent` and differs in storage/custody handling. The
-current container name suggests that source, but its name alone is not an
-image-to-source binding. Verify the actual backend artifact; if it is that
-retained version, deploy a reviewed compatible backend before the current
-producer. An old API receiving new admission requests will reject them.
+The earlier runtime inventory found older installed bytes and no
+`phone11-voicemail-relay.service`. A later fixed-path observation confirmed an
+underlying legacy helper exists; it is not an explicit immutable bind mount.
+The seven-artifact release was subsequently installed through immutable mounts during the controlled replacement described above.
+Those earlier observations established the compatibility gap addressed by this
+release. The retained `c5140f4cb0caebce1225b8e45d41c5b9a40af9a9` source matched the
+older deposit helper and lacked `/voicemail/admission/idempotent`. The new
+compatible derivative is separately bound by its reviewed installed-bundle and
+image hashes in the live database/API release record. Container names alone are
+not release evidence. Keep the old API for the directory and fallback
+issuer/redemption routes; do not restore recording uploads to an incompatible
+backend while the new producer is active.
 
 The historical `phone11-mainline-release-start.py` and its prerequisite module
 remain bound to their original backend topology. Do not edit their pins or feed
@@ -66,8 +75,60 @@ pathname does not replace the inode already mounted into the container. Copying
 over an active inode risks a partial script read. Use a fresh immutable release
 directory and a controlled container replacement retaining the exact image,
 network, recording/voicemail volumes, outbox and all unrelated mounts/config.
-Include an explicit legacy-helper bind to the new release. Retain the old
-release and complete old container definition for rollback. If continuity of
+Include an explicit legacy-helper bind to the new release. The actual container
+entrypoint is `/opt/phone11ai/voicemail/fs-entrypoint.sh`, which invokes the
+unchanged `runtime-check.mjs` before `/docker-entrypoint.sh`. The native startup
+check binds ten files through `release.json` and
+`PHONE11_VM_RELEASE_MANIFEST_SHA256`. A seven-artifact directory alone is not a
+bootable replacement; four runtime overlays alone also invalidate the old
+manifest. Preserve the complete bootstrap closure and construct a matching
+manifest for the reviewed replacement bytes without weakening the check.
+The first stopped candidate remains ineligible to start for this reason.
+A corrected stopped candidate, `d20db374166e1653cb132768ee6c3e11b614208caa38fc765cea7bc0354ba8dc`,
+preserves the original runtime directory, overlays the reviewed helpers and a
+matching ten-file manifest, and retains the original recording/voicemail volumes
+and outbox. Its unchanged startup guard passed at 15:41 UTC in a separate
+network-disabled, read-only Node container. The actual FreeSWITCH candidate was
+still stopped, and all protected service processes were unchanged. This isolated check proved only the startup manifest checks. The subsequent
+controlled replacement proved the running lifecycle and preserved phone profiles;
+media delivery remains a separate boundary.
+
+The corrected runtime manifest SHA is
+`7fe5bec292f7157d32e4f397780b903a5e3b73858b5bc9aa79b4741bf83e431e`.
+The retained native create and isolated-check receipts are respectively
+`/var/lib/phone11-voicemail-fs-candidate-oct23-v2/99-result.json` and
+`/var/lib/phone11-voicemail-fs-bootcheck-oct23-v1/99-result.json`.
+Their SHA-256 values are
+`a6d76540a220ab372d49bf8025725c9cec9844d22c43c98a22d2de1e5a0f4f8d` and
+`07b3a65e6f6fb2c79f1334f927736443544dd65c38eed0b370807059584f9049`.
+The accepted replacement receipt is
+`/var/lib/phone11-voicemail-fs-replace-oct23-v2/99-result.json`, SHA-256
+`50ba2fdb7991364b692213cb96ac508354fc566e5d683b6e2fbd3007e0b9f34f`.
+Current container `d20db374166e1653cb132768ee6c3e11b614208caa38fc765cea7bc0354ba8dc`
+runs as `p11-freeswitch`, PID 2376529, started `2026-10-23T15:58:23.605826924Z`.
+The actual FreeSWITCH child was PID 2376563 at the postreplacement checks.
+The completed loaded proof is
+`operator/PBX-VOICEMAIL-FS-LOADED-PROOF-20261023-v2.json`: both guarded context
+structures match and Lua, voicemail and XML-curl modules are loaded. The selected
+XML-curl endpoints, scalar parameters and repeated form-field sets match the
+expected directory/protected configuration. Certificate/key/CA bindings and
+certificate/hostname verification are configured on the protected HTTPS binding.
+The public voicemail entry follows eighteen earlier extensions, with thirteen
+terminal actions; its presence does not prove SIP routing reachability.
+
+The first loaded observation rejected documented repeated `enable-post-var`
+entries. The corrected read-only projector allows only that repeatable parameter,
+with unique values from the exact per-binding field allowlist; all other duplicate
+names still refuse. It uses FreeSWITCH's actual `enable-cacert-check` and
+`enable-ssl-verifyhost` names. No live XML change or reload was made to resolve
+that observer error. The prior lifecycle preflight similarly refused the
+published `(TLS)` status suffix; its corrected parser preserves each running
+profile and transport pair. Both earlier refusal records remain retained.
+The old container is named `p11-freeswitch-rollback-oct23-v1`. The bounded
+recovery operator refuses a running new container; pause/drain must precede any
+rollback that could interrupt new calls. Do not blindly rerun a forward packet.
+
+Retain the old release and complete old container definition for rollback. If continuity of
 the shared FreeSWITCH process cannot be safely preserved, stop at staged files
 and report the required replacement window; do not mutate active inodes.
 
@@ -76,8 +137,9 @@ The current producer reads acknowledged historical pending records that contain
 `requestMessageUuid` and `admitted:false`; older producers cannot treat it as
 admitted. New admission uses `/admission/idempotent`, exact request/response UUID
 and the server-side deposit owner/epoch. An old backend without that endpoint
-fails closed before recording. This prevents false admission; it does not prove
-the currently running old backend supports the protocol. Review its exact
+fails closed before recording. This prevents false admission. The current upload backend passed the protocol
+boundary check described above; that check does not prove a real deposit or
+mailbox delivery. Review its exact
 source/runtime against the current admission, retirement, upload idempotency,
 owner-epoch and static-route contracts before enabling both flags.
 
@@ -174,9 +236,11 @@ claim. Do not create it from source templates or script presence. The guard bind
 its digest and runtime epochs, rechecks installed bytes and native configuration,
 and re-reads the evidence immediately before a pass. It does not independently
 reproduce the operator's loaded-XML, issuer/redemption or owner-lifecycle proof.
-At source preparation, the loaded trusted context remained unresolved and the
-patched derivative image was not built. Those are real activation prerequisites;
-no activation packet or completed delivery is implied here.
+The historical source-preparation image-build prerequisite is now resolved:
+the compatible derivative is running, and the corrected FreeSWITCH runtime and
+voicemail guard structures are installed. Trusted ingress reachability,
+issuer/redemption lifecycle and mailbox delivery remain outstanding; no completed
+activation packet or delivery is implied by the build and runtime transition.
 
 Use the separate `phone11-voicemail-trusted-fallback-relay.service.in` and timer
 only for this v2 lane. Render its packet digest and stage it disabled alongside
