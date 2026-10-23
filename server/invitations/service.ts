@@ -136,7 +136,7 @@ export class InvitationService {
         `SELECT to_regclass('phone11_workspace_invitations') IS NOT NULL AS ready,
                 to_regclass('phone11_workspace_invitation_events') IS NOT NULL AS events_ready,
                 to_regclass('phone11_auth_identity') IS NOT NULL AS identity_ready,
-                (SELECT count(*) FROM information_schema.columns WHERE table_schema=current_schema()
+                (SELECT count(*) FROM information_schema.columns WHERE table_schema='public'
                  AND table_name='phone11_workspace_invitations' AND column_name=ANY(ARRAY[
                   'id','tenant_id','email','role','issuer_user_id','token_digest','expires_at','status',
                   'accepted_user_id','accepted_at','revoked_at','delivery_status','delivery_error',
@@ -145,7 +145,7 @@ export class InvitationService {
                    JOIN pg_class idx ON idx.oid=ix.indexrelid
                    JOIN pg_class tbl ON tbl.oid=ix.indrelid
                    JOIN pg_namespace ns ON ns.oid=tbl.relnamespace
-                   WHERE ns.nspname=current_schema() AND ix.indisunique AND ix.indisvalid AND ix.indisready
+                   WHERE ns.nspname='public' AND ix.indisunique AND ix.indisvalid AND ix.indisready
                      AND ((idx.relname='phone11_users_normalized_email_unique' AND tbl.relname='users'
                            AND ix.indnkeyatts=1 AND ix.indnatts=1
                            AND pg_get_indexdef(ix.indexrelid,1,true)='lower(TRIM(BOTH FROM email))'

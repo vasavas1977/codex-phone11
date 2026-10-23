@@ -21,7 +21,8 @@ SELECT pg_catalog.json_build_object(
 'databaseMatch', pg_catalog.current_database()='phone11ai' AND (SELECT oid FROM pg_catalog.pg_database WHERE datname=pg_catalog.current_database())=$2,
 'serverMatch', pg_catalog.host(pg_catalog.inet_server_addr())=$1 AND pg_catalog.inet_server_port()=5432,
 'versionMatch', pg_catalog.current_setting('server_version_num')=$3,
-'schemaMatch', pg_catalog.current_schema()='public',
+'schemaMatch', 'public'=ANY(pg_catalog.current_schemas(false)) AND NOT EXISTS
+ (SELECT 1 FROM table_flags WHERE oid IS DISTINCT FROM pg_catalog.to_regclass(table_name)::oid),
 'readOnly', pg_catalog.current_setting('transaction_read_only')='on',
 'repeatableRead', pg_catalog.current_setting('transaction_isolation')='repeatable read',
 'roleIsLogin', current_user=session_user,
