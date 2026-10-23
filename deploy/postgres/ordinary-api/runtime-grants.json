@@ -1,0 +1,7208 @@
+{
+  "schema": "PHONE11_ORDINARY_API_GRANT_MANIFEST_V1",
+  "sourceSha": "34a2ea092f8ff21c7e649dd26176109b1929ee3d",
+  "role": "p11_management_runtime_20261023_v1",
+  "database": "phone11ai",
+  "productionSystemIdentifier": "7638134557377753122",
+  "appTenantAuthority": "Existing authenticated application membership checks; no new DB-level actor or tenant isolation",
+  "selectColumns": "All existing observed columns are explicitly frozen at render time; no future column grants",
+  "tables": {
+    "audit_logs": {
+      "select": true,
+      "insert": [
+        "action",
+        "actor_user_id",
+        "ip_address",
+        "new_value",
+        "old_value",
+        "request_id",
+        "resource_id",
+        "resource_type",
+        "session_id",
+        "tenant_id",
+        "user_agent"
+      ],
+      "update": [],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/pbx/audit.ts",
+          "line": 71,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/pbx/audit.ts",
+          "line": 151,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/audit.ts",
+          "line": 155,
+          "operation": "FROM"
+        }
+      ],
+      "required": true
+    },
+    "call_events": {
+      "select": true,
+      "insert": [
+        "call_leg_id",
+        "call_record_id",
+        "event_timestamp",
+        "event_type",
+        "metadata",
+        "tenant_id"
+      ],
+      "update": [],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/pbx/cdr-processor.ts",
+          "line": 319,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 2069,
+          "operation": "FROM"
+        }
+      ],
+      "required": true
+    },
+    "call_legs": {
+      "select": true,
+      "insert": [
+        "answered_at",
+        "billable_seconds",
+        "call_record_id",
+        "callee_user_id",
+        "caller_user_id",
+        "codec",
+        "codec_read",
+        "codec_write",
+        "duration_seconds",
+        "ended_at",
+        "extension_id",
+        "from_uri",
+        "hangup_cause",
+        "hangup_disposition",
+        "leg_uuid",
+        "metadata",
+        "pdd_ms",
+        "ringing_at",
+        "sip_call_id",
+        "sip_response_code",
+        "started_at",
+        "tenant_id",
+        "to_uri"
+      ],
+      "update": [
+        "answered_at",
+        "billable_seconds",
+        "callee_user_id",
+        "caller_user_id",
+        "codec",
+        "codec_read",
+        "codec_write",
+        "duration_seconds",
+        "ended_at",
+        "extension_id",
+        "from_uri",
+        "hangup_cause",
+        "hangup_disposition",
+        "metadata",
+        "pdd_ms",
+        "ringing_at",
+        "sip_call_id",
+        "sip_response_code",
+        "started_at",
+        "to_uri"
+      ],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 81,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 91,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 93,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/route-cdr.ts",
+          "line": 29,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/cloud-recordings/route-cdr.ts",
+          "line": 32,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/pbx/cdr-processor.ts",
+          "line": 224,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/cdr-processor.ts",
+          "line": 246,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/pbx/cdr-processor.ts",
+          "line": 255,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/pbx/cdr-processor.ts",
+          "line": 296,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/pbx/media-access.ts",
+          "line": 11,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 2030,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 2065,
+          "operation": "FROM"
+        }
+      ],
+      "required": true
+    },
+    "call_queues": {
+      "select": true,
+      "insert": [
+        "agent_announcement",
+        "announce_frequency",
+        "announce_position",
+        "description",
+        "extension",
+        "is_active",
+        "join_announcement",
+        "max_callers",
+        "max_wait_time",
+        "moh_file",
+        "name",
+        "overflow_action",
+        "overflow_target",
+        "record_calls",
+        "service_level_secs",
+        "strategy",
+        "tenant_id",
+        "wrap_up_time"
+      ],
+      "update": [
+        "agent_announcement",
+        "announce_frequency",
+        "announce_position",
+        "description",
+        "extension",
+        "is_active",
+        "join_announcement",
+        "max_callers",
+        "max_wait_time",
+        "moh_file",
+        "name",
+        "overflow_action",
+        "overflow_target",
+        "record_calls",
+        "service_level_secs",
+        "strategy",
+        "updated_at",
+        "wrap_up_time"
+      ],
+      "delete": true,
+      "references": [
+        {
+          "file": "server/pbx/dialplan-generators.ts",
+          "line": 271,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 289,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 877,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 887,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 910,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 926,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 939,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 954,
+          "operation": "DELETE FROM"
+        }
+      ],
+      "required": true
+    },
+    "call_records": {
+      "select": true,
+      "insert": [
+        "answered_at",
+        "call_uuid",
+        "callee_user_id",
+        "caller_user_id",
+        "direction",
+        "disposition",
+        "ended_at",
+        "from_number",
+        "metadata",
+        "recording_url",
+        "started_at",
+        "tenant_id",
+        "to_number",
+        "total_billable_seconds",
+        "total_duration_seconds"
+      ],
+      "update": [
+        "answered_at",
+        "callee_user_id",
+        "caller_user_id",
+        "disposition",
+        "ended_at",
+        "metadata",
+        "recording_url",
+        "total_billable_seconds",
+        "total_duration_seconds"
+      ],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 81,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 137,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/cloud-recordings/route-cdr.ts",
+          "line": 23,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/cloud-recordings/route-cdr.ts",
+          "line": 26,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/cdr-processor.ts",
+          "line": 173,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/pbx/cdr-processor.ts",
+          "line": 362,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/cdr-processor.ts",
+          "line": 373,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/cdr-processor.ts",
+          "line": 384,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/cdr-processor.ts",
+          "line": 396,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/media-access.ts",
+          "line": 9,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 940,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 951,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 2031,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 2037,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 2058,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 2220,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 2224,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 2228,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 2254,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/personal-call-history.ts",
+          "line": 47,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/recording-storage.ts",
+          "line": 204,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/recording-storage.ts",
+          "line": 215,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/recording-storage.ts",
+          "line": 225,
+          "operation": "UPDATE"
+        }
+      ],
+      "required": true
+    },
+    "did_numbers": {
+      "select": true,
+      "insert": [
+        "description",
+        "destination_type",
+        "destination_value",
+        "number",
+        "org_id",
+        "status",
+        "tenant_id"
+      ],
+      "update": [],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 457,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 885,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 906,
+          "operation": "INSERT INTO"
+        }
+      ],
+      "required": true
+    },
+    "emergency_addresses": {
+      "select": true,
+      "insert": [
+        "caller_name",
+        "city",
+        "country",
+        "label",
+        "postal_code",
+        "site_id",
+        "state_province",
+        "street",
+        "tenant_id"
+      ],
+      "update": [],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 1600,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 1831,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 1853,
+          "operation": "INSERT INTO"
+        }
+      ],
+      "required": true
+    },
+    "extensions": {
+      "select": true,
+      "insert": [
+        "caller_id_name",
+        "caller_id_number",
+        "display_name",
+        "extension_number",
+        "org_id",
+        "sip_domain",
+        "sip_password",
+        "sip_username",
+        "status",
+        "tenant_id",
+        "transport",
+        "type",
+        "user_id"
+      ],
+      "update": [
+        "call_forwarding_enabled",
+        "caller_id_name",
+        "caller_id_number",
+        "cfb_destination",
+        "cfna_destination",
+        "cfna_timeout_seconds",
+        "cfu_destination",
+        "deleted_at",
+        "display_name",
+        "dnd_enabled",
+        "sip_password",
+        "status",
+        "updated_at",
+        "user_id",
+        "voicemail_enabled"
+      ],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/chat-notifications/repository.ts",
+          "line": 14,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 20,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 272,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 307,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 328,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 332,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 351,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 506,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 563,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 819,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 842,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 857,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 915,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 974,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 1016,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/capture-ledger.ts",
+          "line": 25,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/capture-service.ts",
+          "line": 49,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/correlation.ts",
+          "line": 21,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/correlation.ts",
+          "line": 80,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/correlation.ts",
+          "line": 97,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/correlation.ts",
+          "line": 103,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/correlation.ts",
+          "line": 118,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 14,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 82,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 109,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 111,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 154,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 166,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 192,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 204,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/cloud-recordings/route-cdr.ts",
+          "line": 16,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/channel-meeting-admin-repository.ts",
+          "line": 105,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/channel-meeting-admin-repository.ts",
+          "line": 186,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/channel-meeting-admin-repository.ts",
+          "line": 191,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/channel-meeting-origin.ts",
+          "line": 76,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/channel-meeting-origin.ts",
+          "line": 111,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/channel-meeting-origin.ts",
+          "line": 116,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/channel-meeting-repository.ts",
+          "line": 52,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/channel-meeting-repository.ts",
+          "line": 82,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/channel-meeting-repository.ts",
+          "line": 138,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/channel-meeting-repository.ts",
+          "line": 144,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/channel-meeting-repository.ts",
+          "line": 175,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/channel-meeting-repository.ts",
+          "line": 235,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/direct-meeting-repository.ts",
+          "line": 60,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/direct-meeting-repository.ts",
+          "line": 113,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/direct-meeting-repository.ts",
+          "line": 118,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/direct-meeting-repository.ts",
+          "line": 204,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/direct-meeting-repository.ts",
+          "line": 208,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/plain-video-admission-lease-repository.ts",
+          "line": 102,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/plain-video-admission-repository.ts",
+          "line": 68,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/cdr-processor.ts",
+          "line": 460,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/dialplan-generators.ts",
+          "line": 105,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/dialplan-generators.ts",
+          "line": 147,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/dialplan-generators.ts",
+          "line": 188,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/dialplan-generators.ts",
+          "line": 278,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/freeswitch-routes.ts",
+          "line": 60,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/freeswitch-routes.ts",
+          "line": 180,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/freeswitch-routes.ts",
+          "line": 433,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/freeswitch-routes.ts",
+          "line": 465,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 196,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 281,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 334,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 382,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 410,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 461,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 551,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 724,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 744,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 866,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 872,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 892,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/kamailio-routes.ts",
+          "line": 70,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/kamailio-routes.ts",
+          "line": 163,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/kamailio-routes.ts",
+          "line": 207,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/kamailio-routes.ts",
+          "line": 214,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/media-access.ts",
+          "line": 12,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 204,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 600,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 614,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 656,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 670,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 785,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 793,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 904,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 990,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 1006,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 1036,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 1109,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 1139,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 1284,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 1341,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 1347,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 1440,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 1477,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 1546,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 2206,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 2210,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/personal-call-history.ts",
+          "line": 20,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/personal-call-history.ts",
+          "line": 55,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/push-access.ts",
+          "line": 11,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/recording-storage.ts",
+          "line": 34,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/recording-storage.ts",
+          "line": 333,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/selected-directory.ts",
+          "line": 24,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/selected-directory.ts",
+          "line": 41,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/selected-directory.ts",
+          "line": 50,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/voicemail-access.ts",
+          "line": 64,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/voicemail-dialplan.ts",
+          "line": 80,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 226,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 392,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 425,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 506,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 512,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 576,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 593,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 621,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 690,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 713,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 726,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 747,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 781,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 821,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/profile/photo.ts",
+          "line": 369,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/push/repository.ts",
+          "line": 12,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/push/repository.ts",
+          "line": 34,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 28,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/routers.ts",
+          "line": 194,
+          "operation": "FROM"
+        }
+      ],
+      "required": true
+    },
+    "ivr_actions": {
+      "select": true,
+      "insert": [
+        "action_type",
+        "description",
+        "digit",
+        "menu_id",
+        "sort_order",
+        "target"
+      ],
+      "update": [],
+      "delete": true,
+      "references": [
+        {
+          "file": "server/pbx/dialplan-generators.ts",
+          "line": 31,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 588,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 602,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 696,
+          "operation": "DELETE FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 699,
+          "operation": "INSERT INTO"
+        }
+      ],
+      "required": true
+    },
+    "ivr_menus": {
+      "select": true,
+      "insert": [
+        "description",
+        "digit_timeout_ms",
+        "exit_action",
+        "exit_target",
+        "greeting_file",
+        "greeting_tts",
+        "invalid_sound",
+        "is_active",
+        "max_retries",
+        "name",
+        "tenant_id",
+        "timeout_ms"
+      ],
+      "update": [
+        "description",
+        "digit_timeout_ms",
+        "exit_action",
+        "exit_target",
+        "greeting_file",
+        "greeting_tts",
+        "invalid_sound",
+        "is_active",
+        "max_retries",
+        "name",
+        "timeout_ms",
+        "updated_at"
+      ],
+      "delete": true,
+      "references": [
+        {
+          "file": "server/pbx/dialplan-generators.ts",
+          "line": 26,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/dialplan-generators.ts",
+          "line": 163,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 305,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 398,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 475,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 567,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 589,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 599,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 616,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 636,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 652,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 668,
+          "operation": "DELETE FROM"
+        }
+      ],
+      "required": true
+    },
+    "organizations": {
+      "select": true,
+      "insert": [],
+      "update": [],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 175,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 396,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 874,
+          "operation": "FROM"
+        }
+      ],
+      "required": true
+    },
+    "phone11_auth_account": {
+      "select": true,
+      "insert": [
+        "accountId",
+        "createdAt",
+        "id",
+        "password",
+        "providerId",
+        "updatedAt",
+        "userId"
+      ],
+      "update": [
+        "password",
+        "updatedAt"
+      ],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/_core/phone11-auth-readiness.ts",
+          "line": 91,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/_core/phone11-auth-readiness.ts",
+          "line": 97,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/_core/phone11-auth.ts",
+          "line": 163,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/invitations/service.ts",
+          "line": 321,
+          "operation": "INSERT INTO"
+        }
+      ],
+      "required": true
+    },
+    "phone11_auth_identity": {
+      "select": true,
+      "insert": [
+        "auth_user_id",
+        "legacy_user_id"
+      ],
+      "update": [
+        "created_at"
+      ],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/_core/phone11-auth-readiness.ts",
+          "line": 88,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/_core/phone11-auth.ts",
+          "line": 156,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/_core/phone11-auth.ts",
+          "line": 335,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/_core/phone11-auth.ts",
+          "line": 490,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat-notifications/repository.ts",
+          "line": 11,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat-notifications/repository.ts",
+          "line": 62,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat-notifications/repository.ts",
+          "line": 72,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 838,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/invitations/service.ts",
+          "line": 65,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/invitations/service.ts",
+          "line": 90,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/invitations/service.ts",
+          "line": 301,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/invitations/service.ts",
+          "line": 324,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/meetings/channel-meeting-admin-repository.ts",
+          "line": 40,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/channel-meeting-admin-repository.ts",
+          "line": 103,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/channel-meeting-admin-repository.ts",
+          "line": 179,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/channel-meeting-origin.ts",
+          "line": 73,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/channel-meeting-origin.ts",
+          "line": 99,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/channel-meeting-repository.ts",
+          "line": 49,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/channel-meeting-repository.ts",
+          "line": 79,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/channel-meeting-repository.ts",
+          "line": 131,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/channel-meeting-repository.ts",
+          "line": 172,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/channel-meeting-repository.ts",
+          "line": 231,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/direct-meeting-repository.ts",
+          "line": 58,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/direct-meeting-repository.ts",
+          "line": 109,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/direct-meeting-repository.ts",
+          "line": 193,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/direct-meeting-repository.ts",
+          "line": 195,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/plain-video-admission-lease-repository.ts",
+          "line": 98,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/plain-video-admission-lease-repository.ts",
+          "line": 149,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/plain-video-admission-repository.ts",
+          "line": 59,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/plain-video-admission-repository.ts",
+          "line": 103,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/push/repository.ts",
+          "line": 9,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/push/repository.ts",
+          "line": 37,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/push/repository.ts",
+          "line": 52,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/push/session.ts",
+          "line": 13,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 25,
+          "operation": "JOIN"
+        }
+      ],
+      "required": true
+    },
+    "phone11_auth_rate_limit": {
+      "select": true,
+      "insert": [
+        "count",
+        "id",
+        "key",
+        "lastRequest"
+      ],
+      "update": [
+        "count",
+        "lastRequest"
+      ],
+      "delete": true,
+      "references": [],
+      "required": true
+    },
+    "phone11_auth_session": {
+      "select": true,
+      "insert": [
+        "createdAt",
+        "expiresAt",
+        "id",
+        "ipAddress",
+        "token",
+        "updatedAt",
+        "userAgent",
+        "userId"
+      ],
+      "update": [
+        "expiresAt",
+        "updatedAt"
+      ],
+      "delete": true,
+      "references": [
+        {
+          "file": "server/_core/phone11-auth.ts",
+          "line": 170,
+          "operation": "DELETE FROM"
+        },
+        {
+          "file": "server/_core/phone11-auth.ts",
+          "line": 517,
+          "operation": "DELETE FROM"
+        },
+        {
+          "file": "server/_core/phone11-auth.ts",
+          "line": 520,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat-notifications/repository.ts",
+          "line": 10,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat-notifications/repository.ts",
+          "line": 62,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat-notifications/repository.ts",
+          "line": 72,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 837,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/invitations/service.ts",
+          "line": 303,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/invitations/service.ts",
+          "line": 308,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/push/repository.ts",
+          "line": 8,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/push/repository.ts",
+          "line": 38,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/push/repository.ts",
+          "line": 52,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 24,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 46,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 87,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 126,
+          "operation": "FROM"
+        }
+      ],
+      "required": true
+    },
+    "phone11_auth_user": {
+      "select": true,
+      "insert": [
+        "createdAt",
+        "email",
+        "emailVerified",
+        "id",
+        "name",
+        "updatedAt"
+      ],
+      "update": [
+        "updatedAt"
+      ],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/_core/phone11-auth-readiness.ts",
+          "line": 89,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/_core/phone11-auth.ts",
+          "line": 155,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/_core/phone11-auth.ts",
+          "line": 390,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/invitations/service.ts",
+          "line": 85,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/invitations/service.ts",
+          "line": 302,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/invitations/service.ts",
+          "line": 319,
+          "operation": "INSERT INTO"
+        }
+      ],
+      "required": true
+    },
+    "phone11_auth_verification": {
+      "select": true,
+      "insert": [
+        "createdAt",
+        "expiresAt",
+        "id",
+        "identifier",
+        "updatedAt",
+        "value"
+      ],
+      "update": [],
+      "delete": true,
+      "references": [
+        {
+          "file": "server/_core/phone11-auth.ts",
+          "line": 143,
+          "operation": "DELETE FROM"
+        }
+      ],
+      "required": true
+    },
+    "phone11_channel_meeting_invitations": {
+      "select": true,
+      "insert": [
+        "channel_id",
+        "id",
+        "meeting_id",
+        "recipient_id",
+        "tenant_id"
+      ],
+      "update": [],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/meetings/channel-meeting-repository.ts",
+          "line": 202,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/meetings/channel-meeting-repository.ts",
+          "line": 216,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/direct-meeting-repository.ts",
+          "line": 159,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/meetings/direct-meeting-repository.ts",
+          "line": 173,
+          "operation": "FROM"
+        }
+      ],
+      "required": false
+    },
+    "phone11_channel_meetings": {
+      "select": true,
+      "insert": [
+        "channel_id",
+        "created_by",
+        "meeting_id",
+        "origin_kind",
+        "request_id",
+        "selection_fingerprint",
+        "tenant_id"
+      ],
+      "update": [
+        "created_at"
+      ],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/meetings/channel-meeting-origin.ts",
+          "line": 31,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/channel-meeting-origin.ts",
+          "line": 36,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/channel-meeting-repository.ts",
+          "line": 154,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/channel-meeting-repository.ts",
+          "line": 163,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/channel-meeting-repository.ts",
+          "line": 194,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/meetings/channel-meeting-repository.ts",
+          "line": 217,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/direct-meeting-repository.ts",
+          "line": 135,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/direct-meeting-repository.ts",
+          "line": 144,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/direct-meeting-repository.ts",
+          "line": 151,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/meetings/direct-meeting-repository.ts",
+          "line": 174,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/meeting-host-eviction-repository.ts",
+          "line": 69,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/meeting-host-eviction-repository.ts",
+          "line": 121,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/meeting-host-eviction-repository.ts",
+          "line": 159,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/plain-video-admission-repository.ts",
+          "line": 51,
+          "operation": "FROM"
+        }
+      ],
+      "required": false
+    },
+    "phone11_chat_attachments": {
+      "select": true,
+      "insert": [
+        "attached_at",
+        "client_id",
+        "content_sha256",
+        "conversation_id",
+        "expires_at",
+        "filename",
+        "id",
+        "message_id",
+        "mime_type",
+        "size_bytes",
+        "state",
+        "storage_key",
+        "tenant_id",
+        "uploaded_by"
+      ],
+      "update": [
+        "attached_at",
+        "expires_at",
+        "message_id",
+        "state"
+      ],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/chat/media.ts",
+          "line": 166,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/media.ts",
+          "line": 182,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/chat/media.ts",
+          "line": 201,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/media.ts",
+          "line": 209,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/chat/media.ts",
+          "line": 223,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/media.ts",
+          "line": 275,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/media.ts",
+          "line": 287,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/chat/media.ts",
+          "line": 312,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/media.ts",
+          "line": 318,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/media.ts",
+          "line": 350,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/media.ts",
+          "line": 353,
+          "operation": "DELETE FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 264,
+          "operation": "FROM"
+        }
+      ],
+      "required": false
+    },
+    "phone11_chat_blocks": {
+      "select": true,
+      "insert": [
+        "blocked_id",
+        "blocker_id",
+        "tenant_id"
+      ],
+      "update": [],
+      "delete": true,
+      "references": [
+        {
+          "file": "server/chat/service.ts",
+          "line": 49,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 239,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 315,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 336,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 566,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 824,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 872,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 920,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 928,
+          "operation": "DELETE FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 976,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 1018,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/channel-meeting-origin.ts",
+          "line": 86,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/channel-meeting-origin.ts",
+          "line": 126,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/direct-meeting-repository.ts",
+          "line": 37,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/direct-meeting-repository.ts",
+          "line": 201,
+          "operation": "FROM"
+        }
+      ],
+      "required": false
+    },
+    "phone11_chat_bookmarks": {
+      "select": true,
+      "insert": [
+        "conversation_id",
+        "message_id",
+        "tenant_id",
+        "user_id"
+      ],
+      "update": [],
+      "delete": true,
+      "references": [
+        {
+          "file": "server/chat/service.ts",
+          "line": 115,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 629,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 631,
+          "operation": "DELETE FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 638,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 649,
+          "operation": "JOIN"
+        }
+      ],
+      "required": false
+    },
+    "phone11_chat_conversations": {
+      "select": true,
+      "insert": [
+        "direct_key",
+        "id",
+        "kind",
+        "name",
+        "tenant_id"
+      ],
+      "update": [
+        "created_at",
+        "direct_key"
+      ],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/chat/service.ts",
+          "line": 32,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 57,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 246,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 303,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 361,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 460,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 514,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/channel-meeting-admin-repository.ts",
+          "line": 77,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/channel-meeting-admin-repository.ts",
+          "line": 85,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/channel-meeting-admin-repository.ts",
+          "line": 155,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/channel-meeting-origin.ts",
+          "line": 49,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/channel-meeting-origin.ts",
+          "line": 54,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/channel-meeting-origin.ts",
+          "line": 68,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/channel-meeting-repository.ts",
+          "line": 43,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/channel-meeting-repository.ts",
+          "line": 73,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/channel-meeting-repository.ts",
+          "line": 105,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/channel-meeting-repository.ts",
+          "line": 219,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/direct-meeting-repository.ts",
+          "line": 75,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/direct-meeting-repository.ts",
+          "line": 98,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/direct-meeting-repository.ts",
+          "line": 177,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/plain-video-admission-repository.ts",
+          "line": 52,
+          "operation": "JOIN"
+        }
+      ],
+      "required": false
+    },
+    "phone11_chat_members": {
+      "select": true,
+      "insert": [
+        "conversation_id",
+        "tenant_id",
+        "user_id"
+      ],
+      "update": [
+        "can_start_meeting",
+        "last_read_sequence"
+      ],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/chat-notifications/repository.ts",
+          "line": 18,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat-notifications/repository.ts",
+          "line": 47,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 32,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 58,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 161,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 236,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 237,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 239,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 246,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 297,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 304,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 312,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 365,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 509,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 560,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 638,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 1012,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 1032,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/meetings/channel-meeting-admin-repository.ts",
+          "line": 88,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/channel-meeting-admin-repository.ts",
+          "line": 99,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/channel-meeting-admin-repository.ts",
+          "line": 161,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/channel-meeting-admin-repository.ts",
+          "line": 166,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/channel-meeting-admin-repository.ts",
+          "line": 197,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/meetings/channel-meeting-origin.ts",
+          "line": 55,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/channel-meeting-origin.ts",
+          "line": 67,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/channel-meeting-repository.ts",
+          "line": 44,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/channel-meeting-repository.ts",
+          "line": 74,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/channel-meeting-repository.ts",
+          "line": 115,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/channel-meeting-repository.ts",
+          "line": 169,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/channel-meeting-repository.ts",
+          "line": 226,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/direct-meeting-repository.ts",
+          "line": 44,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/direct-meeting-repository.ts",
+          "line": 184,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/direct-meeting-repository.ts",
+          "line": 186,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/direct-meeting-repository.ts",
+          "line": 199,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/meeting-host-eviction-repository.ts",
+          "line": 79,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/meeting-host-eviction-repository.ts",
+          "line": 122,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/meeting-host-eviction-repository.ts",
+          "line": 194,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/plain-video-admission-repository.ts",
+          "line": 54,
+          "operation": "JOIN"
+        }
+      ],
+      "required": false
+    },
+    "phone11_chat_message_all_mentions": {
+      "select": true,
+      "insert": [
+        "conversation_id",
+        "length",
+        "message_id",
+        "start_offset",
+        "tenant_id"
+      ],
+      "update": [],
+      "delete": true,
+      "references": [
+        {
+          "file": "server/chat/service.ts",
+          "line": 124,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 226,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 435,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 492,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 608,
+          "operation": "DELETE FROM"
+        }
+      ],
+      "required": false
+    },
+    "phone11_chat_message_mentions": {
+      "select": true,
+      "insert": [
+        "conversation_id",
+        "length",
+        "message_id",
+        "start_offset",
+        "tenant_id",
+        "user_id"
+      ],
+      "update": [],
+      "delete": true,
+      "references": [
+        {
+          "file": "server/chat/service.ts",
+          "line": 121,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 221,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 428,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 489,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 607,
+          "operation": "DELETE FROM"
+        }
+      ],
+      "required": false
+    },
+    "phone11_chat_messages": {
+      "select": true,
+      "insert": [
+        "client_id",
+        "content",
+        "conversation_id",
+        "forward_source_conversation_id",
+        "forward_source_message_id",
+        "id",
+        "parent_message_id",
+        "sender_id",
+        "tenant_id"
+      ],
+      "update": [
+        "client_id",
+        "content",
+        "deleted_at",
+        "edited_at"
+      ],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/chat-notifications/repository.ts",
+          "line": 17,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat-notifications/repository.ts",
+          "line": 46,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/media.ts",
+          "line": 313,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/media.ts",
+          "line": 318,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 83,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 85,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 109,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 182,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 252,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 268,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 379,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 476,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 483,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 512,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 537,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 551,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 601,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 603,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 620,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 640,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 745,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 750,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 765,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 780,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 790,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 799,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 899,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 938,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 943,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 971,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 985,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 997,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 1006,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 1033,
+          "operation": "FROM"
+        }
+      ],
+      "required": false
+    },
+    "phone11_chat_notification_devices": {
+      "select": true,
+      "insert": [
+        "bundle_id",
+        "device_id",
+        "environment",
+        "id",
+        "revision",
+        "session_id",
+        "tenant_id",
+        "token",
+        "token_hash",
+        "user_id"
+      ],
+      "update": [
+        "bundle_id",
+        "environment",
+        "registered_at",
+        "revision",
+        "session_id",
+        "token",
+        "token_hash"
+      ],
+      "delete": true,
+      "references": [
+        {
+          "file": "server/chat-notifications/repository.ts",
+          "line": 48,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat-notifications/repository.ts",
+          "line": 71,
+          "operation": "DELETE FROM"
+        },
+        {
+          "file": "server/chat-notifications/repository.ts",
+          "line": 75,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat-notifications/repository.ts",
+          "line": 79,
+          "operation": "DELETE FROM"
+        },
+        {
+          "file": "server/chat-notifications/repository.ts",
+          "line": 81,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/chat-notifications/repository.ts",
+          "line": 92,
+          "operation": "DELETE FROM"
+        },
+        {
+          "file": "server/chat-notifications/repository.ts",
+          "line": 100,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat-notifications/repository.ts",
+          "line": 110,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat-notifications/repository.ts",
+          "line": 114,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat-notifications/repository.ts",
+          "line": 118,
+          "operation": "DELETE FROM"
+        },
+        {
+          "file": "server/chat-notifications/repository.ts",
+          "line": 125,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 836,
+          "operation": "FROM"
+        }
+      ],
+      "required": false
+    },
+    "phone11_chat_notification_outbox": {
+      "select": false,
+      "insert": [
+        "device_id",
+        "device_revision",
+        "id",
+        "message_id"
+      ],
+      "update": [],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/chat-notifications/repository.ts",
+          "line": 45,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/chat-notifications/repository.ts",
+          "line": 100,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat-notifications/repository.ts",
+          "line": 104,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/chat-notifications/repository.ts",
+          "line": 109,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat-notifications/repository.ts",
+          "line": 114,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/chat-notifications/repository.ts",
+          "line": 124,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat-notifications/repository.ts",
+          "line": 131,
+          "operation": "DELETE FROM"
+        }
+      ],
+      "required": false
+    },
+    "phone11_chat_notification_preferences": {
+      "select": true,
+      "insert": [
+        "conversation_id",
+        "muted",
+        "tenant_id",
+        "updated_at",
+        "user_id"
+      ],
+      "update": [
+        "muted",
+        "updated_at"
+      ],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/chat-notifications/repository.ts",
+          "line": 36,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 247,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 677,
+          "operation": "INSERT INTO"
+        }
+      ],
+      "required": false
+    },
+    "phone11_chat_pins": {
+      "select": true,
+      "insert": [
+        "conversation_id",
+        "message_id",
+        "pinned_by",
+        "tenant_id"
+      ],
+      "update": [],
+      "delete": true,
+      "references": [
+        {
+          "file": "server/chat/service.ts",
+          "line": 117,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 659,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 661,
+          "operation": "DELETE FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 668,
+          "operation": "JOIN"
+        }
+      ],
+      "required": false
+    },
+    "phone11_chat_presence": {
+      "select": true,
+      "insert": [
+        "last_seen_at",
+        "tenant_id",
+        "user_id"
+      ],
+      "update": [
+        "last_seen_at"
+      ],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/chat/service.ts",
+          "line": 728,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 821,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 859,
+          "operation": "JOIN"
+        }
+      ],
+      "required": false
+    },
+    "phone11_chat_presence_sessions": {
+      "select": true,
+      "insert": [
+        "active",
+        "generation",
+        "last_seen_at",
+        "lease_expires_at",
+        "sequence",
+        "session_id",
+        "status",
+        "tenant_id",
+        "user_id"
+      ],
+      "update": [
+        "active",
+        "generation",
+        "last_seen_at",
+        "lease_expires_at",
+        "sequence",
+        "status"
+      ],
+      "delete": true,
+      "references": [
+        {
+          "file": "server/chat/service.ts",
+          "line": 696,
+          "operation": "DELETE FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 698,
+          "operation": "DELETE FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 699,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 702,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 706,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 708,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 711,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 713,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 715,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 717,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 865,
+          "operation": "FROM"
+        }
+      ],
+      "required": false
+    },
+    "phone11_chat_reactions": {
+      "select": true,
+      "insert": [
+        "conversation_id",
+        "emoji",
+        "message_id",
+        "tenant_id",
+        "user_id"
+      ],
+      "update": [],
+      "delete": true,
+      "references": [
+        {
+          "file": "server/chat/service.ts",
+          "line": 112,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 577,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 580,
+          "operation": "DELETE FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 591,
+          "operation": "FROM"
+        }
+      ],
+      "required": false
+    },
+    "phone11_chat_read_receipts": {
+      "select": true,
+      "insert": [
+        "conversation_id",
+        "message_id",
+        "reader_id",
+        "tenant_id"
+      ],
+      "update": [],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/chat/service.ts",
+          "line": 956,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 972,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 1011,
+          "operation": "FROM"
+        }
+      ],
+      "required": false
+    },
+    "phone11_chat_reports": {
+      "select": false,
+      "insert": [
+        "category",
+        "comment",
+        "conversation_id",
+        "id",
+        "message_id",
+        "reporter_id",
+        "target_key",
+        "tenant_id"
+      ],
+      "update": [],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/chat/service.ts",
+          "line": 904,
+          "operation": "INSERT INTO"
+        }
+      ],
+      "required": false
+    },
+    "phone11_cloud_recordings": {
+      "select": true,
+      "insert": [
+        "call_uuid",
+        "direction",
+        "ended_at",
+        "expires_at",
+        "extension_id",
+        "native_history_id",
+        "number",
+        "started_at",
+        "tenant_id"
+      ],
+      "update": [
+        "capture_cleaned_at",
+        "capture_pending_until",
+        "capture_stop_requested_at",
+        "capture_stopped_at",
+        "capture_token",
+        "capture_upload_lease_token",
+        "capture_upload_lease_until",
+        "ended_at",
+        "manual_actor_user_id",
+        "native_history_id",
+        "recording_status",
+        "storage_key",
+        "summary_status"
+      ],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/cloud-recordings/capture-ledger.ts",
+          "line": 14,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/cloud-recordings/capture-ledger.ts",
+          "line": 22,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/cloud-recordings/capture-ledger.ts",
+          "line": 32,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/cloud-recordings/capture-ledger.ts",
+          "line": 39,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/cloud-recordings/capture-ledger.ts",
+          "line": 48,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/cloud-recordings/capture-ledger.ts",
+          "line": 57,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/cloud-recordings/capture-ledger.ts",
+          "line": 61,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/cloud-recordings/capture-ledger.ts",
+          "line": 63,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/cloud-recordings/capture-ledger.ts",
+          "line": 65,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/cloud-recordings/capture-service.ts",
+          "line": 45,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/cloud-recordings/capture-service.ts",
+          "line": 103,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/cloud-recordings/correlation.ts",
+          "line": 34,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/cloud-recordings/correlation.ts",
+          "line": 36,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/cloud-recordings/correlation.ts",
+          "line": 47,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/cloud-recordings/correlation.ts",
+          "line": 88,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/cloud-recordings/correlation.ts",
+          "line": 126,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 55,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 56,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 61,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 68,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 95,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 106,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 117,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 123,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 132,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 139,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 152,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 153,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 159,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 165,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 173,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 177,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 180,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 187,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 190,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 202,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 215,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/pbx/media-access.ts",
+          "line": 28,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/recording-storage.ts",
+          "line": 210,
+          "operation": "FROM"
+        }
+      ],
+      "required": false
+    },
+    "phone11_conference_members": {
+      "select": true,
+      "insert": [],
+      "update": [],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/conference/provider.ts",
+          "line": 103,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/conference/repository.ts",
+          "line": 44,
+          "operation": "FROM"
+        }
+      ],
+      "required": false
+    },
+    "phone11_conference_operations": {
+      "select": true,
+      "insert": [
+        "fingerprint",
+        "idempotency_key",
+        "state",
+        "tenant_id",
+        "user_id"
+      ],
+      "update": [
+        "result",
+        "state"
+      ],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/conference/repository.ts",
+          "line": 58,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/conference/repository.ts",
+          "line": 64,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/conference/repository.ts",
+          "line": 82,
+          "operation": "UPDATE"
+        }
+      ],
+      "required": false
+    },
+    "phone11_conference_rooms": {
+      "select": true,
+      "insert": [],
+      "update": [],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/conference/provider.ts",
+          "line": 100,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/conference/repository.ts",
+          "line": 40,
+          "operation": "FROM"
+        }
+      ],
+      "required": false
+    },
+    "phone11_meeting_admission_members": {
+      "select": true,
+      "insert": [],
+      "update": [],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/meetings/admission-repository.ts",
+          "line": 46,
+          "operation": "JOIN"
+        }
+      ],
+      "required": false
+    },
+    "phone11_meeting_admission_rooms": {
+      "select": true,
+      "insert": [],
+      "update": [],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/meetings/admission-repository.ts",
+          "line": 42,
+          "operation": "FROM"
+        }
+      ],
+      "required": false
+    },
+    "phone11_meeting_consent_receipts": {
+      "select": true,
+      "insert": [],
+      "update": [],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/meetings/admission-repository.ts",
+          "line": 48,
+          "operation": "JOIN"
+        }
+      ],
+      "required": false
+    },
+    "phone11_meeting_members": {
+      "select": true,
+      "insert": [],
+      "update": [],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/meetings/repository.ts",
+          "line": 10,
+          "operation": "JOIN"
+        }
+      ],
+      "required": false
+    },
+    "phone11_meeting_rooms": {
+      "select": true,
+      "insert": [],
+      "update": [],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/meetings/repository.ts",
+          "line": 7,
+          "operation": "FROM"
+        }
+      ],
+      "required": false
+    },
+    "phone11_plain_video_admission_leases": {
+      "select": true,
+      "insert": [
+        "expires_at",
+        "id",
+        "meeting_id",
+        "member_revision",
+        "participant_id",
+        "room_revision",
+        "state",
+        "tenant_id",
+        "user_id"
+      ],
+      "update": [
+        "revoked_at",
+        "state"
+      ],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/meetings/plain-video-admission-lease-repository.ts",
+          "line": 77,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/meetings/plain-video-admission-lease-repository.ts",
+          "line": 142,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/plain-video-admission-lease-repository.ts",
+          "line": 164,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/meetings/plain-video-eviction-repository.ts",
+          "line": 162,
+          "operation": "UPDATE"
+        }
+      ],
+      "required": false
+    },
+    "phone11_plain_video_admission_members": {
+      "select": true,
+      "insert": [
+        "grant_profile",
+        "lobby_state",
+        "meeting_id",
+        "participant_id",
+        "revision",
+        "tenant_id",
+        "user_id"
+      ],
+      "update": [
+        "revision",
+        "revoked_at"
+      ],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/meetings/channel-meeting-repository.ts",
+          "line": 198,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/meetings/channel-meeting-repository.ts",
+          "line": 223,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/direct-meeting-repository.ts",
+          "line": 155,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/meetings/direct-meeting-repository.ts",
+          "line": 181,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/plain-video-admission-lease-repository.ts",
+          "line": 146,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/plain-video-admission-repository.ts",
+          "line": 63,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/plain-video-admission-repository.ts",
+          "line": 100,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/plain-video-eviction-repository.ts",
+          "line": 139,
+          "operation": "UPDATE"
+        }
+      ],
+      "required": false
+    },
+    "phone11_plain_video_admission_rooms": {
+      "select": true,
+      "insert": [
+        "id",
+        "revision",
+        "state",
+        "tenant_id"
+      ],
+      "update": [
+        "created_at"
+      ],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/meetings/channel-meeting-repository.ts",
+          "line": 192,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/meetings/channel-meeting-repository.ts",
+          "line": 221,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/direct-meeting-repository.ts",
+          "line": 149,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/meetings/direct-meeting-repository.ts",
+          "line": 179,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/plain-video-admission-lease-repository.ts",
+          "line": 143,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/plain-video-admission-repository.ts",
+          "line": 61,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/plain-video-admission-repository.ts",
+          "line": 98,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/plain-video-eviction-repository.ts",
+          "line": 141,
+          "operation": "FROM"
+        }
+      ],
+      "required": false
+    },
+    "phone11_plain_video_eviction_operations": {
+      "select": true,
+      "insert": [
+        "id",
+        "idempotency_key",
+        "meeting_id",
+        "participant_id",
+        "state",
+        "tenant_id",
+        "user_id"
+      ],
+      "update": [
+        "provider_completed_at",
+        "provider_created_at",
+        "provider_eviction_id",
+        "revoke_token_ts",
+        "state",
+        "updated_at"
+      ],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/meetings/meeting-host-eviction-repository.ts",
+          "line": 91,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/meeting-host-eviction-repository.ts",
+          "line": 255,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/plain-video-eviction-repository.ts",
+          "line": 112,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/plain-video-eviction-repository.ts",
+          "line": 175,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/meetings/plain-video-eviction-repository.ts",
+          "line": 211,
+          "operation": "UPDATE"
+        }
+      ],
+      "required": false
+    },
+    "phone11_profile_photo_deletions": {
+      "select": false,
+      "insert": [
+        "queued_at",
+        "storage_key",
+        "tenant_id",
+        "user_id"
+      ],
+      "update": [],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/profile/photo.ts",
+          "line": 395,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/profile/photo.ts",
+          "line": 415,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/profile/photo.ts",
+          "line": 429,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/profile/photo.ts",
+          "line": 439,
+          "operation": "DELETE FROM"
+        },
+        {
+          "file": "server/profile/photo.ts",
+          "line": 447,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/profile/photo.ts",
+          "line": 576,
+          "operation": "INSERT INTO"
+        }
+      ],
+      "required": false
+    },
+    "phone11_push_devices": {
+      "select": true,
+      "insert": [
+        "app_version",
+        "bundle_id",
+        "device_id",
+        "extension_id",
+        "platform",
+        "revision",
+        "sandbox",
+        "session_id",
+        "sip_uri",
+        "tenant_id",
+        "token",
+        "token_hash",
+        "token_type",
+        "user_id"
+      ],
+      "update": [
+        "app_version",
+        "bundle_id",
+        "last_used",
+        "registered_at",
+        "revision",
+        "sandbox",
+        "session_id",
+        "sip_uri",
+        "token",
+        "token_hash",
+        "token_type"
+      ],
+      "delete": true,
+      "references": [
+        {
+          "file": "server/push/repository.ts",
+          "line": 51,
+          "operation": "DELETE FROM"
+        },
+        {
+          "file": "server/push/repository.ts",
+          "line": 56,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/push/repository.ts",
+          "line": 57,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/push/repository.ts",
+          "line": 62,
+          "operation": "DELETE FROM"
+        },
+        {
+          "file": "server/push/repository.ts",
+          "line": 65,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/push/repository.ts",
+          "line": 76,
+          "operation": "DELETE FROM"
+        },
+        {
+          "file": "server/push/repository.ts",
+          "line": 79,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/push/repository.ts",
+          "line": 82,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/push/repository.ts",
+          "line": 86,
+          "operation": "DELETE FROM"
+        },
+        {
+          "file": "server/push/repository.ts",
+          "line": 89,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/push/repository.ts",
+          "line": 94,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 32,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 50,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 88,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 91,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 127,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 128,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 130,
+          "operation": "FROM"
+        }
+      ],
+      "required": false
+    },
+    "phone11_recording_jobs": {
+      "select": true,
+      "insert": [
+        "call_uuid"
+      ],
+      "update": [
+        "failure_code",
+        "lease_token",
+        "lease_until",
+        "state",
+        "worker_id"
+      ],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 54,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 140,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 150,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 153,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 158,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 181,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 190,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 202,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 213,
+          "operation": "UPDATE"
+        }
+      ],
+      "required": false
+    },
+    "phone11_recording_policies": {
+      "select": true,
+      "insert": [
+        "ai_enabled",
+        "mode",
+        "retention_days",
+        "tenant_id",
+        "updated_by"
+      ],
+      "update": [
+        "ai_enabled",
+        "mode",
+        "retention_days",
+        "updated_at",
+        "updated_by"
+      ],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/cloud-recordings/capture-service.ts",
+          "line": 47,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/capture-service.ts",
+          "line": 105,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/correlation.ts",
+          "line": 48,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/cloud-recordings/correlation.ts",
+          "line": 90,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/correlation.ts",
+          "line": 127,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 43,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 48,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 88,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 106,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 123,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 132,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 148,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 165,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 191,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 200,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/media-access.ts",
+          "line": 29,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/recording-storage.ts",
+          "line": 211,
+          "operation": "JOIN"
+        }
+      ],
+      "required": false
+    },
+    "phone11_recording_routes": {
+      "select": true,
+      "insert": [
+        "channel_uuid",
+        "direction",
+        "extension_id",
+        "number",
+        "owner_user_id",
+        "sip_call_id",
+        "tenant_id"
+      ],
+      "update": [
+        "created_at"
+      ],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/cloud-recordings/capture-ledger.ts",
+          "line": 10,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/capture-ledger.ts",
+          "line": 34,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/cloud-recordings/capture-ledger.ts",
+          "line": 41,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/cloud-recordings/capture-ledger.ts",
+          "line": 50,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/cloud-recordings/capture-service.ts",
+          "line": 46,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/capture-service.ts",
+          "line": 104,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/correlation.ts",
+          "line": 32,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/cloud-recordings/correlation.ts",
+          "line": 44,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/cloud-recordings/correlation.ts",
+          "line": 86,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/cloud-recordings/correlation.ts",
+          "line": 90,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/cloud-recordings/correlation.ts",
+          "line": 96,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/cloud-recordings/correlation.ts",
+          "line": 123,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/cloud-recordings/correlation.ts",
+          "line": 125,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/cloud-recordings/correlation.ts",
+          "line": 136,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/cloud-recordings/route-cdr.ts",
+          "line": 15,
+          "operation": "FROM"
+        }
+      ],
+      "required": false,
+      "rowLockOnlyColumns": [
+        "created_at"
+      ]
+    },
+    "phone11_recording_wake_links": {
+      "select": true,
+      "insert": [
+        "binding_id",
+        "extension_id",
+        "sip_call_id",
+        "tenant_id",
+        "wake_uuid"
+      ],
+      "update": [],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/cloud-recordings/correlation.ts",
+          "line": 102,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/cloud-recordings/correlation.ts",
+          "line": 114,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 93,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 151,
+          "operation": "INSERT INTO"
+        }
+      ],
+      "required": false
+    },
+    "phone11_wake_bindings": {
+      "select": true,
+      "insert": [
+        "device_id",
+        "expires_at",
+        "extension_id",
+        "grant_hash",
+        "id",
+        "push_revision",
+        "session_binding",
+        "session_id",
+        "tenant_id",
+        "user_id"
+      ],
+      "update": [
+        "created_at"
+      ],
+      "delete": true,
+      "references": [
+        {
+          "file": "server/cloud-recordings/correlation.ts",
+          "line": 115,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 90,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 47,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 48,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 51,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 54,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 97,
+          "operation": "DELETE FROM"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 98,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 101,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 106,
+          "operation": "DELETE FROM"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 108,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 120,
+          "operation": "DELETE FROM"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 131,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 136,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 160,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 168,
+          "operation": "JOIN"
+        }
+      ],
+      "required": false,
+      "rowLockOnlyColumns": [
+        "created_at"
+      ]
+    },
+    "phone11_wake_calls": {
+      "select": true,
+      "insert": [
+        "binding_id",
+        "expires_at",
+        "id",
+        "sip_call_id",
+        "sip_uri",
+        "state"
+      ],
+      "update": [
+        "busy_until",
+        "state"
+      ],
+      "delete": true,
+      "references": [
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 90,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 68,
+          "operation": "DELETE FROM"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 69,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 103,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 137,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 141,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 143,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 159,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 167,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 181,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 188,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 192,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 195,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 211,
+          "operation": "FROM"
+        }
+      ],
+      "required": false
+    },
+    "phone11_wake_terminals": {
+      "select": true,
+      "insert": [
+        "expires_at",
+        "sip_call_id",
+        "sip_uri",
+        "state"
+      ],
+      "update": [
+        "expires_at"
+      ],
+      "delete": true,
+      "references": [
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 72,
+          "operation": "DELETE FROM"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 73,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 139,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 178,
+          "operation": "INSERT INTO"
+        }
+      ],
+      "required": false,
+      "rowLockOnlyColumns": [
+        "expires_at"
+      ]
+    },
+    "phone11_workspace_invitation_events": {
+      "select": false,
+      "insert": [
+        "action",
+        "actor_user_id",
+        "id",
+        "invitation_id",
+        "tenant_id"
+      ],
+      "update": [],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/invitations/service.ts",
+          "line": 58,
+          "operation": "INSERT INTO"
+        }
+      ],
+      "required": true
+    },
+    "phone11_workspace_invitations": {
+      "select": true,
+      "insert": [
+        "email",
+        "expires_at",
+        "id",
+        "issuer_user_id",
+        "role",
+        "tenant_id",
+        "token_digest"
+      ],
+      "update": [
+        "accepted_at",
+        "accepted_user_id",
+        "delivery_error",
+        "delivery_status",
+        "expires_at",
+        "issuer_user_id",
+        "provider_message_id",
+        "revoked_at",
+        "status",
+        "token_digest",
+        "updated_at"
+      ],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/invitations/service.ts",
+          "line": 77,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/invitations/service.ts",
+          "line": 113,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/invitations/service.ts",
+          "line": 120,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/invitations/service.ts",
+          "line": 176,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/invitations/service.ts",
+          "line": 193,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/invitations/service.ts",
+          "line": 200,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/invitations/service.ts",
+          "line": 214,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/invitations/service.ts",
+          "line": 216,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/invitations/service.ts",
+          "line": 239,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/invitations/service.ts",
+          "line": 258,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/invitations/service.ts",
+          "line": 284,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/invitations/service.ts",
+          "line": 290,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/invitations/service.ts",
+          "line": 329,
+          "operation": "UPDATE"
+        }
+      ],
+      "required": true
+    },
+    "phone11_workspace_profile_photos": {
+      "select": true,
+      "insert": [
+        "content_sha256",
+        "mime_type",
+        "size_bytes",
+        "storage_key",
+        "tenant_id",
+        "updated_at",
+        "user_id",
+        "version"
+      ],
+      "update": [
+        "content_sha256",
+        "mime_type",
+        "size_bytes",
+        "storage_key",
+        "updated_at",
+        "version"
+      ],
+      "delete": true,
+      "references": [
+        {
+          "file": "server/profile/photo.ts",
+          "line": 388,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/profile/photo.ts",
+          "line": 435,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/profile/photo.ts",
+          "line": 572,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/profile/photo.ts",
+          "line": 654,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/profile/photo.ts",
+          "line": 656,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/profile/photo.ts",
+          "line": 699,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/profile/photo.ts",
+          "line": 724,
+          "operation": "DELETE FROM"
+        }
+      ],
+      "required": false
+    },
+    "phone11_workspace_profile_status": {
+      "select": true,
+      "insert": [
+        "manual_availability",
+        "manual_availability_expires_at",
+        "status_expires_at",
+        "status_text",
+        "tenant_id",
+        "updated_at",
+        "user_id",
+        "work_location"
+      ],
+      "update": [
+        "manual_availability",
+        "manual_availability_expires_at",
+        "status_expires_at",
+        "status_text",
+        "updated_at",
+        "work_location"
+      ],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/chat-notifications/repository.ts",
+          "line": 27,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/profile/service.ts",
+          "line": 237,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/profile/status.ts",
+          "line": 132,
+          "operation": "JOIN"
+        }
+      ],
+      "required": false
+    },
+    "phone11_workspace_profile_status_settings": {
+      "select": true,
+      "insert": [
+        "enabled",
+        "tenant_id",
+        "updated_at",
+        "updated_by"
+      ],
+      "update": [
+        "dnd_enabled",
+        "enabled",
+        "updated_at",
+        "updated_by"
+      ],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/chat-notifications/repository.ts",
+          "line": 28,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/profile/service.ts",
+          "line": 154,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/profile/service.ts",
+          "line": 167,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/profile/service.ts",
+          "line": 243,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/profile/service.ts",
+          "line": 269,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/profile/status.ts",
+          "line": 121,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/profile/status.ts",
+          "line": 124,
+          "operation": "FROM"
+        }
+      ],
+      "required": false
+    },
+    "phone_numbers": {
+      "select": true,
+      "insert": [
+        "country",
+        "number_display",
+        "number_e164",
+        "number_type",
+        "provider",
+        "status",
+        "tenant_id"
+      ],
+      "update": [
+        "assigned_route_id",
+        "assigned_route_type",
+        "updated_at"
+      ],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/pbx/kamailio-routes.ts",
+          "line": 144,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 890,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 1599,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 1614,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 1661,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 1744,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 2215,
+          "operation": "FROM"
+        }
+      ],
+      "required": true
+    },
+    "queue_agents": {
+      "select": true,
+      "insert": [
+        "extension_id",
+        "is_logged_in",
+        "max_no_answer",
+        "priority",
+        "queue_id",
+        "skills"
+      ],
+      "update": [
+        "is_logged_in"
+      ],
+      "delete": true,
+      "references": [
+        {
+          "file": "server/pbx/dialplan-generators.ts",
+          "line": 277,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 865,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 871,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 891,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 985,
+          "operation": "DELETE FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 988,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 1008,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 1010,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 1025,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 1027,
+          "operation": "UPDATE"
+        }
+      ],
+      "required": true
+    },
+    "queue_stats": {
+      "select": true,
+      "insert": [],
+      "update": [],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 1042,
+          "operation": "FROM"
+        }
+      ],
+      "required": true
+    },
+    "ring_group_members": {
+      "select": true,
+      "insert": [
+        "delay_seconds",
+        "extension_id",
+        "is_active",
+        "priority",
+        "ring_group_id"
+      ],
+      "update": [],
+      "delete": true,
+      "references": [
+        {
+          "file": "server/pbx/dialplan-generators.ts",
+          "line": 187,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 723,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 743,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 839,
+          "operation": "DELETE FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 842,
+          "operation": "INSERT INTO"
+        }
+      ],
+      "required": true
+    },
+    "ring_groups": {
+      "select": true,
+      "insert": [
+        "caller_id_mode",
+        "caller_id_name",
+        "caller_id_number",
+        "description",
+        "enable_pickup",
+        "extension",
+        "fallback_action",
+        "fallback_target",
+        "is_active",
+        "moh_file",
+        "name",
+        "ring_timeout",
+        "skip_busy",
+        "skip_offline",
+        "strategy",
+        "tenant_id"
+      ],
+      "update": [
+        "caller_id_mode",
+        "caller_id_name",
+        "caller_id_number",
+        "description",
+        "enable_pickup",
+        "extension",
+        "fallback_action",
+        "fallback_target",
+        "is_active",
+        "moh_file",
+        "name",
+        "ring_timeout",
+        "skip_busy",
+        "skip_offline",
+        "strategy",
+        "updated_at"
+      ],
+      "delete": true,
+      "references": [
+        {
+          "file": "server/pbx/dialplan-generators.ts",
+          "line": 178,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 296,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 729,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 739,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 761,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 779,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 795,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 810,
+          "operation": "DELETE FROM"
+        }
+      ],
+      "required": true
+    },
+    "sip_accounts": {
+      "select": true,
+      "insert": [
+        "dek_id",
+        "extension_id",
+        "ha1",
+        "ha1b",
+        "org_id",
+        "secret_ciphertext",
+        "secret_iv",
+        "secret_tag",
+        "sip_domain",
+        "sip_username",
+        "status",
+        "tenant_id",
+        "transport_preference",
+        "user_id"
+      ],
+      "update": [
+        "dek_id",
+        "deleted_at",
+        "ha1",
+        "ha1b",
+        "last_registered_at",
+        "last_registered_contact",
+        "secret_ciphertext",
+        "secret_iv",
+        "secret_tag",
+        "status",
+        "updated_at",
+        "user_agent",
+        "user_id"
+      ],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/cloud-recordings/correlation.ts",
+          "line": 21,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/cloud-recordings/correlation.ts",
+          "line": 80,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/dialplan-generators.ts",
+          "line": 148,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/dialplan-generators.ts",
+          "line": 190,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/dialplan-generators.ts",
+          "line": 281,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/freeswitch-routes.ts",
+          "line": 59,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/freeswitch-routes.ts",
+          "line": 181,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/freeswitch-routes.ts",
+          "line": 281,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/pbx/freeswitch-routes.ts",
+          "line": 434,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/freeswitch-routes.ts",
+          "line": 465,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 383,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 411,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 462,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 552,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 726,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 746,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 868,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 874,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 895,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/kamailio-routes.ts",
+          "line": 69,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/kamailio-routes.ts",
+          "line": 110,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/pbx/kamailio-routes.ts",
+          "line": 164,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/kamailio-routes.ts",
+          "line": 207,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/kamailio-routes.ts",
+          "line": 215,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 210,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 261,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 798,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 908,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 991,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 1037,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 1160,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 1337,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 1394,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 1447,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 1476,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 1514,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/pbx/push-access.ts",
+          "line": 14,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/voicemail-dialplan.ts",
+          "line": 84,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 398,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 419,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 422,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 433,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 440,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 497,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 565,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 599,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 624,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 730,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 797,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 831,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/push/repository.ts",
+          "line": 14,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/push/repository.ts",
+          "line": 36,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 30,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 206,
+          "operation": "FROM"
+        }
+      ],
+      "required": true
+    },
+    "sites": {
+      "select": true,
+      "insert": [
+        "address_line1",
+        "city",
+        "country",
+        "is_main",
+        "name",
+        "postal_code",
+        "state_province",
+        "tenant_id",
+        "timezone"
+      ],
+      "update": [],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 1783,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 1806,
+          "operation": "INSERT INTO"
+        }
+      ],
+      "required": true
+    },
+    "subscriber": {
+      "select": true,
+      "insert": [
+        "domain",
+        "ha1",
+        "ha1b",
+        "password",
+        "username"
+      ],
+      "update": [
+        "ha1",
+        "ha1b",
+        "password"
+      ],
+      "delete": true,
+      "references": [
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 1100,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 1124,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 1501,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 1534,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 399,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 445,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 518,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 527,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 545,
+          "operation": "DELETE FROM"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 581,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 634,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 802,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 811,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 206,
+          "operation": "JOIN"
+        }
+      ],
+      "required": true
+    },
+    "tenant_memberships": {
+      "select": true,
+      "insert": [
+        "role",
+        "status",
+        "tenant_id",
+        "user_id"
+      ],
+      "update": [
+        "created_at",
+        "role",
+        "status"
+      ],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/chat-notifications/repository.ts",
+          "line": 12,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 21,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 34,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 55,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 161,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 273,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 306,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 333,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 352,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 461,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 509,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 515,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 561,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 820,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 858,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 916,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 973,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 1013,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/capture-ledger.ts",
+          "line": 24,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/capture-service.ts",
+          "line": 48,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/correlation.ts",
+          "line": 23,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/correlation.ts",
+          "line": 82,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/correlation.ts",
+          "line": 117,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 15,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 25,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 112,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 126,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 169,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/conference/provider.ts",
+          "line": 101,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/conference/repository.ts",
+          "line": 27,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/conference/repository.ts",
+          "line": 41,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/invitations/router.ts",
+          "line": 19,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/invitations/service.ts",
+          "line": 64,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/invitations/service.ts",
+          "line": 102,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/invitations/service.ts",
+          "line": 327,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/meetings/admission-repository.ts",
+          "line": 44,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/channel-meeting-admin-repository.ts",
+          "line": 35,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/channel-meeting-admin-repository.ts",
+          "line": 101,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/channel-meeting-admin-repository.ts",
+          "line": 172,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/channel-meeting-origin.ts",
+          "line": 70,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/channel-meeting-origin.ts",
+          "line": 96,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/channel-meeting-repository.ts",
+          "line": 46,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/channel-meeting-repository.ts",
+          "line": 76,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/channel-meeting-repository.ts",
+          "line": 123,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/channel-meeting-repository.ts",
+          "line": 170,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/channel-meeting-repository.ts",
+          "line": 228,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/direct-meeting-repository.ts",
+          "line": 56,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/direct-meeting-repository.ts",
+          "line": 106,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/direct-meeting-repository.ts",
+          "line": 188,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/direct-meeting-repository.ts",
+          "line": 190,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/plain-video-admission-lease-repository.ts",
+          "line": 99,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/plain-video-admission-lease-repository.ts",
+          "line": 151,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/plain-video-admission-repository.ts",
+          "line": 56,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/plain-video-admission-repository.ts",
+          "line": 105,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/repository.ts",
+          "line": 9,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/cdr-processor.ts",
+          "line": 462,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 43,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 113,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 143,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/media-access.ts",
+          "line": 14,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/media-access.ts",
+          "line": 56,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 173,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 334,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 416,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 507,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 612,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 621,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 668,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 677,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 732,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 768,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 811,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 902,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 995,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 1009,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 1041,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 1603,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 1617,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/personal-call-history.ts",
+          "line": 18,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/personal-call-history.ts",
+          "line": 53,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/push-access.ts",
+          "line": 12,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/recording-storage.ts",
+          "line": 37,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/selected-directory.ts",
+          "line": 22,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/selected-directory.ts",
+          "line": 39,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/selected-directory.ts",
+          "line": 52,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/tenant-middleware.ts",
+          "line": 50,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/tenant-middleware.ts",
+          "line": 131,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/voicemail-access.ts",
+          "line": 27,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/voicemail-access.ts",
+          "line": 42,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/voicemail-access.ts",
+          "line": 65,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/voicemail-dialplan.ts",
+          "line": 83,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 372,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 394,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 675,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 691,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 857,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/profile/photo.ts",
+          "line": 366,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/profile/photo.ts",
+          "line": 659,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/profile/photo.ts",
+          "line": 663,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/profile/service.ts",
+          "line": 88,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/profile/service.ts",
+          "line": 149,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/profile/service.ts",
+          "line": 170,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/profile/service.ts",
+          "line": 184,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/profile/service.ts",
+          "line": 241,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/profile/service.ts",
+          "line": 264,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/profile/status.ts",
+          "line": 115,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/profile/status.ts",
+          "line": 128,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/push/repository.ts",
+          "line": 11,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/push/repository.ts",
+          "line": 35,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 27,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/routers.ts",
+          "line": 82,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/routers.ts",
+          "line": 111,
+          "operation": "FROM"
+        }
+      ],
+      "required": true
+    },
+    "tenant_settings": {
+      "select": true,
+      "insert": [
+        "business_hours_timezone",
+        "created_at",
+        "tenant_id",
+        "updated_at"
+      ],
+      "update": [
+        "business_hours_timezone",
+        "updated_at"
+      ],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 412,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 511,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/profile/service.ts",
+          "line": 90,
+          "operation": "JOIN"
+        }
+      ],
+      "required": true
+    },
+    "tenants": {
+      "select": true,
+      "insert": [],
+      "update": [
+        "created_at",
+        "id"
+      ],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/chat-notifications/repository.ts",
+          "line": 13,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 22,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 35,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 274,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/capture-ledger.ts",
+          "line": 26,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/capture-service.ts",
+          "line": 49,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/correlation.ts",
+          "line": 24,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/correlation.ts",
+          "line": 83,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/correlation.ts",
+          "line": 97,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/correlation.ts",
+          "line": 103,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/correlation.ts",
+          "line": 118,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 16,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 25,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 82,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 109,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 113,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 154,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 166,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 192,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 204,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/route-cdr.ts",
+          "line": 17,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/conference/provider.ts",
+          "line": 102,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/conference/repository.ts",
+          "line": 27,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/conference/repository.ts",
+          "line": 42,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/invitations/router.ts",
+          "line": 19,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/invitations/service.ts",
+          "line": 64,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/invitations/service.ts",
+          "line": 113,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/invitations/service.ts",
+          "line": 123,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/admission-repository.ts",
+          "line": 43,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/channel-meeting-admin-repository.ts",
+          "line": 31,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/channel-meeting-admin-repository.ts",
+          "line": 151,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/channel-meeting-origin.ts",
+          "line": 20,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/channel-meeting-origin.ts",
+          "line": 72,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/channel-meeting-repository.ts",
+          "line": 48,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/channel-meeting-repository.ts",
+          "line": 78,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/channel-meeting-repository.ts",
+          "line": 101,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/channel-meeting-repository.ts",
+          "line": 230,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/direct-meeting-repository.ts",
+          "line": 57,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/direct-meeting-repository.ts",
+          "line": 96,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/direct-meeting-repository.ts",
+          "line": 192,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/meeting-host-eviction-repository.ts",
+          "line": 147,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/plain-video-admission-lease-repository.ts",
+          "line": 100,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/plain-video-admission-lease-repository.ts",
+          "line": 145,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/plain-video-admission-repository.ts",
+          "line": 58,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/plain-video-admission-repository.ts",
+          "line": 99,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/plain-video-eviction-repository.ts",
+          "line": 142,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/repository.ts",
+          "line": 8,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/cdr-input.ts",
+          "line": 103,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/cdr-processor.ts",
+          "line": 464,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/freeswitch-routes.ts",
+          "line": 61,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/freeswitch-routes.ts",
+          "line": 435,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/freeswitch-routes.ts",
+          "line": 466,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 44,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 114,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 144,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/kamailio-routes.ts",
+          "line": 71,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/kamailio-routes.ts",
+          "line": 145,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/kamailio-routes.ts",
+          "line": 208,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/media-access.ts",
+          "line": 16,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/media-access.ts",
+          "line": 58,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 174,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 417,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 506,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 622,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 678,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 996,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 1010,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 1042,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 1604,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 1618,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/personal-call-history.ts",
+          "line": 19,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/personal-call-history.ts",
+          "line": 54,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/push-access.ts",
+          "line": 13,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/recording-storage.ts",
+          "line": 35,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/selected-directory.ts",
+          "line": 23,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/selected-directory.ts",
+          "line": 40,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/tenant-middleware.ts",
+          "line": 51,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/tenant-middleware.ts",
+          "line": 132,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/voicemail-access.ts",
+          "line": 28,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/voicemail-access.ts",
+          "line": 43,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/voicemail-access.ts",
+          "line": 67,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/voicemail-dialplan.ts",
+          "line": 81,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 181,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 373,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 395,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 397,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 676,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 693,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 858,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/profile/photo.ts",
+          "line": 367,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/profile/photo.ts",
+          "line": 659,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/profile/photo.ts",
+          "line": 664,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/profile/service.ts",
+          "line": 89,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/profile/service.ts",
+          "line": 148,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/profile/service.ts",
+          "line": 171,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/profile/service.ts",
+          "line": 185,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/profile/service.ts",
+          "line": 242,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/profile/service.ts",
+          "line": 265,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/profile/status.ts",
+          "line": 116,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/push/repository.ts",
+          "line": 13,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/push/repository.ts",
+          "line": 34,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 29,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/routers.ts",
+          "line": 83,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/routers.ts",
+          "line": 112,
+          "operation": "JOIN"
+        }
+      ],
+      "required": true
+    },
+    "time_condition_rules": {
+      "select": true,
+      "insert": [
+        "day_of_week",
+        "end_date",
+        "end_time",
+        "is_holiday",
+        "label",
+        "sort_order",
+        "start_date",
+        "start_time",
+        "time_condition_id"
+      ],
+      "update": [],
+      "delete": true,
+      "references": [
+        {
+          "file": "server/pbx/dialplan-generators.ts",
+          "line": 364,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 1059,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 1075,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 1142,
+          "operation": "DELETE FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 1145,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 1170,
+          "operation": "DELETE FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 1173,
+          "operation": "INSERT INTO"
+        }
+      ],
+      "required": true
+    },
+    "time_conditions": {
+      "select": true,
+      "insert": [
+        "description",
+        "match_action",
+        "match_target",
+        "name",
+        "nomatch_action",
+        "nomatch_target",
+        "tenant_id",
+        "timezone"
+      ],
+      "update": [
+        "description",
+        "match_action",
+        "match_target",
+        "name",
+        "nomatch_action",
+        "nomatch_target",
+        "timezone",
+        "updated_at"
+      ],
+      "delete": true,
+      "references": [
+        {
+          "file": "server/pbx/dialplan-generators.ts",
+          "line": 355,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 1060,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 1070,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 1089,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 1125,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/pbx/ivr-router.ts",
+          "line": 1192,
+          "operation": "DELETE FROM"
+        }
+      ],
+      "required": true
+    },
+    "user_extensions": {
+      "select": true,
+      "insert": [
+        "extension_id",
+        "is_primary",
+        "user_id"
+      ],
+      "update": [
+        "is_primary"
+      ],
+      "delete": true,
+      "references": [
+        {
+          "file": "server/chat-notifications/repository.ts",
+          "line": 14,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 19,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 271,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 307,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 328,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 331,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 350,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 506,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 562,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 819,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 842,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 857,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 914,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 974,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 1016,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/cloud-recordings/capture-ledger.ts",
+          "line": 23,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/capture-service.ts",
+          "line": 47,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/correlation.ts",
+          "line": 22,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/correlation.ts",
+          "line": 81,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/correlation.ts",
+          "line": 116,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 14,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 111,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 125,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/cloud-recordings/repository.ts",
+          "line": 168,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/channel-meeting-admin-repository.ts",
+          "line": 105,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/channel-meeting-admin-repository.ts",
+          "line": 185,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/channel-meeting-origin.ts",
+          "line": 76,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/channel-meeting-origin.ts",
+          "line": 110,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/channel-meeting-repository.ts",
+          "line": 52,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/channel-meeting-repository.ts",
+          "line": 82,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/channel-meeting-repository.ts",
+          "line": 137,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/channel-meeting-repository.ts",
+          "line": 175,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/channel-meeting-repository.ts",
+          "line": 235,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/direct-meeting-repository.ts",
+          "line": 60,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/direct-meeting-repository.ts",
+          "line": 112,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/direct-meeting-repository.ts",
+          "line": 204,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/direct-meeting-repository.ts",
+          "line": 208,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/plain-video-admission-lease-repository.ts",
+          "line": 101,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/plain-video-admission-repository.ts",
+          "line": 68,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/media-access.ts",
+          "line": 13,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 599,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 655,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 804,
+          "operation": "DELETE FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 903,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 1183,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 1193,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 1326,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 1359,
+          "operation": "DELETE FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 1372,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 1385,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/pbx/personal-call-history.ts",
+          "line": 23,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/personal-call-history.ts",
+          "line": 58,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/push-access.ts",
+          "line": 11,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/recording-storage.ts",
+          "line": 36,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/selected-directory.ts",
+          "line": 27,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/selected-directory.ts",
+          "line": 44,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/selected-directory.ts",
+          "line": 51,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/voicemail-dialplan.ts",
+          "line": 82,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 393,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 409,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 707,
+          "operation": "DELETE FROM"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 712,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 720,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/phone-provisioning.ts",
+          "line": 748,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/profile/photo.ts",
+          "line": 368,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/push/repository.ts",
+          "line": 10,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/push/repository.ts",
+          "line": 33,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/push/wake-repository.ts",
+          "line": 26,
+          "operation": "JOIN"
+        }
+      ],
+      "required": true
+    },
+    "users": {
+      "select": true,
+      "insert": [
+        "email",
+        "loginMethod",
+        "name",
+        "openId",
+        "role"
+      ],
+      "update": [
+        "lastSignedIn",
+        "updatedAt"
+      ],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/_core/phone11-auth-readiness.ts",
+          "line": 81,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/_core/phone11-auth-readiness.ts",
+          "line": 90,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/_core/phone11-auth.ts",
+          "line": 490,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 84,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 87,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 112,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 121,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 162,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 237,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 268,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 305,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 334,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 510,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 564,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 591,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/chat/service.ts",
+          "line": 1014,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/invitations/service.ts",
+          "line": 84,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/invitations/service.ts",
+          "line": 100,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/invitations/service.ts",
+          "line": 300,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/invitations/service.ts",
+          "line": 316,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/meetings/channel-meeting-admin-repository.ts",
+          "line": 100,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/meetings/plain-video-admission-lease-repository.ts",
+          "line": 97,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/meetings/plain-video-admission-repository.ts",
+          "line": 102,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 613,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 669,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 733,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 992,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/pbx-router.ts",
+          "line": 1038,
+          "operation": "JOIN"
+        },
+        {
+          "file": "server/pbx/selected-directory.ts",
+          "line": 55,
+          "operation": "JOIN"
+        }
+      ],
+      "required": true
+    },
+    "voicemail_deposit_admissions": {
+      "select": true,
+      "insert": [
+        "extension_id",
+        "message_uuid",
+        "owner_epoch",
+        "owner_user_id",
+        "tenant_id"
+      ],
+      "update": [],
+      "delete": true,
+      "references": [
+        {
+          "file": "server/pbx/recording-storage.ts",
+          "line": 248,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/pbx/recording-storage.ts",
+          "line": 255,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/pbx/recording-storage.ts",
+          "line": 265,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/recording-storage.ts",
+          "line": 316,
+          "operation": "DELETE FROM"
+        },
+        {
+          "file": "server/pbx/recording-storage.ts",
+          "line": 333,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/recording-storage.ts",
+          "line": 344,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/recording-storage.ts",
+          "line": 393,
+          "operation": "FROM"
+        }
+      ],
+      "required": true
+    },
+    "voicemail_messages": {
+      "select": true,
+      "insert": [
+        "caller_name",
+        "caller_number",
+        "duration_seconds",
+        "extension_id",
+        "message_uuid",
+        "owner_epoch",
+        "owner_user_id",
+        "storage_path",
+        "storage_size_bytes",
+        "tenant_id"
+      ],
+      "update": [
+        "deleted_at",
+        "read_at",
+        "status"
+      ],
+      "delete": false,
+      "references": [
+        {
+          "file": "server/pbx/cdr-processor.ts",
+          "line": 459,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/media-access.ts",
+          "line": 55,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/recording-storage.ts",
+          "line": 322,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/recording-storage.ts",
+          "line": 406,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/recording-storage.ts",
+          "line": 423,
+          "operation": "INSERT INTO"
+        },
+        {
+          "file": "server/pbx/recording-storage.ts",
+          "line": 433,
+          "operation": "FROM"
+        },
+        {
+          "file": "server/pbx/voicemail-access.ts",
+          "line": 25,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/pbx/voicemail-access.ts",
+          "line": 40,
+          "operation": "UPDATE"
+        },
+        {
+          "file": "server/pbx/voicemail-access.ts",
+          "line": 63,
+          "operation": "FROM"
+        }
+      ],
+      "required": true
+    }
+  },
+  "fraudRoleReused": false,
+  "fraudControlsGrants": false,
+  "publicTemporaryObjects": "May be inherited from PUBLIC; persistent public schema CREATE is refused",
+  "activationAllowedByManifest": false
+}
