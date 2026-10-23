@@ -1,0 +1,11 @@
+[Unit]
+Description=Phone11 private voicemail outbox retry schedule
+
+[Timer]
+OnActiveSec=30s
+OnUnitInactiveSec=30s
+AccuracySec=1s
+Unit=phone11-voicemail-relay.service
+
+[Install]
+WantedBy=timers.target

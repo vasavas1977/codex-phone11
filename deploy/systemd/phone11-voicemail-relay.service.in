@@ -1,0 +1,26 @@
+[Unit]
+Description=Phone11 pinned private voicemail relay pass
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+# Render CONFIG_SHA256 with the reviewed activation packet SHA256 before install.
+ExecStart=/usr/bin/python3 -I /var/lib/phone11-voicemail/operator/relay-runtime.py --config /var/lib/phone11-voicemail/operator/runtime.json --config-sha256 CONFIG_SHA256 --run
+# A Docker exec must finish before rollback/replacement. Stopping the timer
+# prevents new passes; do not force-stop an active oneshot or its Docker client.
+TimeoutStartSec=infinity
+TimeoutStopSec=infinity
+StandardInput=null
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+RestrictAddressFamilies=AF_UNIX
+

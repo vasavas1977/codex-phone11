@@ -1,0 +1,11 @@
+[Unit]
+Description=Phone11 trusted local fallback outbox retry schedule
+
+[Timer]
+OnActiveSec=30s
+OnUnitInactiveSec=30s
+AccuracySec=1s
+Unit=phone11-voicemail-trusted-fallback-relay.service
+
+[Install]
+WantedBy=timers.target

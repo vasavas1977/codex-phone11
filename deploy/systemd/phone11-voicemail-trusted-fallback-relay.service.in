@@ -1,0 +1,27 @@
+[Unit]
+Description=Phone11 trusted local fallback owner-epoch relay pass
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+# This separate lane requires the reviewed v2 packet and root-private source/ingress proofs.
+# Render CONFIG_SHA256 with its exact digest; keep the native/API global hook flags false.
+ExecStart=/usr/bin/python3 -I /var/lib/phone11-voicemail/operator/relay-runtime.py --config /var/lib/phone11-voicemail/operator/trusted-fallback-runtime.json --config-sha256 CONFIG_SHA256 --trusted-local-fallback-owner-epoch --run
+# A Docker exec must finish before rollback/replacement. Stopping the timer
+# prevents new passes; do not force-stop an active oneshot or its Docker client.
+TimeoutStartSec=infinity
+TimeoutStopSec=infinity
+StandardInput=null
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+RestrictAddressFamilies=AF_UNIX
+
