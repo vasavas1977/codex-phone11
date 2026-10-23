@@ -221,4 +221,51 @@ describe.skipIf(!socket)("voicemail isolated PostgreSQL", () => {
     expect(legacy?.conflict).toBe(false);
     expect(legacy?.messageUuid).toMatch(/^[0-9a-f-]{36}$/);
   });
+
+  it.each(["owner reassignment", "disable/re-enable"])("rejects a redeemed epoch after concurrent %s without inserting an admission", async change => {
+    const id = "33333333-3333-4333-8333-333333333333";
+    const before = (await state.pool!.query("SELECT voicemail_owner_epoch FROM extensions WHERE id = 42")).rows[0].voicemail_owner_epoch;
+    const updater = await state.pool!.connect();
+    const admitter = await state.pool!.connect();
+    try {
+      await updater.query("BEGIN");
+      if (change === "owner reassignment") {
+        await updater.query("DELETE FROM user_extensions WHERE extension_id = 42");
+        await updater.query("INSERT INTO tenant_memberships VALUES (19, 12, 'active')");
+        await updater.query("INSERT INTO user_extensions VALUES (19, 42)");
+        await updater.query("UPDATE extensions SET user_id = 19 WHERE id = 42");
+      } else {
+        await updater.query("UPDATE extensions SET voicemail_enabled = false WHERE id = 42");
+        await updater.query("UPDATE extensions SET voicemail_enabled = true WHERE id = 42");
+      }
+      await admitter.query("BEGIN");
+      let settled = false;
+      const admission = createVoicemailAdmission(admitter, 12, "3001", id, before)
+        .then(result => { settled = true; return result; });
+      await new Promise(resolve => setTimeout(resolve, 35));
+      expect(settled).toBe(false);
+      await updater.query("COMMIT");
+      // Reassignment invalidates the previously visible membership join during
+      // PostgreSQL's locked-row recheck; a toggle retains that join and reaches
+      // the explicit epoch mismatch check. Both must reject before any insert.
+      expect(await admission).toEqual(change === "owner reassignment" ? null : { messageUuid: id, conflict: true });
+      await admitter.query("COMMIT");
+      expect((await state.pool!.query("SELECT count(*)::int AS count FROM voicemail_deposit_admissions WHERE message_uuid = $1", [id])).rows[0].count).toBe(0);
+      const current = (await state.pool!.query("SELECT voicemail_owner_epoch FROM extensions WHERE id = 42")).rows[0].voicemail_owner_epoch;
+      expect(current).not.toBe(before);
+      await admitter.query("BEGIN");
+      expect(await createVoicemailAdmission(admitter, 12, "3001", id, current)).toEqual({ messageUuid: id, conflict: false });
+      await admitter.query("COMMIT");
+      await admitter.query("BEGIN");
+      expect(await createVoicemailAdmission(admitter, 12, "3001", id, current)).toEqual({ messageUuid: id, conflict: false });
+      await admitter.query("COMMIT");
+      expect((await state.pool!.query("SELECT owner_epoch FROM voicemail_deposit_admissions WHERE message_uuid = $1", [id])).rows)
+        .toEqual([{ owner_epoch: current }]);
+    } finally {
+      await updater.query("ROLLBACK").catch(() => undefined);
+      await admitter.query("ROLLBACK").catch(() => undefined);
+      updater.release();
+      admitter.release();
+    }
+  });
 });

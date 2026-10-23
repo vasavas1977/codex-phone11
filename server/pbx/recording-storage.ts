@@ -236,11 +236,18 @@ storageRouter.post("/upload", verifyFsAuth, raw({ type: ["audio/wav", "audio/x-w
 /** Caller owns the transaction so the mailbox lock covers the insert/replay. */
 export async function createVoicemailAdmission(
   client: Pick<PoolClient, "query">, tenantId: number, extension: string, suppliedUuid?: string,
+  expectedOwnerEpoch?: string,
 ): Promise<{ messageUuid: string; conflict: boolean } | null> {
   // The row lock serializes this admission with an admin reassignment.
   const mailbox = await client.query(`${ACTIVE_VOICEMAIL_MAILBOX} FOR SHARE OF e`, [tenantId, extension]);
   if (mailbox.rows.length !== 1) return null;
   const id = suppliedUuid ?? randomUUID();
+  // The trusted local-fallback reference was redeemed for this exact owner.
+  // Keep the existing row lock through comparison and insert/replay: an admin
+  // reassignment between redemption and this lock must reject before recording.
+  if (expectedOwnerEpoch !== undefined &&
+      mailbox.rows[0].voicemail_owner_epoch !== expectedOwnerEpoch.toLowerCase())
+    return { messageUuid: id, conflict: true };
   const values = [id, tenantId, mailbox.rows[0].id, mailbox.rows[0].user_id, mailbox.rows[0].voicemail_owner_epoch];
   if (suppliedUuid === undefined) {
     // Older producers omit the UUID and retain the original response contract.
@@ -271,18 +278,22 @@ export async function createVoicemailAdmission(
 }
 
 /** Obtain and persist mailbox ownership before FreeSWITCH begins recording. */
-const admissionHandler = (requireClientUuid: boolean) => async (req: Request, res: Response) => {
+const admissionHandler = (requireClientUuid: boolean, requireOwnerEpoch = false) => async (req: Request, res: Response) => {
   const tenantId = typeof req.query.tenant_id === "string" ? Number(req.query.tenant_id) : NaN;
   const extension = req.query.extension;
   const suppliedUuid = req.query.message_uuid;
+  const expectedOwnerEpoch = req.query.expected_owner_epoch;
   if (!validTenant(tenantId) || !validExtension(extension) ||
-      (requireClientUuid ? !validDepositUuid(suppliedUuid) : suppliedUuid !== undefined)) {
+      (requireClientUuid ? !validDepositUuid(suppliedUuid) : suppliedUuid !== undefined) ||
+      (requireOwnerEpoch ? !validDepositUuid(expectedOwnerEpoch) :
+        expectedOwnerEpoch !== undefined && !validDepositUuid(expectedOwnerEpoch))) {
     res.status(400).json({ error: "Provide a valid tenant and personal mailbox" });
     return;
   }
   try {
     const admission = await withTransaction(client =>
-      createVoicemailAdmission(client, tenantId, extension, requireClientUuid ? suppliedUuid as string : undefined));
+      createVoicemailAdmission(client, tenantId, extension, requireClientUuid ? suppliedUuid as string : undefined,
+        expectedOwnerEpoch === undefined ? undefined : (expectedOwnerEpoch as string).toLowerCase()));
     if (!admission) {
       res.status(404).json({ error: "Voicemail mailbox not found" });
       return;
@@ -291,7 +302,8 @@ const admissionHandler = (requireClientUuid: boolean) => async (req: Request, re
       res.status(409).json({ error: "Voicemail admission identity changed" });
       return;
     }
-    res.status(201).json({ message_uuid: admission.messageUuid });
+    res.status(201).json({ message_uuid: admission.messageUuid,
+      ...(expectedOwnerEpoch !== undefined ? { expected_owner_epoch: (expectedOwnerEpoch as string).toLowerCase() } : {}) });
   } catch {
     res.status(503).json({ error: "Voicemail admission is unavailable" });
   }
@@ -301,6 +313,9 @@ const admissionHandler = (requireClientUuid: boolean) => async (req: Request, re
 // versioned path, which an older backend cannot mistake for the legacy insert.
 storageRouter.post("/voicemail/admission", verifyFsAuth, admissionHandler(false));
 storageRouter.post("/voicemail/admission/idempotent", verifyFsAuth, admissionHandler(true));
+// Required epoch protocol for one-use local fallback. Older backends return 404
+// rather than accepting a query field they do not implement.
+storageRouter.post("/voicemail/admission/idempotent/owner-epoch", verifyFsAuth, admissionHandler(true, true));
 
 /** Retire one exact old admission only after the producer's reviewed handoff. */
 storageRouter.post("/voicemail/admission/expire", verifyFsAuth, async (req, res) => {

@@ -29,6 +29,90 @@ async function fixture() {
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 
 describe("FreeSWITCH voicemail producer", () => {
+  const ownerEpoch = "abcdefab-0000-4000-8000-000000000001";
+
+  it("binds trusted fallback admission and durable replay to its canonical owner epoch", async () => {
+    const { config } = await fixture();
+    const send = vi.fn(async (url: string) => {
+      const endpoint = new URL(url);
+      expect(endpoint.pathname).toBe("/api/recordings/voicemail/admission/idempotent/owner-epoch");
+      expect(endpoint.searchParams.get("expected_owner_epoch")).toBe(ownerEpoch);
+      return new Response(JSON.stringify({ message_uuid: messageUuid, expected_owner_epoch: ownerEpoch }), { status: 201 });
+    });
+    const input = { channelUuid, tenantId: 12, extension: "3001", expectedOwnerEpoch: ownerEpoch.toUpperCase() };
+    expect(await admitVoicemail(config, input, send as typeof fetch)).toBe(messageUuid);
+    expect(await admitVoicemail(config, { ...input, expectedOwnerEpoch: ownerEpoch }, send as typeof fetch)).toBe(messageUuid);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(await readFile(path.join(config.outboxRoot, "pending", `${channelUuid}.json`), "utf8")))
+      .toEqual({ ...input, expectedOwnerEpoch: ownerEpoch, messageUuid, admitted: true });
+  });
+
+  it.each(["", "bad", null, 17, [ownerEpoch]])("rejects malformed supplied owner epoch %j before persistence or network", async supplied => {
+    const { config } = await fixture();
+    const send = vi.fn();
+    await expect(admitVoicemail(config,
+      { channelUuid, tenantId: 12, extension: "3001", expectedOwnerEpoch: supplied } as AdmissionInput,
+      send as typeof fetch)).rejects.toThrow("Invalid voicemail admission identity");
+    expect(send).not.toHaveBeenCalled();
+    await expect(access(config.outboxRoot)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.each([undefined, "20000000-0000-4000-8000-000000000002"])("requires exact backend epoch acknowledgement %j before completion", async acknowledged => {
+    const { config, wav } = await fixture();
+    const send = vi.fn(async () => new Response(JSON.stringify({ message_uuid: messageUuid,
+      ...(acknowledged !== undefined ? { expected_owner_epoch: acknowledged } : {}) }), { status: 201 }));
+    await expect(admitVoicemail(config,
+      { channelUuid, tenantId: 12, extension: "3001", expectedOwnerEpoch: ownerEpoch }, send as typeof fetch))
+      .rejects.toThrow("Invalid voicemail admission response");
+    await expect(completeVoicemail(config, { channelUuid, voicemailFilePath: wav })).rejects.toThrow("not been acknowledged");
+    expect(JSON.parse(await readFile(path.join(config.outboxRoot, "pending", `${channelUuid}.json`), "utf8")))
+      .toMatchObject({ expectedOwnerEpoch: ownerEpoch, requestMessageUuid: messageUuid, admitted: false });
+  });
+
+  it("preserves an uncertain fallback epoch/UUID and refuses reassignment or epoch removal on retry", async () => {
+    const { config, wav } = await fixture();
+    const input = { channelUuid, tenantId: 12, extension: "3001", expectedOwnerEpoch: ownerEpoch };
+    const lost = vi.fn(async () => { throw new Error("acknowledgement lost"); });
+    await expect(admitVoicemail(config, input, lost as typeof fetch)).rejects.toThrow("acknowledgement lost");
+    const next = vi.fn(async () => new Response("", { status: 409 }));
+    for (const expectedOwnerEpoch of [undefined, "20000000-0000-4000-8000-000000000002"]) {
+      await expect(admitVoicemail(config, { ...input, expectedOwnerEpoch }, next as typeof fetch))
+        .rejects.toThrow("Conflicting voicemail admission identity");
+    }
+    expect(next).not.toHaveBeenCalled();
+    await expect(admitVoicemail(config, input, next as typeof fetch)).rejects.toThrow("admission denied: 409");
+    expect(next).toHaveBeenCalledTimes(1);
+    const pending = JSON.parse(await readFile(path.join(config.outboxRoot, "pending", `${channelUuid}.json`), "utf8"));
+    expect(pending).toMatchObject({ expectedOwnerEpoch: ownerEpoch, requestMessageUuid: messageUuid, admitted: false });
+    await expect(completeVoicemail(config, { channelUuid, voicemailFilePath: wav })).rejects.toThrow("not been acknowledged");
+    const retry = vi.fn(async () => new Response(JSON.stringify({ message_uuid: messageUuid, expected_owner_epoch: ownerEpoch }), { status: 201 }));
+    expect(await admitVoicemail(config, input, retry as typeof fetch)).toBe(messageUuid);
+  });
+
+  it.each([undefined, true, false])("refuses fallback replay against historical pending evidence missing epoch (admitted=%j)", async admitted => {
+    const { config } = await fixture();
+    const pendingDir = path.join(config.outboxRoot, "pending");
+    await mkdir(pendingDir, { recursive: true, mode: 0o700 });
+    await writeFile(path.join(pendingDir, `${channelUuid}.json`), JSON.stringify({ channelUuid, tenantId: 12, extension: "3001",
+      ...(admitted === false ? { requestMessageUuid: messageUuid } : { messageUuid }),
+      ...(admitted !== undefined ? { admitted } : {}) }), { mode: 0o600 });
+    const send = vi.fn();
+    await expect(admitVoicemail(config, { channelUuid, tenantId: 12, extension: "3001", expectedOwnerEpoch: ownerEpoch }, send as typeof fetch))
+      .rejects.toThrow("Conflicting voicemail admission identity");
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("never falls back to an older endpoint when an epoch-aware backend is missing", async () => {
+    const { config } = await fixture();
+    const send = vi.fn(async (url: string) => {
+      expect(new URL(url).pathname.endsWith("/admission/idempotent/owner-epoch")).toBe(true);
+      return new Response("", { status: 404 });
+    });
+    await expect(admitVoicemail(config, { channelUuid, tenantId: 12, extension: "3001", expectedOwnerEpoch: ownerEpoch }, send as typeof fetch))
+      .rejects.toThrow("admission denied: 404");
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
   it("does not create an outbox during read-only inspection", async () => {
     const { config } = await fixture();
     await expect(inspectStaleVoicemailPending(config)).rejects.toThrow();

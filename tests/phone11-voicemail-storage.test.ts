@@ -58,6 +58,64 @@ beforeEach(() => {
 });
 
 describe("voicemail storage", () => {
+  it("requires a valid epoch on the explicit fallback protocol before any mailbox lookup", async () => {
+    const messageUuid = "22222222-2222-4222-8222-222222222222";
+    for (const suffix of ["", "&expected_owner_epoch=", "&expected_owner_epoch=bad",
+      `&expected_owner_epoch=${epoch}&expected_owner_epoch=${epoch}`]) {
+      const response = await fetch(`${base}/recordings/voicemail/admission/idempotent/owner-epoch?tenant_id=12&extension=3001&message_uuid=${messageUuid}${suffix}`,
+        { method: "POST", headers: { "x-fs-secret": process.env.FS_SHARED_SECRET! } });
+      expect(response.status).toBe(400);
+    }
+    expect(mocks.query).not.toHaveBeenCalled();
+  });
+
+  it("rejects owner reassignment after fallback redemption while holding the mailbox row lock, before insert", async () => {
+    mocks.query.mockResolvedValueOnce({ rows: [{ id: 42, user_id: 18,
+      voicemail_owner_epoch: "20000000-0000-4000-8000-000000000002" }] });
+    const response = await fetch(`${base}/recordings/voicemail/admission/idempotent/owner-epoch?tenant_id=12&extension=3001&message_uuid=${epoch}&expected_owner_epoch=${epoch}`,
+      { method: "POST", headers: { "x-fs-secret": process.env.FS_SHARED_SECRET! } });
+    expect(response.status).toBe(409);
+    expect(mocks.query).toHaveBeenCalledTimes(1);
+    expect(mocks.query.mock.calls[0][0]).toContain("FOR SHARE OF e");
+    expect(mocks.query).not.toHaveBeenCalledWith(expect.stringContaining("INSERT INTO"), expect.anything());
+  });
+
+  it("acknowledges an exact fallback epoch and replays the same UUID/owner without refreshing age", async () => {
+    const messageUuid = "22222222-2222-4222-8222-222222222222";
+    const row = { tenant_id: 12, extension_id: 42, owner_user_id: 17, owner_epoch: epoch };
+    const url = `${base}/recordings/voicemail/admission/idempotent/owner-epoch?tenant_id=12&extension=3001&message_uuid=${messageUuid}&expected_owner_epoch=${epoch}`;
+    const post = () => fetch(url, { method: "POST", headers: { "x-fs-secret": process.env.FS_SHARED_SECRET! } });
+    mocks.query.mockResolvedValueOnce({ rows: [{ id: 42, user_id: 17, voicemail_owner_epoch: epoch }] })
+      .mockResolvedValueOnce({ rows: [row] });
+    expect(await (await post()).json()).toEqual({ message_uuid: messageUuid, expected_owner_epoch: epoch });
+    mocks.query.mockResolvedValueOnce({ rows: [{ id: 42, user_id: 17, voicemail_owner_epoch: epoch }] })
+      .mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({ rows: [row] });
+    const replay = await post();
+    expect(replay.status).toBe(201);
+    expect(await replay.json()).toEqual({ message_uuid: messageUuid, expected_owner_epoch: epoch });
+    expect(mocks.query.mock.calls[1][0]).toContain("ON CONFLICT (message_uuid) DO NOTHING");
+    expect(mocks.query.mock.calls[3][0]).not.toContain("UPDATE");
+    expect(mocks.query.mock.calls[4][0]).toContain("FROM voicemail_deposit_admissions WHERE message_uuid = $1");
+  });
+
+  it("keeps a previously committed different owner epoch conflicting on the fallback replay route", async () => {
+    mocks.query.mockResolvedValueOnce({ rows: [{ id: 42, user_id: 17, voicemail_owner_epoch: epoch }] })
+      .mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({ rows: [{ tenant_id: 12, extension_id: 42,
+        owner_user_id: 18, owner_epoch: "20000000-0000-4000-8000-000000000002" }] });
+    const response = await fetch(`${base}/recordings/voicemail/admission/idempotent/owner-epoch?tenant_id=12&extension=3001&message_uuid=${epoch}&expected_owner_epoch=${epoch}`,
+      { method: "POST", headers: { "x-fs-secret": process.env.FS_SHARED_SECRET! } });
+    expect(response.status).toBe(409);
+  });
+
+  it.each(["admission", "admission/idempotent"])("honors a supplied epoch on the compatible %s path instead of ignoring it", async endpoint => {
+    mocks.query.mockResolvedValueOnce({ rows: [{ id: 42, user_id: 18,
+      voicemail_owner_epoch: "20000000-0000-4000-8000-000000000002" }] });
+    const response = await fetch(`${base}/recordings/voicemail/${endpoint}?tenant_id=12&extension=3001&expected_owner_epoch=${epoch}${endpoint.endsWith("idempotent") ? `&message_uuid=${epoch}` : ""}`,
+      { method: "POST", headers: { "x-fs-secret": process.env.FS_SHARED_SECRET! } });
+    expect(response.status).toBe(409);
+    expect(mocks.query).toHaveBeenCalledTimes(1);
+  });
+
   it("issues a durable pre-record admission for an active personal mailbox", async () => {
     mocks.query
       .mockResolvedValueOnce({ rows: [{ id: 42, user_id: 17, voicemail_owner_epoch: epoch }] })

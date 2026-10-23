@@ -35,7 +35,9 @@ export type ProducerConfig = {
   mailboxRoots: Record<string, string>;
 };
 
-export type AdmissionInput = { channelUuid: string; tenantId: number; extension: string };
+export type AdmissionInput = { channelUuid: string; tenantId: number; extension: string;
+  /** Required by the trusted one-use local-fallback handoff; never discard on replay. */
+  expectedOwnerEpoch?: string };
 export type CompletionInput = { channelUuid: string; voicemailFilePath: string; callerNumber?: string; callerName?: string; durationSeconds?: number };
 type Pending = AdmissionInput & { messageUuid: string; admitted?: boolean };
 
@@ -60,7 +62,9 @@ function validConfig(config: ProducerConfig): URL {
 
 function validateAdmission(input: AdmissionInput): void {
   if (typeof input.channelUuid !== "string" || !UUID.test(input.channelUuid) || !Number.isSafeInteger(input.tenantId) || input.tenantId <= 0 ||
-      typeof input.extension !== "string" || !/^[1-9][0-9]{0,15}$/.test(input.extension)) throw new Error("Invalid voicemail admission identity");
+      typeof input.extension !== "string" || !/^[1-9][0-9]{0,15}$/.test(input.extension) ||
+      (input.expectedOwnerEpoch !== undefined &&
+        (typeof input.expectedOwnerEpoch !== "string" || !UUID.test(input.expectedOwnerEpoch)))) throw new Error("Invalid voicemail admission identity");
 }
 
 function validateCompletion(input: CompletionInput): void {
@@ -296,6 +300,7 @@ function pendingFrom(value: unknown, channelUuid: string): Pending {
       (intent ? input.messageUuid !== undefined : input.requestMessageUuid !== undefined))
     throw new Error("Voicemail admission identity mismatch");
   return { channelUuid, tenantId: input.tenantId!, extension: input.extension!, messageUuid,
+    ...(input.expectedOwnerEpoch !== undefined ? { expectedOwnerEpoch: input.expectedOwnerEpoch.toLowerCase() } : {}),
     ...(input.admitted !== undefined ? { admitted: input.admitted } : {}) };
 }
 
@@ -304,6 +309,10 @@ export async function admitVoicemail(config: ProducerConfig, input: AdmissionInp
                                     newMessageUuid: () => string = randomUUID): Promise<string> {
   const endpoint = validConfig(config);
   validateAdmission(input);
+  // Snapshot the handoff before awaited filesystem/network work and compare a
+  // canonical UUID representation with durable evidence on every retry.
+  input = { channelUuid: input.channelUuid, tenantId: input.tenantId, extension: input.extension,
+    ...(input.expectedOwnerEpoch !== undefined ? { expectedOwnerEpoch: input.expectedOwnerEpoch.toLowerCase() } : {}) };
   mailboxRootFor(config, input.tenantId, input.extension);
   const pendingDir = path.join(config.outboxRoot, "pending");
   await privateDirectory(config.outboxRoot);
@@ -312,7 +321,8 @@ export async function admitVoicemail(config: ProducerConfig, input: AdmissionInp
   let pending: Pending | undefined;
   try {
     const existing = pendingFrom(await readPublishedPrivateJson(pendingPath, true), input.channelUuid);
-    if (existing.tenantId !== input.tenantId || existing.extension !== input.extension) throw new Error("Conflicting voicemail admission identity");
+    if (existing.tenantId !== input.tenantId || existing.extension !== input.extension ||
+        existing.expectedOwnerEpoch !== input.expectedOwnerEpoch) throw new Error("Conflicting voicemail admission identity");
     if (existing.admitted !== false) {
       // If the prior acknowledgement rename succeeded but directory sync
       // failed, a retry must establish its durability before recording.
@@ -338,6 +348,12 @@ export async function admitVoicemail(config: ProducerConfig, input: AdmissionInp
   // This path does not exist on older backends. A rollback between attempts
   // therefore fails closed instead of silently ignoring the supplied UUID.
   endpoint.pathname += "/admission/idempotent";
+  // A distinct endpoint prevents an older idempotent backend from silently
+  // ignoring expected_owner_epoch and inserting an admission for a new owner.
+  if (input.expectedOwnerEpoch !== undefined) {
+    endpoint.pathname += "/owner-epoch";
+    endpoint.searchParams.set("expected_owner_epoch", input.expectedOwnerEpoch);
+  }
   endpoint.searchParams.set("tenant_id", String(input.tenantId));
   endpoint.searchParams.set("extension", input.extension);
   endpoint.searchParams.set("message_uuid", pending.messageUuid);
@@ -345,8 +361,10 @@ export async function admitVoicemail(config: ProducerConfig, input: AdmissionInp
     method: "POST", headers: { "x-fs-secret": config.integrationSecret }, signal: AbortSignal.timeout(10_000),
   });
   if (response.status !== 201) throw new Error(`Voicemail admission denied: ${response.status}`);
-  const body = await response.json() as { message_uuid?: unknown };
-  if (body.message_uuid !== pending.messageUuid) throw new Error("Invalid voicemail admission response");
+  const body = await response.json() as { message_uuid?: unknown; expected_owner_epoch?: unknown };
+  if (body.message_uuid !== pending.messageUuid ||
+      (input.expectedOwnerEpoch !== undefined && body.expected_owner_epoch !== input.expectedOwnerEpoch))
+    throw new Error("Invalid voicemail admission response");
   await markAdmitted(pendingDir, `${input.channelUuid}.json`, pending);
   return pending.messageUuid;
 }
