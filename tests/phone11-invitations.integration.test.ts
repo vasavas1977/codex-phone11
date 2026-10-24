@@ -31,10 +31,10 @@ suite("Phone11 workspace invitations on real PostgreSQL", () => {
   const tokenFor = (address: string) => delivered.findLast(item => item.email === address)!.token;
 
   beforeAll(async () => {
-    const adminPool = new Pool({ host: socket, database: "phone11_auth_test", user: "phone11_test" });
-    await adminPool.query("CREATE SCHEMA invitations_test");
-    await adminPool.end();
-    database = new Pool({ host: socket, database: "phone11_auth_test", user: "phone11_test", options: "-c search_path=invitations_test" });
+    // Readiness attests the production public schema. Isolate by database so
+    // concurrent auth fixtures can keep their own public tables unchanged.
+    database = new Pool({ host: socket, database: "phone11_invitations_test", user: "phone11_test", options: "-c search_path=public" });
+    expect((await database.query("SELECT current_database() AS database, current_schema() AS schema")).rows[0]).toEqual({ database: "phone11_invitations_test", schema: "public" });
     await database.query(`CREATE TABLE users (
       id SERIAL PRIMARY KEY, "openId" TEXT UNIQUE NOT NULL, name TEXT, email VARCHAR(320), "loginMethod" TEXT,
       role TEXT NOT NULL DEFAULT 'user', "createdAt" TIMESTAMPTZ DEFAULT now(),
@@ -76,8 +76,8 @@ suite("Phone11 workspace invitations on real PostgreSQL", () => {
       ? join(process.env.PHONE11_TEST_PG_BIN, "psql") : "psql";
     const runMigration = (filename: string) => execFileSync(psql,
       ["-X", "-v", "ON_ERROR_STOP=1", "-h", socket!, "-U", "phone11_test",
-        "-d", "phone11_auth_test", "-f", fileURLToPath(new URL(`../server/invitations/${filename}`, import.meta.url))], {
-        env: { ...process.env, PGOPTIONS: "-c search_path=invitations_test" },
+        "-d", "phone11_invitations_test", "-f", fileURLToPath(new URL(`../server/invitations/${filename}`, import.meta.url))], {
+        env: { ...process.env, PGOPTIONS: "-c search_path=public" },
       });
     expect(() => runMigration("migration.sql")).toThrow();
     expect((await database.query("SELECT to_regclass('phone11_workspace_invitations') AS relation")).rows[0].relation).toBeNull();

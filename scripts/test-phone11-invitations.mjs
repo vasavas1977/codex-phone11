@@ -24,7 +24,9 @@ try {
   run(join(bin, "initdb"), ["-D", data, "-U", "phone11_test", "--auth-local=trust", "--auth-host=reject", "--no-locale", "-E", "UTF8"]);
   run(join(bin, "pg_ctl"), ["-D", data, "-l", join(root, "postgres.log"), "-o", "-h '' -k " + socket, "-w", "start"]);
   started = true;
-  run(join(bin, "createdb"), ["-h", socket, "-U", "phone11_test", "phone11_auth_test"]);
+  for (const name of ["phone11_auth_test", "phone11_invitations_test"]) {
+    run(join(bin, "createdb"), ["-h", socket, "-U", "phone11_test", name]);
+  }
   const tests = process.argv.slice(2);
   const result = spawnSync(resolve("node_modules/.bin/vitest"), ["run", ...(tests.length ? tests : [
     "tests/phone11-invitations.integration.test.ts",
