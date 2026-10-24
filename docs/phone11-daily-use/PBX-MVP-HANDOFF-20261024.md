@@ -6,8 +6,11 @@ trusted relay are enabled. The installed relay recovery guard passed two fresh
 scheduled runs with zero refusals and zero delivered, retry or quarantined
 items. This establishes configuration and worker operation; actual voicemail
 delivery, playback and host cold-boot recovery remain unaccepted. The legacy
-backend on port 3000 still uses its original broad database login; isolated
-restricted-login proofs do not mean that production login has changed.
+backend on port 3000 still uses its original broad database login. Call-record
+submissions now select the dedicated receiver on port 3030, with a restricted
+TLS database role and restart-always policy. Its production qualification and
+FreeSWITCH URL/module transition passed without a service restart. Automatic
+real-call delivery and a full host reboot remain untested.
 
 Keep the **60-second Siprix trial**. Android and physical-phone testing remain
 deferred. This handoff supersedes the earlier MVP scope record's missing-schema,
@@ -20,6 +23,7 @@ it does not renew acceptance for other domains or authorize additional changes.
 | --- | --- |
 | PBX database | The 23 October extension-tenant, advanced-routing, phone-number and site migrations were applied. Metadata verification found twelve new empty tables and six expected capabilities. The exact fresh pre-DDL backup was restored into isolated PostgreSQL 16.13 on 25 October Bangkok time: 70 tables, 20 sequences and 9 functions; archive ownership/ACL commands replayed successfully. The temporary clone was removed. Original global roles/memberships and effective-privilege equivalence remain outside that proof. The earlier separate archive also had migration replay proof. |
 | Ordinary management API | Main `/api/trpc/` and the two voicemail recording routes target loopback **3026**. Its role `p11_management_runtime_20261023_v1` has explicit grants, verified TLS, and no superuser, create-database, create-role, inheritance, replication or bypass-RLS privileges. Wrong-password, plaintext and untrusted-CA checks were rejected. Restart policy is `unless-stopped`; restart/reboot recovery was not exercised. |
+| Call-record receiver | At 04:28–04:32 Bangkok on 25 October, the dedicated 3030 receiver passed production UID/source, restricted role, strict TLS and negative HTTP/auth checks. Restart `always` was enabled without restarting it. FreeSWITCH's CDR URL changed from 3000 to 3030 after owned pause and twice-zero call counts; unforced reporting-module reload and admission resume passed. Old backend remains running. Future automatic CDR delivery and historical error-spool replay are not proven by configuration. |
 | Exact API artifact | Image `sha256:17b8553fb5ad57b5c766b8396f0dd65bdaea11d8b1593003264a8504578d3d62`; installed bundle `e1c270e67b1f6d4bc3ed484a74a90c3143cc3b6ddb8db5698208173988c60e5b`. The inherited health build marker identifies the base source; use the derivative manifest and installed bundle for this release. |
 | Directory/issuer and FreeSWITCH | Directory and local fallback issuer/redemption remain on **3013**. The replacement issuer passed one-use protocol and directory-auth checks in both directions. The 23 October immutable FreeSWITCH replacement and loaded guards passed; original recording/voicemail volumes and outbox were preserved. These are protocol/configuration checks. |
 | Local voicemail route | The replacement Kamailio router is admitted with runtime and persisted maintenance gates zero; FreeSWITCH admission is restored. Scope is authenticated local **3001 ↔ 1020**, native Siprix **SDES80**, terminal no-answer **408**. Both personal mailboxes were enabled through the signed-in admin portal. Busy/DND, carrier inbound and browser fallback retain their previous behavior and are outside this release's acceptance. |
@@ -43,6 +47,10 @@ historical generation or configuration pin for a later action.
 
 | Evidence | Local record |
 | --- | --- |
+| Latest scoped progress | [Current configuration and remaining boundaries](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-COMMISSIONING-PROGRESS-20261025-v18.json) |
+| Restricted CDR activation | [Qualified running receiver](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-CDR-SIDECAR-ACTIVATION-CONTINUATION-20261025-v2.json) |
+| CDR automatic restart | [Policy applied without process restart](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-CDR-SIDECAR-RESTART-PROMOTION-20261025-v1.json) |
+| Native CDR destination | [URL switch and admission resumed](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-NATIVE-CDR-SIDECAR-TRANSITION-20261025-v2.json) |
 | Database migrations | [PBX-LIVE-MIGRATIONS-20261023-v1.json](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-LIVE-MIGRATIONS-20261023-v1.json) |
 | Restricted API, TLS negatives and configured readiness address | [PBX-VOICEMAIL-BACKEND-RUNNING-20261023-v3.json](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-VOICEMAIL-BACKEND-RUNNING-20261023-v3.json) |
 | Main API route and later voicemail route | [PBX-COMBINED-API-ROUTE-20261023-v1.json](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-COMBINED-API-ROUTE-20261023-v1.json), [PBX-VOICEMAIL-UPLOAD-ROUTE-20261023-v1.json](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-VOICEMAIL-UPLOAD-ROUTE-20261023-v1.json) |
@@ -534,7 +542,7 @@ cutover or real recording/voicemail delivery. The live legacy login is unchanged
 
 - [Installed-image PG16 capture-worker receipt](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-PG16-ACTUAL-CAPTURE-WORKERS-20261025-v1.json)
 
-## Call-record receiver: isolated HTTP passed, production stage stopped
+## Call-record receiver qualification history — resolved by the current deployment
 
 The exact production-image CDR-only candidate passed its seventh isolated PG16
 HTTP qualification at 20:52 UTC on 24 October. Actual authenticated HTTP requests,
@@ -545,15 +553,84 @@ The policy row-lock negative also confirmed that HTTP 200 alone does not prove a
 cloud-recording row was created. This is receiver qualification, not automatic
 production switch delivery or handset acceptance.
 
-The subsequent production stage created the dedicated CDR role with login
+The first production stage created the dedicated CDR role with login
 disabled and created its container in the stopped state. It refused during the
 Docker configuration comparison. A read-only diagnostic classified additional
 environment entries and health-check fields, then refused its final epoch check.
-The original failed stage receipt is retained. Do not replay the stage or adopt
-the container without a separately reviewed continuation. No candidate start,
+The original failed stage receipt is retained. At that step, no candidate start,
 HBA change, login enablement, native CDR destination change or legacy restart
-occurred. The existing legacy database login remains unchanged.
+occurred. The reviewed continuation and later partial activation are recorded
+below; do not replay the original stage. The legacy database login is unchanged.
 
 - [Exact-image HTTP qualification](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-PG16-CDR-SIDECAR-HTTP-QUALIFICATION-20261025-v7.json)
 - [Stopped-stage result](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-CDR-SIDECAR-STOPPED-STAGE-20261025-v1.json)
-- [Current progress](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-COMMISSIONING-PROGRESS-20261025-v13.json)
+- [Progress at the original stopped stage](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-COMMISSIONING-PROGRESS-20261025-v13.json)
+
+### Later CDR continuation, scoped HBA and partial activation
+
+At **04:07 Bangkok on 25 October** (21:07 UTC on 24 October), the reviewed
+continuation admitted the same existing stopped candidate and NOLOGIN role,
+verified exact image-default environment/health-check merging, and preserved the
+original failed receipt. It recreated neither the role nor the container. At
+04:12 Bangkok, scoped HBA v5 installed nine role-specific rules and verified one
+reload, preserving all other HBA bytes and protected process epochs. The role
+still had NOLOGIN and the candidate had not started at that boundary; actual
+authentication remained unproven.
+
+At **04:14 Bangkok**, activation v1 committed LOGIN for only the dedicated CDR
+role and dispatched one candidate start, then refused at `START_ONCE` with
+`RUNNING_DEFINITION_DRIFT` (exit 70). `loginOutcomeUnknown=false`, but
+`startOutcomeUnknown=true`: the receipt does not qualify the running definition,
+health, UID/source binding, TLS or negative HTTP checks. Retain the candidate and
+journals for bounded diagnosis; do not replay activation or infer successful
+startup. Native CDR still targets the existing port 3000 receiver, and the old
+backend/login is unchanged. No host reboot or phone/Android test occurred.
+
+- [Stage continuation PASS](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-CDR-SIDECAR-STAGE-CONTINUATION-20261025-v2.json)
+- [Scoped HBA v5 PASS](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-CDR-SIDECAR-SCOPED-HBA-20261025-v5.json)
+- [Partial activation v1](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-CDR-SIDECAR-ACTIVATION-20261025-v1.json)
+
+At **04:19 Bangkok**, the read-only runtime diagnostic confirmed that the same
+candidate is running with LOGIN enabled, no elevated role flags, restart count
+zero and restart policy `no`. UID 1001, Node executable, all four private/source
+file inodes, fixed network and 16 MiB noexec tmpfs matched. The only Docker
+configuration change was `HostConfig.OomKillDisable` from `false` while stopped
+to `null` while running. This diagnosis does not yet admit full activation;
+HTTP and native TLS checks still require the reviewed continuation. Original
+failed activation evidence remains intact.
+
+- [Current runtime diagnostic](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-CDR-SIDECAR-ACTIVATION-DIAGNOSTIC-20261025-v2.json)
+
+The first continuation at 04:22 Bangkok passed HTTP health/auth/parser and
+native process/file checks, then refused its database identity comparison before
+writing continuation evidence. The 04:26 read-only diagnostic confirmed positive
+TLS and every role/permission predicate; only address formatting differed:
+`inet_*_addr()::text` included `/32`. The corrected verification uses PostgreSQL
+`host(inet_*_addr())` while keeping the exact expected IP addresses and all TLS
+negative checks. This changes the verifier, not the deployed receiver or grants.
+
+- [First continuation, no evidence writes](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-CDR-SIDECAR-ACTIVATION-CONTINUATION-20261025-v1.json)
+- [Positive TLS identity diagnosis](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-CDR-SIDECAR-AUTH-IDENTITY-DIAGNOSTIC-20261025-v1.json)
+
+At **04:28 Bangkok**, corrected continuation v2 passed all native identity,
+strict TLS and negative-authentication checks and wrote the distinct successful
+continuation receipt while preserving original failures. At **04:29**, restart
+policy changed from `no` to `always` without changing process epochs. At
+**04:32**, FreeSWITCH's URL-only transition to port 3030 completed: owned pause,
+twice-zero counts, exact inode-retaining XML exchange, unforced module reload
+and resume were confirmed. No service restarted and no call was placed. The
+current deployment receipts above supersede the incomplete activation state in
+this historical sequence; they do not establish real call or cold-boot acceptance.
+
+### Delivery restart boundary
+
+The pinned voicemail relay retains its manifest and source WAV on 503, network
+failure or timeout for later scheduled scanning; 400/404/409 move the manifest
+to private quarantine. The timer schedules after activation and inactive passes
+at 30 seconds. Its observed empty passes do not prove queued delivery through a
+boot-time database/HTTP outage. Sequential retries and an infinite oneshot
+timeout provide no bounded recovery-time guarantee. The native CDR error spool
+is separate and has no automatic replay established by this evidence. See the
+[source-bound restart gap/runbook note](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/pbx/reboot-recovery-oct25-v1/DELIVERY-RESTART-GAPS-v1.md).
+The 60-second trial, deferred phone/Android tests, and unaccepted real
+recording/voicemail delivery and full cold-boot recovery remain unchanged.
