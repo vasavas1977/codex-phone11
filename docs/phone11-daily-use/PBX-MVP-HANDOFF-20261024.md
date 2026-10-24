@@ -787,3 +787,26 @@ and scheduled-pass verification. No existing installer should be blindly replaye
 Independent GPT-6.1 Sol high review accepted exact maintained relay SHA
 `11e01313548c60678b3be797d96b371b8f5d3bfe536ce26a390b0d5f0d669697`
 with no P0–P2 findings after the queue-boundary fix. This is source acceptance.
+
+### Upload-only receiver factory — PG16 qualified, 25 October 05:28 Bangkok
+
+The exact accepted receiver factory `129c1910…` passed against PostgreSQL
+16.13 and the deployed application image in two owned disposable containers.
+The factory verified its restricted TLS identity before listening, accepted an
+authorized synthetic upload, preserved file identity on replay, rejected changed
+bytes and unauthorized owners, exposed only its intended routes, and closed
+cleanly. Database readback confirmed ready storage and one queued job. All
+21 existing permission denials and TLS negatives remained effective.
+
+The root-dispatched packet was `48a72f05…`; receipt
+`PBX-PG16-UPLOAD-RECEIVER-FACTORY-20261025-v1.json` reports exit 0, both clones
+removed, stable archive custody and unchanged protected production processes.
+No production login, grant, upload route or storage volume changed. This proves
+the factory with the qualification fixture identity; production UID 1001 and
+its actual bind-mounted storage still need their own deployment admission.
+
+The bounded voicemail release has also been built from committed source
+`b40e8022…`. Its actual bundle `c0e8f168…`, derived manifest and matching guard
+passed independent source review. Fifteen isolated generated-bundle cases and
+five protocol-derivation cases passed. These artifacts are not yet installed;
+the live scheduled worker remains on its previous coherent release.
