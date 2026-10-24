@@ -47,7 +47,7 @@ historical generation or configuration pin for a later action.
 
 | Evidence | Local record |
 | --- | --- |
-| Latest scoped progress | [Current configuration and remaining boundaries](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-COMMISSIONING-PROGRESS-20261025-v20.json) |
+| Latest scoped progress | [Current configuration and remaining boundaries](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-COMMISSIONING-PROGRESS-20261025-v22.json) |
 | Restricted CDR activation | [Qualified running receiver](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-CDR-SIDECAR-ACTIVATION-CONTINUATION-20261025-v2.json) |
 | CDR automatic restart | [Policy applied without process restart](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-CDR-SIDECAR-RESTART-PROMOTION-20261025-v1.json) |
 | Native CDR destination | [URL switch and admission resumed](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-NATIVE-CDR-SIDECAR-TRANSITION-20261025-v2.json) |
@@ -671,3 +671,49 @@ parameters were not independently inspected. An empty queue at this instant
 does not establish future delivery or automatic replay after an outage.
 
 - [Private-spool metadata receipt](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-NATIVE-CDR-SPOOL-METADATA-20261025-v2.json)
+
+### Failed-CDR serialization — 25 October, 04:45 Bangkok
+
+The exact installed FreeSWITCH image was exercised in a new network-isolated
+clone with one synthetic null channel and a receiver deliberately returning 503.
+Its sole failed-CDR file was 8,869 bytes: exactly the URL-encoded XML portion of
+the captured native HTTP form, without the `cdr=` prefix. It was not raw XML and
+not the full HTTP form. The file mode was 0644 inside a root-only 0700 directory.
+Only this owned synthetic file was read and retained privately; no production
+spool, application API, SIP peer or customer audio was accessed. The clone and
+its owned volumes were removed and protected processes remained unchanged.
+
+This qualifies the failed-record serialization, not replay. A future replayer
+must validate the encoded payload and reconstruct the original form without
+double-encoding; durable acknowledgement, concurrent-file handling and deployed
+recovery remain separate work. The production error queue was empty at the
+earlier bounded observation.
+
+- [Exact-image failure-spool receipt](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-ISOLATED-CDR-FAILURE-SPOOL-FORMAT-20261025-v2.json)
+
+### Upload owner-admission fix — source and PG16 qualified, not deployed
+
+The maintained recording-upload handler now checks its capture-authorized cloud
+owner against the unique active same-tenant call-leg owner before writing a new
+file or CDR URL. Disabled/deleted owners, inactive tenants, ambiguous ownership,
+unsupported call direction and cloud-owner mismatch return the existing 409.
+Duplicate legs for the same owner, valid retries and the capture-disabled legacy
+branch retain their behavior. No additional database privileges were introduced.
+
+Final maintained handler tests passed **20/20**, including real local PostgreSQL
+authorization SQL. The preceding related regression run passed **65/65** (18
+then-current owner cases, 30 voicemail storage, 11 capture and 6 ledger cases).
+The independently reviewed exact-image PG16 successor passed at 04:48 Bangkok:
+authenticated HTTP, storage/job readback, owner rejection before writes, 21 SQL
+denials, TLS negatives and both owned-clone cleanups. Production processes,
+login, route and grants stayed unchanged. The actual installed route still needs
+a qualified deployment of this fix.
+
+This is request-time admission, not atomic revocation. Local tests with actual
+repository functions demonstrate that revocation after the authorization snapshot
+can still leave a file, and revocation after the repository's owner read can still
+complete a ready recording/job. Replays after an already-committed revocation
+are denied as new requests.
+
+- [Exact-image owner-admission receipt](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-PG16-UPLOAD-OWNER-CANDIDATE-20261025-v1.json)
+- [Candidate provenance and revocation limits](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/pbx/legacy-session-attribution-oct25-v1/upload-owner-fix-oct25-v1/README.md)

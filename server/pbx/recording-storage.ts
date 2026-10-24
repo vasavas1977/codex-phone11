@@ -207,9 +207,18 @@ storageRouter.post("/upload", verifyFsAuth, raw({ type: ["audio/wav", "audio/x-w
     const captureToken = typeof req.query.capture_token === "string" ? req.query.capture_token : "";
     if(process.env.PHONE11_CLOUD_RECORDING_CAPTURE_ENABLED === "true") {
       if(!/^[a-f0-9-]{36}$/i.test(captureToken)){res.status(409).json({error:"Capture authorization required"});return;}
+      // Match registerCall's unique active assigned owner before file/CDR writes.
+      // This statement is an admission snapshot, not an atomic revocation fence.
       const authorized=await query(`SELECT r.storage_key,r.recording_status FROM phone11_cloud_recordings r
        JOIN phone11_recording_policies p ON p.tenant_id=r.tenant_id WHERE r.call_uuid=$1 AND r.tenant_id=$2
-       AND r.capture_token=$3 AND r.recording_status IN ('recording','ready') AND r.expires_at>clock_timestamp() AND p.mode<>'off'`,[callUuid,tenantId,captureToken]);
+       AND r.capture_token=$3 AND r.recording_status IN ('recording','ready') AND r.expires_at>clock_timestamp() AND p.mode<>'off'
+       AND r.extension_id=(SELECT MIN(cl.extension_id) FROM call_records cr
+        JOIN call_legs cl ON cl.call_record_id=cr.id AND cl.tenant_id=cr.tenant_id
+        JOIN extensions e ON e.id=cl.extension_id AND e.tenant_id=cr.tenant_id
+        JOIN tenants t ON t.id=e.tenant_id
+        WHERE cr.call_uuid=r.call_uuid AND cr.tenant_id=r.tenant_id
+        AND e.status='active' AND e.deleted_at IS NULL AND t.status='active'
+        AND cr.direction IN ('inbound','outbound') HAVING COUNT(DISTINCT cl.extension_id)=1)`,[callUuid,tenantId,captureToken]);
       if(authorized.rows.length!==1){res.status(409).json({error:"Capture authorization unavailable"});return;}
     }
     const existing=await query("SELECT recording_url FROM call_records WHERE call_uuid=$1 AND tenant_id=$2",[callUuid,tenantId]);
