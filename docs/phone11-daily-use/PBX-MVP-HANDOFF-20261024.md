@@ -1,11 +1,13 @@
-# Phone11 PBX MVP operational handoff — 24 October 2026
+# Phone11 PBX MVP operational handoff — updated 25 October 2026
 
 The ordinary management API now uses the restricted PostgreSQL 16 role, the
 reviewed PBX migrations are applied, and the scoped local voicemail route and
-trusted relay are enabled. The latest read-only relay observation completed at
-12:17 UTC: eight completed passes, zero refused passes, and latest delivered,
-retry and quarantined counts all zero. This establishes configuration and worker
-operation; no actual message delivery or playback has been accepted.
+trusted relay are enabled. The installed relay recovery guard passed two fresh
+scheduled runs with zero refusals and zero delivered, retry or quarantined
+items. This establishes configuration and worker operation; actual voicemail
+delivery, playback and host cold-boot recovery remain unaccepted. The legacy
+backend on port 3000 still uses its original broad database login; isolated
+restricted-login proofs do not mean that production login has changed.
 
 Keep the **60-second Siprix trial**. Android and physical-phone testing remain
 deferred. This handoff supersedes the earlier MVP scope record's missing-schema,
@@ -27,7 +29,10 @@ Protected outbound policy, mutual TLS and the synthetic CDR receiver/persistence
 results remain separately recorded in the earlier deployment handoff. The
 ordinary API's restricted role does not establish whole-stack least privilege:
 legacy services retain their existing roles. Synthetic CDR persistence does not
-prove delivery from the native producer. Certificate rotation remains due before
+prove automatic delivery from the production switch. On 25 October, an unchanged
+record captured from an isolated native switch was accepted by the live receiver,
+read back with its leg and three events, and removed by exact fixture ownership.
+Certificate rotation remains due before
 **18 December 2026**; the recorded certificates expire **17 January 2027**.
 
 ## Authoritative receipts
@@ -342,3 +347,26 @@ enabled recording/chat worker cycles, and missing optional schema objects.
 
 - [Assigned authority PG16 PASS](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-PG16-ACTUAL-3000-ASSIGNED-AUTHORITY-20261025-v2.json)
 - [Actual legacy permission requirements](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/pbx/legacy-session-attribution-oct25-v1/ACTUAL-3000-TRANSITION-DELTA.md)
+
+### Native record through the live receiver: accepted
+
+At 19:17 UTC on 24 October (02:17 Bangkok on 25 October), the unchanged
+8,864-byte native tenant-1 record from the sixth isolated capture was posted once
+to the current authenticated CDR endpoint. HTTP 200 was followed by exact database
+readback of the parent, leg and three timestamped start/answer/hangup events.
+Ownership and recording fields were empty, billable seconds were zero, and no
+recording route, wake link or cloud-recording association was observed. The three events, leg and parent
+were removed under exact ownership checks; database closure and process stability
+were confirmed. Sequence/WAL effects are not undone by row cleanup.
+
+The original tenant-2147483647 fifth capture was not retagged or reused. This
+proves native serialization through the current live receiver and database. It
+does not exercise automatic posting by the production switch, customer calls,
+voicemail audio, or phones. Separate review found a legacy reliability limitation:
+event inserts happen after the main transaction, and a completed-leg retry skips
+missing events. This run proved all three events persisted, but does not fix that
+failure path.
+
+- [Native capture and live persistence](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-NATIVE-CDR-API-HANDOFF-20261025-v1.json)
+- [Current progress and remaining scope](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-COMMISSIONING-PROGRESS-20261025-v5.json)
+- [Actual auth adapter permission boundary](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/pbx/legacy-session-attribution-oct25-v1/AUTH-ADAPTER-PERMISSIONS.md)
