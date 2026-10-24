@@ -1,5 +1,10 @@
 # PBX database and API release — 23 October 2026
 
+Historical release record. The later scoped voicemail activation and current
+acceptance limits are recorded in [the 24 October handoff](PBX-MVP-HANDOFF-20261024.md).
+Statements below about pending voicemail activation describe the 23 October
+release, not the current deployment.
+
 The live PBX database migrations and the ordinary admin API's restricted database
 cutover are complete. Voicemail delivery is not yet activated. The 60-second
 Siprix trial remains; Android and physical-phone testing are deferred.

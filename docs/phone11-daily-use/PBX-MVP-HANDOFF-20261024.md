@@ -96,6 +96,15 @@ device acceptance remain separate.
 
 ## Source follow-up completed in this continuation
 
+The static admin portal was subsequently published at source
+`fd45c0d34c63d703b08083e6fe9c209aa25fcb77`. Expired admin sessions now offer an
+explicit Sign in action; permission and transport failures retain their own
+recovery behavior. Exact-source CI, publication preparation, activation,
+independent public-file fingerprints and a signed-in voicemail-page reload
+passed. The previous static release `34a2ea092f8ff21c7e649dd26176109b1929ee3d`
+is retained. This publication did not restart the PBX or change its database.
+See [the publication and PBX progress record](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-COMMISSIONING-PROGRESS-20261024-v4.json).
+
 The startup readiness recurrence fix now propagates partial FIFO/Gate cleanup
 uncertainty and refuses readiness acquired after its deadline. Its v9 held packet
 `1433c846f51278fd9564e491bc2556f95e7d19ff3bdfc9798e316cad29bb96f8`
@@ -105,3 +114,35 @@ needed. Existing synchronous-read timeout limits remain.
 
 The relay backend-binding helper gained 15 focused regressions; all 66 relay
 tests passed. These source checks do not add live delivery acceptance.
+
+## 25 October continuation
+
+The bounded relay observation at **17:22 UTC on 24 October** (00:22 Bangkok on
+25 October) again found the timer enabled/active, the last worker successful,
+eight accepted passes and zero refused passes. Latest delivered/retry/quarantine
+counts remain zero. This is worker-health evidence, not voicemail delivery.
+
+A metadata-only census at 17:27 UTC found the six selected legacy/management
+services stable, with their existing restart policies and zero Docker restarts.
+It did not inspect database logins or role attributes. The legacy backend's
+historical elevated configured login cannot be promoted to a fresh assertion
+about its active application pool. Remaining services need exact deployed SQL
+and role attribution before dedicated least-privilege logins can replace them;
+no shared database-owner permissions were changed.
+
+The committed call-record template no longer contains the stale port 3001
+endpoint, unsupported placeholder header or ordinary public error-log path.
+It is explicitly uncommissioned. The historical generic Terraform deployment
+now stops before AWS because it lacks a reviewed private runtime configuration
+mount; inserting credentials into tracked source cannot qualify that mount.
+The standalone preflight checks private configuration shape only. Six offline
+contracts, shell syntax and independent source review passed. The accepted live
+private configuration was not replaced, and native producer delivery remains
+unproven. Source commit: `05e6637`.
+
+Operational evidence:
+
+- [Fresh relay observation](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-VOICEMAIL-RELAY-OBSERVE-20261025-v1.json)
+- [Runtime census](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-LEGACY-RUNTIME-OBSERVE-20261025-v1.json)
+- [Legacy-access evidence and remaining binding requirements](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/pbx/legacy-db-access-oct25-v1/README.md)
+- [Reviewed call-record source handoff](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/pbx/cdr-completion-oct25-v1/SOURCE-HANDOFF.json)
