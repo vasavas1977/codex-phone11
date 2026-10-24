@@ -33,7 +33,12 @@ The historical `phone11-mainline-release-start.py` and its prerequisite module
 remain bound to their original backend topology. Do not edit their pins or feed
 the current backend into that historical release operation. The independent
 `scripts/phone11-voicemail-relay-runtime.py` accepts an explicitly named current
-backend and checks immutable IDs, images, start epochs and installed code hashes.
+backend and checks immutable IDs, images and installed code hashes. The default
+v1 lane also requires its exact commissioned start epoch. The explicitly selected
+trusted lane permits a new process after the same container restarts, while
+requiring stable process, complete creation/host configuration and full mount
+rows across each check. Mount destinations must be unique; ordering alone is
+ignored. All trusted protocol and owner-epoch evidence remains mandatory.
 Its packet digest is pinned separately in the rendered service unit. The unit
 and packet must be root-owned, not writable by another principal, and retained
 together with the independently reviewed bundle manifest.

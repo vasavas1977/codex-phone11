@@ -421,11 +421,43 @@ to auth users, credential accounts, canonical users or identity mappings. No aut
 sequence, schema-create, ownership or RLS-bypass grant follows from these paths.
 DELETE remains relation-wide; application predicates provide its scope.
 
-This closes source attribution, not the production role transition. Actual
-authentication workflow qualification, enabled worker permissions and the separate
-audit/fraud RLS requirements remain necessary. The legacy backend still uses its
-existing login. No customer credentials or session values were captured.
+The exact installed authentication functions subsequently passed isolated
+PostgreSQL 16.13 qualification at 19:54 UTC on 24 October (02:54 Bangkok on
+25 October). Actual sign-in, canonical identity resolution, persisted session
+refresh/expiry/revocation and database rate-limit reset/pruning passed with the
+proposed restricted role. Twelve prohibited operations and wrong-password,
+plaintext and untrusted-CA connections were rejected. The application and database
+clones were removed, and protected production processes stayed unchanged.
+
+Enabled worker permissions and applicable audit/fraud RLS still need qualification
+before changing the production pool. The legacy backend still uses its existing
+login. No customer credentials or session values were exported.
 
 Evidence: [installed permission sources](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-INSTALLED-AUTH-SQL-SOURCE-CAPTURE-20261025-v4.json),
 [permission matrix](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/pbx/legacy-session-attribution-oct25-v1/AUTH-ADAPTER-PERMISSIONS.md),
 [nginx policy installation](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-NGINX-RECOVERY-INSTALL-20261025-v1.json).
+
+
+### Source recovery guard aligned with the installed release
+
+The repository relay supervisor now matches the installed recovery guard byte for
+byte (`387b0e70…`). The explicit trusted lane can accept a fresh process after a
+restart of the same immutable container and image. Both ends of each check must
+agree on its process, complete creation configuration, host configuration and
+complete mount rows. Mount order is normalized by unique destination; duplicate
+or changed mounts are rejected. The default legacy lane retains exact start-time
+binding. Artifact, protocol, owner-epoch and private evidence checks still apply.
+
+All 33 focused supervisor tests passed, including restart-in-progress, process or
+configuration drift, reordered mounts, duplicate mounts, private error output and
+no queue processing during metadata checks. This source synchronization does not
+restart services or claim an actual host reboot.
+
+The exact legacy CDR derivative also passed eight real PostgreSQL 17 cases across
+30 READ COMMITTED transactions. The rest of the deployed bundle is unchanged.
+Parsed input and recording-route binding were injected for this isolated test;
+HTTP authentication, parser and production worker behavior were not exercised.
+The derivative is prepared, not deployed.
+
+- [Actual installed authentication PG16 proof](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-PG16-ACTUAL-AUTH-QUALIFICATION-20261025-v1.json)
+- [Exact legacy CDR derivative database proof](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/pbx/cdr-retry-oct25-v1/candidate/REAL-PG17-QUALIFICATION-v1.json)

@@ -276,17 +276,51 @@ BACKEND_PROBE = 'process.stdout.write(JSON.stringify({hookReady:process.env.PHON
 INSPECT_FORMAT = '{{json .Id}} {{json .Name}} {{json .Image}} {{json .State.StartedAt}} {{json .State.Running}} {{json .State.Restarting}}'
 
 
+BOOT_INSPECT_FORMAT = '{"id":{{json .Id}},"name":{{json .Name}},"image":{{json .Image}},"started":{{json .State.StartedAt}},"running":{{json .State.Running}},"restarting":{{json .State.Restarting}},"pid":{{json .State.Pid}},"restartCount":{{json .RestartCount}},"creationConfig":{{json .Config}},"hostConfig":{{json .HostConfig}},"mounts":{{json .Mounts}}}'
+
+def observe_trusted_epoch(pin, invoke):
+    # Full creation/configuration values stay private in memory. Fixed immutable
+    # container identity retains its commissioned creation environment; all
+    # seven native artifacts, backend bundle and private evidence/probes remain
+    # mandatory in check(). Do not export this projection or its digest.
+    raw = invoke('/usr/bin/docker', 'inspect', '--format', BOOT_INSPECT_FORMAT, pin['id'])
+    row = json.loads(raw, object_pairs_hook=unique)
+    exact(row, {'id','name','image','started','running','restarting','pid','restartCount','creationConfig','hostConfig','mounts'})
+    require(row['id'] == pin['id'] and row['name'] == '/' + pin['name'] and row['image'] == pin['image'] and
+            row['running'] is True and row['restarting'] is False and type(row['pid']) is int and row['pid'] > 1 and
+            type(row['restartCount']) is int and row['restartCount'] >= 0 and isinstance(row['started'], str) and
+            re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{1,9}Z', row['started']) and
+            type(row['creationConfig']) is dict and type(row['hostConfig']) is dict and type(row['mounts']) is list,
+            'trusted_runtime_binding')
+    # Docker does not promise Mounts array order. Retain every complete row;
+    # reject ambiguous destinations, then compare a deterministic ordering.
+    require(len(row['mounts']) <= 64 and all(type(mount) is dict and
+            type(mount.get('Destination')) is str and mount['Destination'].startswith('/')
+            for mount in row['mounts']), 'trusted_mount_shape')
+    require(len({mount['Destination'] for mount in row['mounts']}) == len(row['mounts']),
+            'trusted_mount_destination_duplicate')
+    row['mounts'] = sorted(row['mounts'], key=lambda mount: mount['Destination'])
+    return row
+
+
 def check(packet, invoke=command, read_evidence=read_document):
     validate(packet)
     trusted = packet["schema"] == TRUSTED_SCHEMA
     admission, native_config = trusted_evidence(packet, read_evidence) if trusted else (None, None)
+    window = {}
     def containers():
         for key in ("backend", "freeswitch"):
             pin = packet[key]
-            # Project only these fields; never request a full inspect/Env dump.
-            raw = invoke("/usr/bin/docker", "inspect", "--format", INSPECT_FORMAT, pin["id"])
-            values = [json.loads(item) for item in raw.split()]
-            require(values == [pin["id"], "/" + pin["name"], pin["image"], pin["started"], True, False], "container_drift")
+            if trusted:
+                observed = observe_trusted_epoch(pin, invoke)
+                if key in window:
+                    require(observed == window[key], "trusted_runtime_window_drift")
+                else:
+                    window[key] = observed
+            else:
+                raw = invoke("/usr/bin/docker", "inspect", "--format", INSPECT_FORMAT, pin["id"])
+                values = [json.loads(item) for item in raw.split()]
+                require(values == [pin["id"], "/" + pin["name"], pin["image"], pin["started"], True, False], "container_drift")
     containers()
     fsid, backend = packet["freeswitch"]["id"], packet["backend"]["id"]
     for name, target in (TRUSTED_ARTIFACT_PATHS if trusted else ARTIFACT_PATHS).items():

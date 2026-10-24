@@ -37,6 +37,13 @@ def probe(p):
         calls.append(args)
         if args[1] == "inspect":
             pin = next(p[k] for k in ("backend", "freeswitch") if p[k]["id"] == args[-1])
+            if args[3] == gate.BOOT_INSPECT_FORMAT:
+                return json.dumps({"id": pin["id"], "name": "/" + pin["name"], "image": pin["image"],
+                    "started": "2026-10-25T00:00:00.123456789Z", "running": True, "restarting": False,
+                    "pid": 54321, "restartCount": 2, "creationConfig": {"Env": ["PRIVATE-SENTINEL"]},
+                    "hostConfig": {"RestartPolicy": {"Name": "unless-stopped"}},
+                    "mounts": [{"Destination": "/b", "Source": "private-b", "RW": False, "Propagation": "rprivate"},
+                               {"Destination": "/a", "Source": "private-a", "RW": True, "Type": "volume", "Name": "owned"}]})
             return " ".join(json.dumps(x) for x in (pin["id"], "/" + pin["name"], pin["image"], pin["started"], True, False))
         if args[3] == "sha256sum":
             paths = dict(gate.ARTIFACT_PATHS, **gate.TRUSTED_ARTIFACT_PATHS)
@@ -195,6 +202,88 @@ def evidence_reader(p, docs=None):
         name, ref = next((name, ref) for name, ref in p["protocolEvidence"].items() if ref["path"] == path)
         return copy.deepcopy(docs[name]), ref["sha256"]
     return read
+
+
+class TrustedRebootChecks(TestCase):
+    def check(self, change=None, when=1):
+        p = trusted_packet()
+        delegate, _ = probe(p)
+        count = 0
+        def invoke(*args):
+            nonlocal count
+            raw = delegate(*args)
+            if args[1] == "inspect":
+                count += 1
+                if change and count == when:
+                    row = json.loads(raw)
+                    change(row)
+                    return json.dumps(row)
+            return raw
+        return gate.check(p, invoke, evidence_reader(p))
+
+    def test_same_container_after_restart_is_admitted(self):
+        self.assertIsInstance(self.check(), gate.TrustedAdmission)
+
+    def test_wrong_container_name_or_image_refused(self):
+        for key, value in [("id", "0" * 64), ("name", "/decoy"), ("image", "sha256:" + "0" * 64)]:
+            with self.subTest(key=key), self.assertRaisesRegex(gate.Refused, "trusted_runtime_binding"):
+                self.check(lambda row: row.update({key: value}))
+
+    def test_invalid_or_stopped_runtime_refused(self):
+        for key, value in [("running", False), ("restarting", True), ("pid", 0), ("pid", True),
+                           ("restartCount", -1), ("started", "invalid")]:
+            with self.subTest(key=key, value=value), self.assertRaisesRegex(gate.Refused, "trusted_runtime_binding"):
+                self.check(lambda row: row.update({key: value}))
+
+    def test_restart_during_check_refused(self):
+        for key, value in [("pid", 54322), ("started", "2026-10-25T00:00:01.123456789Z"), ("restartCount", 3)]:
+            with self.subTest(key=key), self.assertRaisesRegex(gate.Refused, "trusted_runtime_window_drift"):
+                self.check(lambda row: row.update({key: value}), 3)
+
+    def test_creation_host_and_mount_drift_refused(self):
+        for key, value in [("creationConfig", {"Env": ["CHANGED"]}), ("hostConfig", {}),
+                           ("mounts", [{"Destination": "/changed", "Type": "bind"}])]:
+            with self.subTest(key=key), self.assertRaisesRegex(gate.Refused, "trusted_runtime_window_drift"):
+                self.check(lambda row: row.update({key: value}), 3)
+
+    def test_mount_order_does_not_refuse_same_full_rows(self):
+        self.assertIsInstance(self.check(lambda row: row["mounts"].reverse(), 3), gate.TrustedAdmission)
+
+    def test_mount_row_properties_remain_protected(self):
+        for key, value in [("Source", "other"), ("RW", True), ("Type", "bind"),
+                           ("Name", "foreign"), ("Propagation", "shared")]:
+            with self.subTest(key=key), self.assertRaisesRegex(gate.Refused, "trusted_runtime_window_drift"):
+                self.check(lambda row: row["mounts"][0].update({key: value}), 3)
+
+    def test_duplicate_mount_destination_refused(self):
+        with self.assertRaisesRegex(gate.Refused, "trusted_mount_destination_duplicate"):
+            self.check(lambda row: row["mounts"].append(dict(row["mounts"][0])))
+
+    def test_invalid_mount_destination_refused(self):
+        for value in [None, "relative"]:
+            with self.subTest(value=value), self.assertRaisesRegex(gate.Refused, "trusted_mount_shape"):
+                self.check(lambda row: row["mounts"][0].update(Destination=value))
+
+    def test_malformed_or_duplicate_projection_refused(self):
+        p = trusted_packet()
+        delegate, _ = probe(p)
+        for response in ["{}", '{"id":1,"id":2}']:
+            def invoke(*args):
+                return response if args[1] == "inspect" else delegate(*args)
+            with self.subTest(response=response), self.assertRaises(gate.Refused):
+                gate.check(p, invoke, evidence_reader(p))
+
+    def test_metadata_check_does_not_process_audio(self):
+        p = trusted_packet()
+        invoke, calls = probe(p)
+        gate.check(p, invoke, evidence_reader(p))
+        self.assertFalse(any("--once" in args or "readdir" in " ".join(args) for args in calls))
+
+    def test_private_configuration_is_not_in_error(self):
+        with self.assertRaises(gate.Refused) as caught:
+            self.check(lambda row: row.update(creationConfig={"Env": ["SENSITIVE"]}), 3)
+        self.assertNotIn("SENSITIVE", str(caught.exception))
+        self.assertNotIn("PRIVATE", str(caught.exception))
 
 
 class TrustedFallbackChecks(TestCase):

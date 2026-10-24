@@ -13,6 +13,11 @@ on:
       - scripts/phone11-chat-inbox-release-route.py
       - scripts/phone11-parallel-api-pilot.py
       - tests/phone11-mainline-release.test.py
+      - scripts/phone11-voicemail-relay-runtime.py
+      - tests/phone11-voicemail-relay-runtime.test.py
+      - deploy/systemd/phone11-voicemail-relay.service.in
+      - deploy/systemd/phone11-voicemail-trusted-fallback-relay.service.in
+      - deploy/systemd/phone11-voicemail-trusted-fallback-relay.timer
   workflow_dispatch:
 
 permissions:
@@ -31,3 +36,5 @@ jobs:
         run: python3 tests/phone11-eks-release.test.py
       - name: Test EC2 candidate and route guards without host access
         run: python3 tests/phone11-mainline-release.test.py
+      - name: Test voicemail relay restart and custody guards without host access
+        run: python3 -B tests/phone11-voicemail-relay-runtime.test.py
