@@ -16,7 +16,7 @@ it does not renew acceptance for other domains or authorize additional changes.
 
 | Component | Accepted evidence and limit |
 | --- | --- |
-| PBX database | The 23 October extension-tenant, advanced-routing, phone-number and site migrations were applied. Metadata verification found twelve new empty tables and six expected capabilities. A fresh pre-DDL backup is retained. An earlier backup was restored into isolated PostgreSQL 16.13 and migrations replayed twice; the fresh dump itself has not been restored, and the earlier restore excluded ownership and ACLs. |
+| PBX database | The 23 October extension-tenant, advanced-routing, phone-number and site migrations were applied. Metadata verification found twelve new empty tables and six expected capabilities. The exact fresh pre-DDL backup was restored into isolated PostgreSQL 16.13 on 25 October Bangkok time: 70 tables, 20 sequences and 9 functions; archive ownership/ACL commands replayed successfully. The temporary clone was removed. Original global roles/memberships and effective-privilege equivalence remain outside that proof. The earlier separate archive also had migration replay proof. |
 | Ordinary management API | Main `/api/trpc/` and the two voicemail recording routes target loopback **3026**. Its role `p11_management_runtime_20261023_v1` has explicit grants, verified TLS, and no superuser, create-database, create-role, inheritance, replication or bypass-RLS privileges. Wrong-password, plaintext and untrusted-CA checks were rejected. Restart policy is `unless-stopped`; restart/reboot recovery was not exercised. |
 | Exact API artifact | Image `sha256:17b8553fb5ad57b5c766b8396f0dd65bdaea11d8b1593003264a8504578d3d62`; installed bundle `e1c270e67b1f6d4bc3ed484a74a90c3143cc3b6ddb8db5698208173988c60e5b`. The inherited health build marker identifies the base source; use the derivative manifest and installed bundle for this release. |
 | Directory/issuer and FreeSWITCH | Directory and local fallback issuer/redemption remain on **3013**. The replacement issuer passed one-use protocol and directory-auth checks in both directions. The 23 October immutable FreeSWITCH replacement and loaded guards passed; original recording/voicemail volumes and outbox were preserved. These are protocol/configuration checks. |
@@ -85,9 +85,9 @@ rollback. Detailed recovery boundaries are in
   remain unaccepted. Empty successful relay passes do not close these gates.
   Android and physical-phone testing remain deferred; carrier routes and general
   busy/DND/browser voicemail behavior are outside the admitted local scope.
-- Actual host reboot recovery, whole-stack least privilege and restore of the
-  fresh pre-DDL dump remain unproven. Do not infer them from restart policies,
-  one service's restricted role or the earlier backup's restore.
+- Actual host reboot recovery and whole-stack least privilege remain unproven.
+  Do not infer them from restart policies or one service's restricted role.
+  The exact fresh pre-DDL archive restore is now proven as recorded below.
 
 Continue with bounded read-only API/operational verification and source work.
 Any later call, restart, routing expansion or restoration needs its own current
@@ -146,3 +146,31 @@ Operational evidence:
 - [Runtime census](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-LEGACY-RUNTIME-OBSERVE-20261025-v1.json)
 - [Legacy-access evidence and remaining binding requirements](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/pbx/legacy-db-access-oct25-v1/README.md)
 - [Reviewed call-record source handoff](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/pbx/cdr-completion-oct25-v1/SOURCE-HANDOFF.json)
+
+### Fresh archive restore completed
+
+At **17:51 UTC on 24 October** (00:51 Bangkok on 25 October), the exact
+318,703-byte pre-DDL archive `2380124e…` restored successfully into a new,
+network-isolated PostgreSQL 16.13 container using the production image digest.
+`pg_restore --create --exit-on-error` returned zero. The restored catalog held
+70 public tables, 20 sequences and 9 functions; archived owner/ACL commands
+replayed and owners resolved. The clone was removed, archive custody and
+closure checks passed, and all protected production process identities stayed
+unchanged. No production SQL writes or customer-data export occurred.
+
+This closes restoration of that exact archive. It does not establish original
+global-role attributes/memberships, historical ACL equality, effective privilege
+equivalence, current production-row equality or a live rollback. An earlier
+attempt stopped during clone readiness and cleaned up; its precise native
+failure remains unclassified. The accepted successor waits for the final
+PostgreSQL process and SQL readiness, handles only the exact archive's larger
+input, and omits a separate TOC stdin pass. The original subprocess helper's
+limits remain unchanged. The successor passed 31 tests and independent review.
+
+- [Successful restore receipt](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-FRESH-BACKUP-RESTORE-20261025-v3.json)
+- [Preserved first-attempt receipt](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-FRESH-BACKUP-RESTORE-20261025-v1.json)
+- [Reviewed successor scope](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/pbx/backup-restore-oct25-v1/README-v3.md)
+
+The 60-second trial remains. Android, physical-phone acceptance, native call
+record delivery, and actual voicemail recording/delivery/playback are not closed
+by this backup proof.
