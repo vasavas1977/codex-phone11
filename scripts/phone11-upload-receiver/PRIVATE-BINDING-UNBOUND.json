@@ -1,0 +1,14 @@
+{
+  "schema": "PHONE11_UPLOAD_RECEIVER_PRIVATE_BINDING_V1",
+  "port": null,
+  "listenHost": null,
+  "captureEnabled": null,
+  "integrationSecret": null,
+  "storage": { "path": null, "uid": null, "gid": null, "mode": null },
+  "processIdentity": { "uid": null, "gid": null },
+  "database": {
+    "host": null, "port": null, "name": null, "role": null,
+    "password": null, "databaseOid": null, "roleOid": null,
+    "serverVersion": null, "ca": null
+  }
+}
