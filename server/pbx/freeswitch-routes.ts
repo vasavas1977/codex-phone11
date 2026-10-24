@@ -52,20 +52,21 @@ router.post("/directory", verifyFsAuth, async (req: Request, res: Response) => {
     const xmlResponse = await cacheGetOrSet(cacheKey, 30, async () => {
       // Look up SIP account from database
       const result = await query(
-        `SELECT sa.*, e.extension_number, e.display_name, e.voicemail_enabled,
-                e.call_forwarding_enabled, e.cfu_destination, e.cfb_destination,
-                e.cfna_destination, e.cfna_timeout_seconds, e.dnd_enabled,
+        `SELECT sa.sip_username, sa.sip_domain, sa.ha1, sa.tenant_id,
+                e.extension_number, e.display_name, e.voicemail_enabled,
                 t.slug as tenant_slug
          FROM sip_accounts sa
          JOIN extensions e ON sa.extension_id = e.id
          JOIN tenants t ON sa.tenant_id = t.id
          WHERE sa.sip_username = $1 AND sa.sip_domain = $2 
                AND sa.status = 'active' AND sa.deleted_at IS NULL
-               AND e.tenant_id = sa.tenant_id AND e.status = 'active' AND e.deleted_at IS NULL AND t.status = 'active'`,
+               AND e.tenant_id = sa.tenant_id AND e.status = 'active' AND e.deleted_at IS NULL AND t.status = 'active'
+         LIMIT 2`,
         [user, domain]
       );
 
-      if (result.rows.length === 0) {
+      // Ambiguous assignments must never choose an arbitrary SIP identity.
+      if (result.rows.length !== 1) {
         return notFoundXml();
       }
 
