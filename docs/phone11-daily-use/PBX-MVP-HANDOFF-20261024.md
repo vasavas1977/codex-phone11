@@ -897,3 +897,18 @@ Restart policy is still `no`, and public upload ingress still selects the old
 backend. Policy promotion and route transition follow separately. This activation
 does not retire the old elevated database role or establish real recording
 arrival, in-flight upload drain or host cold-boot recovery.
+
+### Upload restart policy promoted — 25 October 06:10 Bangkok
+
+The upload receiver now has Docker restart policy `always`. The reviewed action
+changed only that policy on the exact qualified container; init/Node identities,
+full runtime configuration, private artifacts, HBA and other services remained
+unchanged. No restart was triggered. Health/invalid-request checks passed and the
+observed pool had one TLS session from the expected .31 address to phone11ai.
+
+Receipt `PBX-UPLOAD-RECEIVER-RESTART-PROMOTION-20261025-v1.json` reports exit 0,
+cleanup confirmed and no unknown outcome. Its native result SHA256 is
+`53282f262981db31546135d89e3c33496e968723ada1caad7db9f1fe06cd234a`.
+Root verified eight source pins; independent review accepted `d49a8f8a…`, with
+seven focused author checks passed. Public ingress and actual cold-boot recovery
+remain separate; the old elevated legacy login has not been changed.
