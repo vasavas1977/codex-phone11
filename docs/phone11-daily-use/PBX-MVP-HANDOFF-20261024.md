@@ -733,3 +733,22 @@ with no P0–P2 findings. This is not an installed recovery service. Authenticat
 transport, current tenant/route authority, independent producer-completion
 proof and service lifecycle qualification remain required. A CDR acknowledgement
 does not establish recording registration or voicemail delivery.
+
+### Upload storage transition — live metadata verified, 25 October 05:04 Bangkok
+
+Fresh read-only checks identify the configured recording root as
+`/var/lib/phone11/recordings`, not the source fallback. It is a writable bind
+mount with directory mode 0700, UID/GID 1001 matching the legacy process; the
+host and container directory identities match. Selected creation/initial-process
+configuration agrees, capture is enabled and its configured upload endpoint is
+`https://api.phone11.ai/api/recordings/upload`. The pinned on-disk nginx closure
+still selects legacy port 3000 for that path. Port 3031 had no host TCP or Docker
+binding at the observation; it was not reserved.
+
+No recording entries, audio or customer rows were read, no SQL sessions opened,
+and no services or permissions changed. Loaded JavaScript configuration, loaded
+nginx request selection, actual edge routing and storage-write ACL acceptance
+remain separate from these metadata checks. The replacement upload receiver has
+not been installed. Exact receipts are retained in the operator directory:
+`PBX-UPLOAD-BIND-STORAGE-METADATA-20261025-v1.json` and its three preceding
+configuration/metadata observations.
