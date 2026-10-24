@@ -1,0 +1,13 @@
+{
+  "schema": "PHONE11_MAINTAINED_RETAINED_PROVENANCE_V1",
+  "sourceOnly": true,
+  "acceptedOperationalArtifactSha256": "82ddacbb272d4989bcf9ab602a54d96d31571a2902d9b1c8936e83170264d8e9",
+  "acceptedReviewManifestSha256": "b44ee136d3efc13cb6532c19c3a1b2f67b13dc62201dd96effee1cce883795d0",
+  "unchangedSources": {
+    "bound.ts": "80a26b01ab4257a795577f3ece02f2e66567849fe39654e046fa3b6dd7a36954",
+    "composition.ts": "648eea341c097e667df89a9d08e6a2a69f6277dc559c689a113724b7a43e5ec2"
+  },
+  "testChanges": "Only generated artifact/manifest relative paths and source-path normalization change; behavioral assertions unchanged.",
+  "runtimeAutoLaunch": false,
+  "productionAcceptance": false
+}

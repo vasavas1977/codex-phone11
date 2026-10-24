@@ -49,7 +49,7 @@ historical generation or configuration pin for a later action.
 
 | Evidence | Local record |
 | --- | --- |
-| Latest scoped progress | [Current configuration and remaining boundaries](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-COMMISSIONING-PROGRESS-20261025-v36.json) |
+| Latest scoped progress | [Current configuration and remaining boundaries](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-COMMISSIONING-PROGRESS-20261025-v37.json) |
 | Restricted CDR activation | [Qualified running receiver](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-CDR-SIDECAR-ACTIVATION-CONTINUATION-20261025-v2.json) |
 | CDR automatic restart | [Policy applied without process restart](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-CDR-SIDECAR-RESTART-PROMOTION-20261025-v1.json) |
 | Native CDR destination | [URL switch and admission resumed](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-NATIVE-CDR-SIDECAR-TRANSITION-20261025-v2.json) |
@@ -972,3 +972,28 @@ route and tenant admission, and independent producer-completion evidence. The
 transport does not provide those by itself. The remaining legacy authenticated
 route/worker migration and real cold-boot/delivery acceptance remain open. Keep
 the 60-second trial; Android and phone testing remain deferred.
+
+
+The current recovery handoff is
+[DELIVERY-RESTART-GAPS-v2.md](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/pbx/reboot-recovery-oct25-v1/DELIVERY-RESTART-GAPS-v2.md).
+It supersedes the earlier unbounded-relay description and records the installed
+bounded relay, dedicated receivers, preserved rollback state and remaining
+outage/cold-boot acceptance. Earlier v1 notes and receipts remain historical.
+
+
+### Bound retained HTTP library — reviewed source, not deployed
+
+`scripts/phone11-retained-runtime/` now reproduces the reviewed narrow backend
+library from 35 pinned maintained inputs. Authentication, wake handlers, chat
+media and recording playback use the same strict pool. Storage imports are
+loaded after explicit private configuration; setup and closure are terminal.
+Production-only HTTPS validation closes the development-loopback configuration
+gap found during review. Full API/background startup remains excluded.
+
+Ten focused library cases passed. Root verified all 35 inputs; independent review
+accepted the frozen operational artifact `82ddacbb…` and its maintained source
+integration. The repository-relative build emits only ignored local artifacts;
+it does not listen, start workers, read credentials or change production.
+Actual route SQL/permissions, storage authority, provider drain and the old
+backend migration are still separate. Source wiring is not a grant to retire
+the elevated legacy login.
