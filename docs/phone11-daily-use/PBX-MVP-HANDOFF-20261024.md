@@ -481,8 +481,9 @@ and foreign-key checks. Both owned containers were removed, archive custody
 remained stable, and all protected production process identities were unchanged.
 
 This closes the analysis/retention permission slice. Chat qualification also
-passed as recorded below; capture and remaining HTTP paths still require
-qualification before changing the live legacy login.
+passed as recorded below; capture database qualification subsequently passed,
+while its upload sink and remaining HTTP paths still require qualification
+before changing the live legacy login.
 It is not customer voicemail delivery, an AI-provider test, or a production
 permission cutover. Trial remains 60 seconds; Android and phone testing are deferred.
 
@@ -506,8 +507,29 @@ required by the existing row-lock query. Existing notification predicates do not
 check message deletion, so deleted-message exclusion is not claimed. Media-file
 removal before a database commit is not an atomic filesystem rollback.
 
-This qualifies the worker slice, not the remaining legacy HTTP/capture paths or
+This qualifies the worker slice, not the remaining legacy HTTP paths or
 a live database-login replacement. Trial remains 60 seconds; Android and phone
 tests are deferred.
 
 - [Installed-image PG16 chat-worker receipt](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-PG16-ACTUAL-CHAT-WORKERS-20261025-v1.json)
+
+## Capture worker database permissions — 25 October
+
+At 20:50 UTC on 24 October (03:50 Bangkok), the captured production capture
+worker passed against the exact application image and an isolated PostgreSQL
+16.13 restore. Thirty-one unchanged definitions exercised inbound/outbound
+correlation, provisional call records, ownership rejection, capture leases,
+policy and recording locks, expiry handling, and a finite reconciliation pass.
+The restricted clone role used column grants on ten tables and USAGE on two
+sequences. All 23 forbidden SQL operations and three negative login checks were
+rejected. Eight focused source checks and Node syntax also passed.
+
+ESL and spool transports were inert; no recording command, phone call or upload
+request occurred. An upload result without persisted storage was rejected, but
+the actual authenticated upload sink remains unqualified. Only owned synthetic
+records were processed after guarded clone-only fixture preparation. Both
+containers were removed and protected production processes stayed unchanged.
+This completes the capture **database** slice, not the full legacy permission
+cutover or real recording/voicemail delivery. The live legacy login is unchanged.
+
+- [Installed-image PG16 capture-worker receipt](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-PG16-ACTUAL-CAPTURE-WORKERS-20261025-v1.json)
