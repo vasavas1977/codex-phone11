@@ -174,3 +174,91 @@ limits remain unchanged. The successor passed 31 tests and independent review.
 The 60-second trial remains. Android, physical-phone acceptance, native call
 record delivery, and actual voicemail recording/delivery/playback are not closed
 by this backup proof.
+
+## Legacy access and recovery follow-up (25 October)
+
+A fresh metadata-only database session observation at 18:03 UTC on 24 October
+found the legacy port-3000 service using role OID 10 with superuser, role/database
+creation, replication and RLS-bypass privileges, without TLS. The other four
+bridge-service addresses had no current target-database session, so their active
+pool identities remain unknown. This does not invalidate the separately
+commissioned restricted port-3026 role. Kamailio's host-network pool was not
+attributed by the bridge-address observer.
+
+The exact deployed legacy bundles were captured privately, with matching
+container/image/process epochs before and after: port 3000 `57e80eca…` and port
+3013 `829c8b9a…`. The next database priority is a dedicated, nonowner TLS login
+for the actual port-3000 API and worker surface. Its required tables, sequences,
+functions, lazy DDL and effective PUBLIC grants must be accounted for before
+changing the pool; do not revoke the shared owner while legacy consumers still
+use it. A source-only port-3013 route gate exists, but its narrower authority
+function design is deferred rather than becoming a prerequisite for reducing
+port-3000 superuser access.
+
+Maintained source commit `5398149` removes the directory query's wildcard and
+unused forwarding columns, and rejects duplicate matching SIP identities instead
+of choosing the first. Six new real-handler tests plus 36 adjacent fraud-policy
+cases pass; the backend bundle builds and independent review found no P0-P2
+issue. The current port-3013 bundle already has a narrow directory projection.
+This maintained-source change has not replaced any running service.
+
+The native CDR prerequisite observation passed: `mod_xml_cdr` and `mod_loopback`
+are loaded, disk and served configuration agree, and the expected private
+loopback URL, credential equality, timeout/retry policy and private error spool
+predicates pass. This does not inspect the module's cached globals or prove
+native delivery. The actual legacy backend's event listener can notify portal
+clients about native synthetic channels, so further producer qualification uses
+an isolated switch rather than originating on the live switch.
+
+The first reboot readiness observation returned `RUNTIME_OR_MOUNT_DRIFT` while
+checking a broad container census. The receipt does not identify the exact
+changed field, so its cause remains unclassified.
+Its captured fixed-unit information remains useful, but is not a successful
+reboot admission. Both native samples had zero FS calls, dialogs and RTP sessions,
+but one current/waiting SIP transaction; ingress was not fenced. The successor
+observer is limited to ten commissioned services. No host reboot occurred.
+
+Operational receipts (private local evidence):
+
+- [Database session attribution](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-LEGACY-SESSION-ATTRIBUTION-20261025-v1.json)
+- [Native CDR prerequisites](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-NATIVE-CDR-PREFLIGHT-20261025-v1.json)
+- [Preserved first reboot observation](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-REBOOT-READINESS-PREFLIGHT-20261025-v1.json)
+
+The 60-second trial remains; Android and handset acceptance stay deferred.
+
+
+### Relay recovery guard installed
+
+At 18:27 UTC on 24 October (01:27 Bangkok on 25 October), the reviewed relay
+startup guard `387b0e70…` was installed through an owned systemd drop-in. It
+accepts a fresh process start only while the fixed container, image, complete
+configuration, mounts and runtime artifacts still match. The original base unit,
+timer and guard remain retained. Only relay scheduling was briefly stopped;
+no call service or container restarted and no host reboot occurred.
+
+The first staged attempt refused before changing the timer. A bounded diagnostic
+then established that Docker returned the same complete mount rows in a different
+order for both backend and switch. The successor sorts full rows by unique mount
+destination; it still rejects changed mount values or duplicate destinations.
+The failed attempt was preserved and a new operation directory used.
+
+A subsequent read-only observer verified the effective installed command,
+private install receipt, enabled timer and two **new** scheduled successful
+passes, with zero refusals. Latest delivery/retry/quarantine counts were all zero.
+This closes installation and scheduled operation of the recovery guard, not
+actual cold-boot recovery or voicemail delivery.
+
+- [Installed recovery guard](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-RELAY-REBOOT-GUARD-INSTALL-20261025-v2.json)
+- [Scheduled successor passes](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-RELAY-REBOOT-GUARD-OBSERVE-20261025-v2.json)
+- [Mount-order diagnosis](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-RELAY-EPOCH-MOUNT-DIAGNOSTIC-20261025-v1.json)
+
+The current legacy backend's creation and actual-process worker conditions agree:
+chat notifications, media retention, recording capture, recording analysis,
+recording retention and event-listener prerequisites are configured. These are
+configuration predicates, not proof that each worker has run. The catalog read
+found no PUBLIC relation privileges or PUBLIC-executable security-definer
+functions within its observed scope; audit and fraud relations use RLS. A
+restricted-login transition must preserve those workers and account for RLS and
+lazy provisioning DDL. No legacy login or privileges have yet changed.
+
+- [Current worker conditions and catalog](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-CURRENT-3000-WORKER-CATALOG-20261025-v1.json)
