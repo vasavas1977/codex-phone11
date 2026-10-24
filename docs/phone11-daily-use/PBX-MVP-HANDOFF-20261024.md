@@ -912,3 +912,33 @@ cleanup confirmed and no unknown outcome. Its native result SHA256 is
 Root verified eight source pins; independent review accepted `d49a8f8a…`, with
 seven focused author checks passed. Public ingress and actual cold-boot recovery
 remain separate; the old elevated legacy login has not been changed.
+
+### Restricted upload ingress live — 25 October 06:20 Bangkok
+
+The exact public `/api/recordings/upload` location now selects the qualified
+receiver on loopback 3031. Nginx loaded a new worker generation without restart;
+normal verified HTTPS returned 403 for missing/wrong secrets and 400 for the
+fixed invalid request before SQL or storage. Target attribution combines the
+exact route, observed loaded generation and current qualified receiver; the 400
+response alone would not distinguish the old handler. All other original site
+bytes, the symlink and voicemail 3026 route were preserved. The original inode
+is retained privately for the reviewed explicit rollback.
+
+The first attempt refused before mutation because the original default proxy
+block had `proxy_cache_bypass $http_upgrade`. A read-only fixed-config diagnostic
+confirmed this exact single directive. The corrected renderer accepts only that
+plain one-argument form, preserving its bytes; unrelated directives, arguments,
+blocks, quoting or duplicates remain rejected. No access control was bypassed.
+
+Receipt `PBX-UPLOAD-ONLY-NGINX-TRANSITION-20261025-v2.json` reports exit 0,
+cleanup confirmed and no unknown effect. Active site SHA256 is
+`b096ce2073df072db936abec687ac8f179df5cd00fd1e3742af0cf19ee5f7ade`.
+Root verified 12 source pins; independent review accepted packet `861dd139…`.
+Six renderer and nine lifecycle/HTTPS checks passed before dispatch.
+
+No valid recording, customer row/audio access, old backend stop or host reboot
+occurred. The 60-second trial remains; Android and physical phones are deferred.
+CDR and upload now have separate restricted receivers, but legacy aliases and
+the old backend's elevated login remain pending retained-route/worker migration.
+Real recording delivery, interrupted delivery replay and cold-boot acceptance
+are not established by these malformed-request checks.
