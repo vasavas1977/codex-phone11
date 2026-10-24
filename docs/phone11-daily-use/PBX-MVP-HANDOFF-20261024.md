@@ -847,3 +847,33 @@ No LOGIN, HBA, startup, public upload route or old backend changes occurred. The
 next activation must prove restricted TLS access, actual UID 1001 storage access
 and listener lifecycle before switching ingress. This does not remove the old
 legacy service's elevated role or prove actual recording delivery.
+
+### Upload TLS restrictions and bounded relay installed — 25 October 05:59 Bangkok
+
+The upload receiver's nine role-specific HBA rules were installed and PostgreSQL
+reloaded without restart. They allow TLS/SCRAM from 172.18.0.31 to phone11ai only,
+reject plaintext and other origins, and preserve every prior HBA byte. All 44
+parsed rules matched. The role remains NOLOGIN and its container stopped pending
+the next activation. Receipt `PBX-UPLOAD-RECEIVER-SCOPED-HBA-20261025-v1.json`
+reports exit 0, no unknown effect and cleanup confirmed.
+
+The bounded voicemail relay is now installed at the new sibling path
+`/opt/phone11ai/voicemail/relay-bounded-20261025.mjs`. Its matching guard, private
+runtime packet and new 95 drop-in were installed under timer scheduling control
+and the exact existing native lock. The lock was released before the timer was
+restored. Old relay bytes, mounts, guard and 90 drop-in remain for rollback; no
+FreeSWITCH/backend restart or worker force-stop occurred. The install packet
+`0956f545…` passed independent review after fixing a released-lock rollback path.
+Fifteen focused installer cases passed before dispatch.
+
+The subsequent read-only observation confirmed **four completed scheduled passes,
+zero refusals, an active/enabled timer and an inactive successful service**. Counts
+were delivered 0, retry 0, quarantined 0; this is not actual mailbox-delivery proof.
+Both installation and observation report cleanup confirmed and unchanged
+protected runtime identities. No call, queue/audio inspection or host reboot was
+performed. The 60-second trial remains; Android and phone testing remain deferred.
+
+Receipts: `PBX-VOICEMAIL-ADDITIVE-RELAY-INSTALL-20261025-v1.json` and
+`PBX-VOICEMAIL-ADDITIVE-RELAY-SCHEDULED-20261025-v1.json`. New guard SHA256 is
+`6414ae0c2f88a7b59ed85f63147d964bbe0e712e4c73841f4ee7812285748a51`.
+The old elevated legacy role still requires retained-route and worker migration.
