@@ -997,3 +997,59 @@ it does not listen, start workers, read credentials or change production.
 Actual route SQL/permissions, storage authority, provider drain and the old
 backend migration are still separate. Source wiring is not a grant to retire
 the elevated legacy login.
+
+
+### Retained auth/playback rehearsal — input boundary corrected before retry
+
+The first exact PostgreSQL16/image rehearsal restored its disposable archive,
+applied clone-only prerequisites and prepared the restricted fixture role. It
+then refused before starting the application probe: the private JSON input was
+305,189 bytes, above the unchanged helper limit of 262,144 bytes. The artifact
+base64 alone exceeded that limit. Local PostgreSQL17 checks had used a different
+process launcher and therefore did not exercise this envelope; source review
+also missed it. This was not a PostgreSQL16 permission failure or a successful
+auth/playback qualification.
+
+Receipt `PBX-RETAINED-AUTH-PLAYBACK-PG16-20261025-v1.json` records exit70 and
+`ACTUAL_BOUND_AUTH_PLAYBACK`. Both disposable containers were removed, archive
+custody and protected process identities were unchanged, and no production SQL
+writes occurred. The correction stages only the exact hash-pinned artifact in
+the owned disposable application container; input/output limits remain intact.
+A helper-level regression and independent review precede any corrected run.
+
+
+### Actual restricted auth/playback passes PostgreSQL16 — 25 October 06:54 Bangkok
+
+The corrected exact-image rehearsal passed with the unchanged bound candidate
+`82ddacbb…` and original helper limits. Eleven focused author checks included
+actual helper transfer/cap and exclusive-file/symlink regressions; the corrected
+owned PostgreSQL17 check passed before independent source acceptance. Root
+verified all16 source pins and ran the accepted PostgreSQL16 packet once.
+
+The real installed auth cookie helpers and maintained HTTP handlers established
+session refresh, expiry cleanup, disabled-identity rejection and durable signout.
+Owned synthetic recording GET/HEAD/range bytes matched; cross-user, cross-tenant,
+unassigned and expired access was denied. Exact effective column permissions
+passed with16 forbidden operations denied, including business writes, schema and
+role changes. The maintained HTTP shutdown closed its actual owned pool.
+
+Receipt `PBX-RETAINED-AUTH-PLAYBACK-PG16-20261025-v2.json` reports exit0 and
+`PG16_RETAINED_AUTH_PLAYBACK_PROVEN_OTHER_RETAINED_ROUTES_UNQUALIFIED`.
+Native result SHA256:
+`31909ff3c5377c9463a6856da02114716f5a194baacd3271f1adcb5a7f7a2850`.
+Both disposable containers were removed; archive custody and protected process
+identities remained stable. Independent receipt review accepted the scoped
+result. No production SQL, customer recording or provider request was made.
+
+This uses precreated synthetic sessions, not credential sign-in. A separate
+client checked TLS/settings before listening; the actual pool's identity/TLS
+was observed after readiness. Actual-pool prelisten settings attestation, other
+retained routes and full provider/resource drain remain unqualified. The old
+production credential and grants were not changed.
+
+The concrete remaining consumer map is
+[NEXT-LEGACY-CUTOVER-v1.md](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/pbx/legacy-session-attribution-oct25-v1/NEXT-LEGACY-CUTOVER-v1.md).
+Moving auth/playback alone would remove no effective privilege from the old
+backend while its remaining handlers and workers retain the same credential.
+The next useful slice is actual chat-media SQL/file behavior, followed by wake
+and callback disposition and a controlled old-worker replacement.
