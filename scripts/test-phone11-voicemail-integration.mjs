@@ -16,6 +16,8 @@ const sourceFiles = [test, "scripts/test-phone11-voicemail-integration.mjs",
 const expectedTitles = [
   "replays durable admission and delivery across recreated clients/backend routes, then streams an authorized seek",
   "refuses cross-tenant UUID replay and wrong-mailbox publication before storing any media",
+  "delivers owner-epoch admission through real storage and authorized playback",
+  "quarantines stale owner-epoch delivery and protects the replacement owner's fresh message",
   "streams the checked descriptor without reopening a pathname replaced after custody checks",
   "refuses a foreign symlink introduced between path inspection and descriptor open",
 ];
@@ -84,19 +86,19 @@ try {
   assert.equal(result.status, 0);
   const reportBytes = await readFile(reportPath), report = JSON.parse(reportBytes.toString("utf8"));
   assert.equal(report.success, true);
-  for (const [key, value] of Object.entries({ numTotalTests: 4, numPassedTests: 4, numFailedTests: 0, numPendingTests: 0, numTodoTests: 0 }))
-    assert.equal(report[key], value, `${key}: required four passes and zero failures/skips/todos`);
+  for (const [key, value] of Object.entries({ numTotalTests: 6, numPassedTests: 6, numFailedTests: 0, numPendingTests: 0, numTodoTests: 0 }))
+    assert.equal(report[key], value, `${key}: required six passes and zero failures/skips/todos`);
   assert.equal(report.testResults.length, 1, "Exactly the required integration file must execute");
   const suite = report.testResults[0];
   assert.equal(resolve(suite.name), join(repo, test));
   assert.equal(suite.status, "passed");
-  assert.equal(suite.assertionResults.length, 4);
+  assert.equal(suite.assertionResults.length, 6);
   assert.deepEqual(suite.assertionResults.map(item => item.title).sort(), [...expectedTitles].sort());
   assert.ok(suite.assertionResults.every(item => item.status === "passed"), "No skipped or pending case may satisfy this gate");
   receipt.sourceAfter = await sourceBinding();
   assert.deepEqual(receipt.sourceAfter, receipt.sourceBefore, "Source must remain bound across execution");
   receipt.reportSha256 = digest(reportBytes);
-  receipt.counts = { passed: 4, failed: 0, skipped: 0, todo: 0 };
+  receipt.counts = { passed: 6, failed: 0, skipped: 0, todo: 0 };
   receipt.testsPassed = true;
 } catch (error) {
   failure = error;
@@ -128,5 +130,5 @@ try {
   receipt.accepted = Boolean(receipt.testsPassed && receipt.ownedPostgresStopped && receipt.ownedRootRemoved && !failure);
   await writeFile(join(evidence, "receipt.json"), JSON.stringify(receipt, null, 2) + "\n");
 }
-console.log(`Voicemail integration: ${receipt.accepted ? "4 passed, 0 skipped" : "FAILED"}; receipt ${join(evidence, "receipt.json")}`);
+console.log(`Voicemail integration: ${receipt.accepted ? "6 passed, 0 skipped" : "FAILED"}; receipt ${join(evidence, "receipt.json")}`);
 if (failure) { console.error(receipt.cleanupError ? "Owned cleanup failed; preserve evidence and diagnose before retry" : receipt.error); process.exitCode = 1; }

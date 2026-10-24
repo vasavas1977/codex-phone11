@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { request } from "node:http";
 import { URL } from "node:url";
 import type { Server } from "node:http";
-import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { Pool } from "pg";
 import express from "express";
@@ -181,6 +181,74 @@ describe.skipIf(!socket)("voicemail real-component isolated integration", () => 
     await expect(stat(path.join(config.outboxRoot, `${messageUuid}.json`))).rejects.toMatchObject({ code: "ENOENT" });
     expect((await state.pool!.query("SELECT count(*)::int AS count FROM voicemail_messages")).rows[0].count).toBe(0);
     await expect(stat(path.join(storageRoot, "13"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("delivers owner-epoch admission through real storage and authorized playback", async () => {
+    const ownerEpoch = (await state.pool!.query("SELECT voicemail_owner_epoch FROM extensions WHERE id=42")).rows[0].voicemail_owner_epoch;
+    const channelUuid = randomUUID();
+    const admission = vi.fn(async (url: string, init?: RequestInit) => call(url, init));
+    const messageUuid = await admitVoicemail({ ...config },
+      { channelUuid, tenantId: 12, extension: "3001", expectedOwnerEpoch: ownerEpoch }, admission as typeof fetch);
+    expect(admission).toHaveBeenCalledTimes(1);
+    const admittedUrl = new URL(admission.mock.calls[0][0]);
+    expect(admittedUrl.pathname).toBe("/api/recordings/voicemail/admission/idempotent/owner-epoch");
+    expect(admittedUrl.searchParams.get("expected_owner_epoch")).toBe(ownerEpoch);
+    expect((await state.pool!.query("SELECT owner_user_id,owner_epoch FROM voicemail_deposit_admissions WHERE message_uuid=$1",
+      [messageUuid])).rows).toEqual([{ owner_user_id: 17, owner_epoch: ownerEpoch }]);
+    expect(JSON.parse(await readFile(path.join(config.outboxRoot, "pending", `${channelUuid}.json`), "utf8")))
+      .toMatchObject({ messageUuid, expectedOwnerEpoch: ownerEpoch, admitted: true });
+
+    await completeVoicemail({ ...config }, { channelUuid, voicemailFilePath: wav, durationSeconds: 1 });
+    expect(await relayOnce({ ...config }, transport())).toEqual({ delivered: 1, quarantined: 0, retry: 0 });
+    const row = (await state.pool!.query("SELECT * FROM voicemail_messages WHERE message_uuid=$1", [messageUuid])).rows[0];
+    expect(row).toMatchObject({ tenant_id: 12, extension_id: 42, owner_user_id: 17, owner_epoch: ownerEpoch });
+    expect(await readFile(row.storage_path)).toEqual(audio);
+    const playback = await call(endpoint(`/voicemail/${row.id}`), {}, 17);
+    expect(playback.status).toBe(200); expect(Buffer.from(await playback.arrayBuffer())).toEqual(audio);
+    expect((await call(endpoint(`/voicemail/${row.id}`), {}, 18)).status).toBe(404);
+    expect((await call(endpoint(`/voicemail/${row.id}`))).status).toBe(401);
+  });
+
+  it("quarantines stale owner-epoch delivery and protects the replacement owner's fresh message", async () => {
+    const storedBefore = (await readdir(storageRoot, { recursive: true })).sort();
+    const ownerEpoch = (await state.pool!.query("SELECT voicemail_owner_epoch FROM extensions WHERE id=42")).rows[0].voicemail_owner_epoch;
+    const channelUuid = randomUUID();
+    const messageUuid = await admitVoicemail({ ...config },
+      { channelUuid, tenantId: 12, extension: "3001", expectedOwnerEpoch: ownerEpoch }, transport());
+    // Both principals remain active tenant members. Only the mailbox assignment
+    // changes; historical messages keep their deposit-time owner.
+    await state.pool!.query(`INSERT INTO tenant_memberships VALUES(18,12,'active');
+      DELETE FROM user_extensions WHERE extension_id=42;
+      INSERT INTO user_extensions VALUES(18,42);
+      UPDATE extensions SET user_id=18 WHERE id=42`);
+    const nextEpoch = (await state.pool!.query("SELECT voicemail_owner_epoch FROM extensions WHERE id=42")).rows[0].voicemail_owner_epoch;
+    expect(nextEpoch).not.toBe(ownerEpoch);
+    await completeVoicemail({ ...config }, { channelUuid, voicemailFilePath: wav, durationSeconds: 1 });
+    const uploads: number[] = [];
+    const upload = (async (url: string, init?: RequestInit) => {
+      const response = await call(url, init); uploads.push(response.status); return response;
+    }) as typeof fetch;
+    expect(await relayOnce({ ...config }, upload)).toEqual({ delivered: 0, quarantined: 1, retry: 0 });
+    expect(uploads).toEqual([409]);
+    expect(JSON.parse(await readFile(path.join(config.outboxRoot, "quarantine", `${messageUuid}.json`), "utf8")))
+      .toMatchObject({ message_uuid: messageUuid, tenant_id: 12, extension: "3001" });
+    expect(await readFile(wav)).toEqual(audio);
+    expect((await state.pool!.query("SELECT count(*)::int AS count FROM voicemail_messages")).rows[0].count).toBe(0);
+    expect((await readdir(storageRoot, { recursive: true })).sort()).toEqual(storedBefore);
+    await expect(stat(path.join(storageRoot, "12", `${messageUuid}.wav`))).rejects.toMatchObject({ code: "ENOENT" });
+
+    const nextChannel = randomUUID();
+    const nextMessage = await admitVoicemail({ ...config },
+      { channelUuid: nextChannel, tenantId: 12, extension: "3001", expectedOwnerEpoch: nextEpoch }, transport());
+    await completeVoicemail({ ...config }, { channelUuid: nextChannel, voicemailFilePath: wav, durationSeconds: 1 });
+    expect(await relayOnce({ ...config }, transport())).toEqual({ delivered: 1, quarantined: 0, retry: 0 });
+    const rows = (await state.pool!.query("SELECT * FROM voicemail_messages")).rows;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ message_uuid: nextMessage, owner_user_id: 18, owner_epoch: nextEpoch });
+    expect((await call(endpoint(`/voicemail/${rows[0].id}`), {}, 17)).status).toBe(404);
+    const playback = await call(endpoint(`/voicemail/${rows[0].id}`), {}, 18);
+    expect(playback.status).toBe(200); expect(Buffer.from(await playback.arrayBuffer())).toEqual(audio);
+    expect(await readFile(wav)).toEqual(audio);
   });
 
   it("streams the checked descriptor without reopening a pathname replaced after custody checks", async () => {

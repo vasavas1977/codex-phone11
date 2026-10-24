@@ -370,3 +370,20 @@ failure path.
 - [Native capture and live persistence](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-NATIVE-CDR-API-HANDOFF-20261025-v1.json)
 - [Current progress and remaining scope](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-COMMISSIONING-PROGRESS-20261025-v5.json)
 - [Actual auth adapter permission boundary](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/pbx/legacy-session-attribution-oct25-v1/AUTH-ADAPTER-PERMISSIONS.md)
+
+### Voicemail owner changes: component integration accepted
+
+The owned PostgreSQL 17.11 integration run passed all six required cases with
+zero skips. Two added cases exercise the real owner-epoch admission route,
+producer, relay, storage and authorized playback together. A stale upload after
+mailbox reassignment returns 409, is quarantined, retains its local WAV, and
+creates no message or stored media. A fresh deposit belongs to the replacement
+owner; the former owner receives 404 for that new message. Historical messages
+retain their deposit-time ownership.
+
+The runner requires these exact six cases. Its database used only a private Unix
+socket; the owned process and temporary data root were removed. Scoped lint and
+diff checks passed. These are source-component results with synthetic principals,
+not live phone ingress or production mailbox-delivery acceptance.
+
+- [Six-case voicemail integration evidence](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/pbx/voicemail-delivery-oct25-v1/SOURCE-VALIDATION-v1.json)
