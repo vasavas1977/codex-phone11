@@ -9,9 +9,11 @@ import {
 import { router } from "expo-router";
 
 import { ScreenContainer } from "@/components/screen-container";
+import { portalSignInRoute } from "@/constants/oauth";
 import { useAuth } from "@/hooks/use-auth";
 import { useColors } from "@/hooks/use-colors";
 import { usePbxAdminWorkspace } from "@/hooks/use-pbx-admin";
+import { isAdminSessionUnauthorized } from "@/lib/admin/session-recovery";
 
 /** Keeps implicit-tenant API calls unmounted for accounts with more than one workspace. */
 export function AdminWorkspaceBoundary({
@@ -24,6 +26,12 @@ export function AdminWorkspaceBoundary({
   const colors = useColors();
   const { user } = useAuth({ autoFetch: false });
   const workspace = usePbxAdminWorkspace();
+  const sessionExpired =
+    (workspace.membershipsQuery.isError &&
+      isAdminSessionUnauthorized(workspace.membershipsQuery.error)) ||
+    (workspace.admissionError &&
+      isAdminSessionUnauthorized(workspace.tenantQuery?.error));
+  const requiresSignIn = !user || sessionExpired;
 
   let title = "";
   let detail = "";
@@ -31,7 +39,14 @@ export function AdminWorkspaceBoundary({
   if (!user) {
     title = "Sign in to manage Phone11";
     detail = "Open the admin portal after signing in.";
-  } else if (workspace.membershipsQuery.isLoading || workspace.admissionChecking) {
+  } else if (sessionExpired) {
+    title = "Sign in again to manage Phone11";
+    detail =
+      "Your session has expired. Sign in again to confirm your workspace access.";
+  } else if (
+    workspace.membershipsQuery.isLoading ||
+    workspace.admissionChecking
+  ) {
     title = "Checking workspace access";
     detail = "Phone11 is confirming your workspace membership.";
     loading = true;
@@ -78,9 +93,18 @@ export function AdminWorkspaceBoundary({
         >
           {detail}
         </Text>
-        {workspace.membershipsQuery.isError ||
-        workspace.admissionError ||
-        workspace.updateRequired ? (
+        {requiresSignIn ? (
+          <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel="Sign in"
+            onPress={() => router.replace(portalSignInRoute("/admin"))}
+            style={[styles.button, { borderColor: colors.primary }]}
+          >
+            <Text style={{ color: colors.primary }}>Sign in</Text>
+          </TouchableOpacity>
+        ) : workspace.membershipsQuery.isError ||
+          workspace.admissionError ||
+          workspace.updateRequired ? (
           <TouchableOpacity
             accessibilityRole="button"
             accessibilityLabel="Try again"
