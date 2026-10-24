@@ -15,9 +15,10 @@ The acknowledgement covers the call record, leg and events, not recording
 registration or voicemail delivery. Native files contain percent-encoded XML
 without the `cdr=` prefix; transport adds that prefix without double encoding.
 
-Production integration still requires bounded authenticated transport to the
-verified receiver, current tenant/route authorization, independent producer
-completion evidence and service lifecycle qualification. Stable file metadata
+A reviewed source transport adapter is available; its actual binding to the
+verified receiver remains pending. Production integration still requires current
+tenant/route authorization, independent producer completion evidence and service
+lifecycle qualification. Stable file metadata
 alone is not proof that the producer finished. Injected callbacks must be
 bounded; the engine cannot preempt arbitrary callbacks. A crashed temporary
 state write fails closed for operator reconciliation. No cleanup or retention

@@ -5,8 +5,86 @@
  * Uses the same RDS instance as Kamailio.
  */
 import pg from "pg";
+import { X509Certificate } from "node:crypto";
+import { isIP } from "node:net";
+import { checkServerIdentity } from "node:tls";
+import { createJsPostgresPool } from "./js-postgres-driver";
 
 let _pool: pg.Pool | null = null;
+let poolAccessAttempted = false;
+let ownedConfig: (pg.PoolConfig & { replication: "false" }) | undefined;
+let ownedClosed = false;
+let ownedClosePromise: Promise<void> | undefined;
+
+/** Explicit private startup input, never read from environment or returned. */
+export interface OwnedPbxPoolBinding {
+  host: string;
+  port: number;
+  database: string;
+  user: string;
+  password: string;
+  tlsCaPem: string;
+}
+
+/**
+ * Opt in before ANY getPool attempt, including a failed legacy initialization.
+ * This configures transport only; caller must separately attest role/ACL/TLS
+ * identity before listen. Existing unconfigured processes keep the legacy path.
+ */
+export function configureOwnedPbxPool(binding: OwnedPbxPoolBinding): void {
+  if (poolAccessAttempted || ownedConfig || ownedClosed) throw new Error("PBX_OWNED_POOL_BINDING_REFUSED");
+  try {
+    const keys = ["host", "port", "database", "user", "password", "tlsCaPem"];
+    if (!binding || ![Object.prototype, null].includes(Object.getPrototypeOf(binding))
+      || Object.keys(binding).length !== keys.length
+      || keys.some(key => !Object.hasOwn(binding, key) || !Object.hasOwn(Object.getOwnPropertyDescriptor(binding, key)!, "value"))) throw new Error();
+    const { host, port, database, user, password, tlsCaPem } = binding;
+    const dns = typeof host === "string" && host.length <= 253 && host.split(".").every(label =>
+      /^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$/.test(label));
+    if (!dns || (/^[0-9.]+$/.test(host) && isIP(host) !== 4)
+      || !Number.isInteger(port) || port < 1 || port > 65535
+      || typeof database !== "string" || !/^[a-z_][a-z0-9_]{0,62}$/.test(database)
+      || typeof user !== "string" || !/^[a-z_][a-z0-9_]{0,62}$/.test(user)
+      || typeof password !== "string" || !password.length || password.length > 1024 || password.includes("\0")
+      || typeof tlsCaPem !== "string" || tlsCaPem.length > 65536 || tlsCaPem.includes("\0")) throw new Error();
+    const certificates = tlsCaPem.match(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g);
+    if (!certificates?.length || certificates.length > 16
+      || certificates.join("").replace(/\s/g, "") !== tlsCaPem.replace(/\s/g, "")) throw new Error();
+    for (const certificate of certificates) new X509Certificate(certificate);
+    ownedConfig = {
+      host, port, database, user, password,
+      ssl: {
+        ca: tlsCaPem, rejectUnauthorized: true,
+        // Always bind SAN verification to the supplied host, including IPv4.
+        checkServerIdentity: (_reportedHost, certificate) => checkServerIdentity(host, certificate),
+      },
+      max: 4, connectionTimeoutMillis: 5000, idleTimeoutMillis: 15000,
+      query_timeout: 10000, statement_timeout: 10000, lock_timeout: 3000,
+      idle_in_transaction_session_timeout: 15000,
+      // A truthy literal overrides pg's PGOPTIONS fallback; no ambient URLs,
+      // SSL modes, application name or search_path enter this strict branch.
+      options: "-c search_path=pg_catalog,public,pg_temp -c statement_timeout=10000 -c lock_timeout=3000 -c idle_in_transaction_session_timeout=15000",
+      application_name: "phone11_retained_runtime", client_encoding: "UTF8",
+      replication: "false",
+    };
+  } catch {
+    // Do not attach input, certificate parser/driver details or a cause.
+    throw new Error("PBX_OWNED_POOL_BINDING_REFUSED");
+  }
+}
+
+/** Drain callers first. Once requested, closure is terminal even if end fails. */
+export function closeOwnedPbxPool(): Promise<void> {
+  if (!ownedConfig) return Promise.reject(new Error("PBX_OWNED_POOL_NOT_CONFIGURED"));
+  if (ownedClosePromise) return ownedClosePromise;
+  ownedClosed = true;
+  // Capture this graph's pool once. Never clear it or permit resurrection.
+  const captured = _pool;
+  ownedClosePromise = Promise.resolve().then(() => captured?.end()).then(() => undefined, () => {
+    throw new Error("PBX_OWNED_POOL_CLOSE_UNCONFIRMED");
+  });
+  return ownedClosePromise;
+}
 
 function firstEnv(...keys: string[]): string | undefined {
   for (const key of keys) {
@@ -83,8 +161,18 @@ function buildPgConfig(): pg.PoolConfig {
 }
 
 export function getPool(): pg.Pool {
+  poolAccessAttempted = true;
+  if (ownedClosed) throw new Error("PBX_OWNED_POOL_UNAVAILABLE");
   if (!_pool) {
-    _pool = new pg.Pool(buildPgConfig());
+    if (ownedConfig) {
+      try { _pool = createJsPostgresPool(ownedConfig); }
+      catch {
+        ownedClosed = true;
+        throw new Error("PBX_OWNED_POOL_UNAVAILABLE");
+      }
+    } else {
+      _pool = new pg.Pool(buildPgConfig());
+    }
     _pool.on("error", () => {
       console.error("[PBX DB] Pool error");
     });
@@ -102,7 +190,8 @@ export async function query<T extends pg.QueryResultRow = any>(text: string, par
     const result = await pool.query<T>(text, params);
     const duration = Date.now() - start;
     if (duration > 500) {
-      console.warn(`[PBX DB] Slow query (${duration}ms):`, text.substring(0, 100));
+      if (ownedConfig) console.warn(`[PBX DB] Slow query (${duration}ms)`);
+      else console.warn(`[PBX DB] Slow query (${duration}ms):`, text.substring(0, 100));
     }
     return result;
   } catch (error: any) {

@@ -1,0 +1,71 @@
+{
+  "ackScope": "CDR parent/leg/events transaction only through exact730 source; conditional recording registration remains separate.",
+  "admissionRequirement": "Reviewed original tenant/UUID and current trusted route authority. No fallback tenant, retagging or invented sole-member requirement. True callbacks in tests apply only to synchronously closed self-owned fixtures.",
+  "completionRequirement": {
+    "entrySeam": "Existing completion_proof(identity,expectedFrame): originalUUID/tenant/payloaddigest + dev/inode/mode/uid/gid/nlink/size/mtime/ctime. Resolve only approved UUID.cdr.xml and optional a_UUID.cdr.xml against held fixedspool; exact frame must match named entry. No filename/customerID output.",
+    "escalation": "Needs a separately reviewed native metadata-only observer/adaptor plus isolated open-writer/close/reopen/race qualification before production entry reads or unattended POST. None created/executed in this task.",
+    "existingCustody": "Reuse deployment/sidecar-cdr-spool-observe.py:spool_directory and native transition proof aeb9451ebd99f676eace9c83c39007955a1f75cccf54900e61ea0df7d95a2e39. Exact current FS container/image/start; held sole native FreeSWITCH process ELF/PID/start/root/pidfd and host/native same private0700 spool inode. Docker init is not writer.",
+    "fixedSpool": "/etc/freeswitch/phone11-protected-sip-20261019-v1/cdr-error-spool-20261020-v6",
+    "honestLimit": "No existing helper implements this. Stable reads/mtime delay/complete terminal XML alone must not return True. Upstream writer is truncate/write/close, no atomic rename/fsync. Absence of observed writer is finite evidence, not a global future-write fence; originals/snapshots retained, changed digest requires fresh admission.",
+    "requiredObservation": "Finite /proc/<held actual FS pid>/fd census and fdinfo flags for selected dev/inode; reject O_WRONLY/O_RDWR matches. Bound count/bytes/time; refuse unreadable/raced/unknown descriptor metadata. Recheck process+epoch/root and selected named frame before/after; no entry contents or fd target names exported."
+  },
+  "files": {
+    "test_transport.py": {
+      "bytes": 8019,
+      "sha256": "9ad152eb957d48a301f08ebc9f9f308a14e8ce2d2e6fd2ed29a470283c2f0ff0"
+    },
+    "transport.py": {
+      "bytes": 4094,
+      "sha256": "8a67176e28d4b1d886d273bc8db4eabb5c5896a85ae03493e166581f91b2fac7"
+    }
+  },
+  "formatProofSha256": "082c4fa8820ffa0e5fddd6ba0bacf44ea815dc34a904d97eae3e27df8711753e",
+  "implemented": {
+    "attestation": "Trusted attest(fixedReceiverSourceSha,absoluteMonotonicDeadline) must return literalTrue before+after HTTP. No live attestor supplied. It must enforce remaining timeout on its own operations; arbitrary injected Python callback cannot be hard-preempted by this adapter. Drift/error becomes opaque UNKNOWN through worker.",
+    "auth": "Verified actual730 requireCdrAuth: Basic base64(phone11-cdr:+unchanged FS_SHARED_SECRET), private memory only. No browser credential/header override.",
+    "body": "b\"cdr=\"+exact encoded immutable snapshot; no reescaping/reserialization/retagging; extra form delimiters/invalid encoding refuse.",
+    "bounds": {
+      "encodedFormBytes": 524292,
+      "headersBytes": 8192,
+      "responseBytes": 1024,
+      "secondsMax": 5
+    },
+    "network": "One numeric AF_INET loopback connection, fixed3030/path/Host; no DNS/proxy/redirect/internal retry. Monotonic remaining timeout before connect/sendall/everyrecv and post-I/O check.",
+    "response": "FinalHTTP200..599, unique valid headers, exact bounded Content-Length+EOF, application/json. Reject transfer/content encoding/truncation/trailing bytes. Worker strictly decodes exact200 ACK. Known500/503 returned once for existing capped durable retry; redirect returned once and worker blocks it.",
+    "retention": "No spool/state IO in adapter. Existing worker retains original, fsynced exact body+INTENT beforeHTTP, stable ACK journal afterHTTP. UNKNOWN/crashINTENT never automatically redispatch.",
+    "route": "http://127.0.0.1:3030/api/freeswitch/cdr"
+  },
+  "limits": {
+    "activatedRecoveryClaimed": false,
+    "customerRowsOrAudioRead": false,
+    "productionEntryReads": false,
+    "productionHttpRequests": false,
+    "providerCalls": false,
+    "serviceEnabled": false,
+    "trialSeconds": 60
+  },
+  "notImplemented": [
+    "Production private credential loader and current3030/source/process/config attestor",
+    "Current original tenant/UUID/trusted-route admission provider",
+    "Native producer writable-FD completion observer",
+    "Daemon/systemd/deployment/reboot and automatic UNKNOWN reconciliation"
+  ],
+  "receiverSourceSha256": "73038405a623499d8907f6c77d09939532bee74d1d9df15021c21072b99bff10",
+  "schema": "PHONE11_CDR_REPLAY_TRANSPORT_AND_COMPLETION_BOUNDARY_V1",
+  "sourceOnly": true,
+  "validationActuallyRun": {
+    "command": "python3 transport-adapter-oct25-v1/test_transport.py",
+    "coverage": [
+      "Exact Basic/form/source checks and one attempt",
+      "500/503 and redirect no internal retry",
+      "Slow-drip total I/O deadline",
+      "Malformed/duplicate/chunked/oversize/nonJSON/truncated/trailing responses",
+      "Unproven runtime no connect and postHTTP drift noACK",
+      "Private exception text suppressed",
+      "Actual unchanged worker ACK: original/snapshot retained and duplicate skipped",
+      "Actual unchanged worker disconnect-afterPOST: original/snapshot/UNKNOWN retained and secondpass blocked"
+    ],
+    "ownedLoopbackTestsPassed": 10
+  },
+  "workerUnchangedSha256": "25cd6f8eba2d22b24e03a6c18cb5e5829cd46981a350f4ac233d269406391437"
+}

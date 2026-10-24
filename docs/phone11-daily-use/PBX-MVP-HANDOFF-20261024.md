@@ -1,16 +1,17 @@
 # Phone11 PBX MVP operational handoff — updated 25 October 2026
 
-The ordinary management API now uses the restricted PostgreSQL 16 role, the
-reviewed PBX migrations are applied, and the scoped local voicemail route and
-trusted relay are enabled. The installed relay recovery guard passed two fresh
-scheduled runs with zero refusals and zero delivered, retry or quarantined
-items. This establishes configuration and worker operation; actual voicemail
-delivery, playback and host cold-boot recovery remain unaccepted. The legacy
-backend on port 3000 still uses its original broad database login. Call-record
-submissions now select the dedicated receiver on port 3030, with a restricted
-TLS database role and restart-always policy. Its production qualification and
-FreeSWITCH URL/module transition passed without a service restart. Automatic
-real-call delivery and a full host reboot remain untested.
+The management API, call-record receiver and public recording-upload receiver
+now use separate restricted TLS database roles. FreeSWITCH submits call records
+to loopback 3030, and the exact public recording-upload route selects loopback
+3031. Both receivers have restart-always policy. The bounded voicemail relay is
+installed, with four observed successful scheduled passes and zero refusals;
+those passes delivered zero items.
+
+The legacy backend on port 3000 still uses its original broad database login.
+Its remaining authenticated routes and background workers must move before that
+login can be retired. Delivery from real calls, historical call-record recovery,
+voicemail playback and actual host cold-boot recovery remain unaccepted. Loaded
+restart policies and malformed-request checks do not establish those outcomes.
 
 Keep the **60-second Siprix trial**. Android and physical-phone testing remain
 deferred. This handoff supersedes the earlier MVP scope record's missing-schema,
@@ -24,11 +25,12 @@ it does not renew acceptance for other domains or authorize additional changes.
 | PBX database | The 23 October extension-tenant, advanced-routing, phone-number and site migrations were applied. Metadata verification found twelve new empty tables and six expected capabilities. The exact fresh pre-DDL backup was restored into isolated PostgreSQL 16.13 on 25 October Bangkok time: 70 tables, 20 sequences and 9 functions; archive ownership/ACL commands replayed successfully. The temporary clone was removed. Original global roles/memberships and effective-privilege equivalence remain outside that proof. The earlier separate archive also had migration replay proof. |
 | Ordinary management API | Main `/api/trpc/` and the two voicemail recording routes target loopback **3026**. Its role `p11_management_runtime_20261023_v1` has explicit grants, verified TLS, and no superuser, create-database, create-role, inheritance, replication or bypass-RLS privileges. Wrong-password, plaintext and untrusted-CA checks were rejected. Restart policy is `unless-stopped`; restart/reboot recovery was not exercised. |
 | Call-record receiver | At 04:28–04:32 Bangkok on 25 October, the dedicated 3030 receiver passed production UID/source, restricted role, strict TLS and negative HTTP/auth checks. Restart `always` was enabled without restarting it. FreeSWITCH's CDR URL changed from 3000 to 3030 after owned pause and twice-zero call counts; unforced reporting-module reload and admission resume passed. Old backend remains running. Future automatic CDR delivery and historical error-spool replay are not proven by configuration. |
+| Recording-upload receiver | Public `/api/recordings/upload` now selects loopback **3031**. The UID 1001 receiver uses a dedicated restricted TLS role; wrong credentials, plaintext and an untrusted CA were rejected. An owned harmless file proved mounted-directory write/read/removal. Nginx loaded the exact route without restart; normal HTTPS negative checks passed. Restart policy is `always`. No valid recording was submitted, and legacy upload aliases remain pending retirement. |
 | Exact API artifact | Image `sha256:17b8553fb5ad57b5c766b8396f0dd65bdaea11d8b1593003264a8504578d3d62`; installed bundle `e1c270e67b1f6d4bc3ed484a74a90c3143cc3b6ddb8db5698208173988c60e5b`. The inherited health build marker identifies the base source; use the derivative manifest and installed bundle for this release. |
 | Directory/issuer and FreeSWITCH | Directory and local fallback issuer/redemption remain on **3013**. The replacement issuer passed one-use protocol and directory-auth checks in both directions. The 23 October immutable FreeSWITCH replacement and loaded guards passed; original recording/voicemail volumes and outbox were preserved. These are protocol/configuration checks. |
 | Local voicemail route | The replacement Kamailio router is admitted with runtime and persisted maintenance gates zero; FreeSWITCH admission is restored. Scope is authenticated local **3001 ↔ 1020**, native Siprix **SDES80**, terminal no-answer **408**. Both personal mailboxes were enabled through the signed-in admin portal. Busy/DND, carrier inbound and browser fallback retain their previous behavior and are outside this release's acceptance. |
 | Nginx recovery | On 25 October Bangkok time, an owned systemd drop-in set `Restart=on-failure` and `RestartSec=5s`. Daemon reload and exact readback passed with MainPID 2045591, startup commands and existing 5 starts/10 seconds limits unchanged. The service remained active/enabled; no nginx restart, nginx config reload or host reboot occurred. This is loaded recovery policy, not an induced-failure or cold-boot test. |
-| Trusted relay | The trusted local-fallback lane is enabled with a boot-enabled timer and 30-second retry schedule. The global voicemail hook remains off. The 12:17 UTC observer found the timer active/waiting and its last oneshot worker exited successfully; an inactive/dead oneshot between passes is expected. Its bounded observation is not continuous monitoring and did not enumerate the outbox or read audio. |
+| Trusted relay | The bounded replacement relay is installed at a new sibling path, preserving the old relay for rollback. Its enabled timer runs on a 30-second retry schedule. Four scheduled passes completed with zero refusals and zero delivered, retry or quarantine counts. A pass handles at most eight entries within 45 seconds, with a 60-second native watchdog. The global voicemail hook remains off. Real backlog/outage delivery and cold boot are not proved. |
 
 Protected outbound policy, mutual TLS and the synthetic CDR receiver/persistence
 results remain separately recorded in the earlier deployment handoff. The
@@ -47,7 +49,7 @@ historical generation or configuration pin for a later action.
 
 | Evidence | Local record |
 | --- | --- |
-| Latest scoped progress | [Current configuration and remaining boundaries](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-COMMISSIONING-PROGRESS-20261025-v22.json) |
+| Latest scoped progress | [Current configuration and remaining boundaries](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-COMMISSIONING-PROGRESS-20261025-v36.json) |
 | Restricted CDR activation | [Qualified running receiver](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-CDR-SIDECAR-ACTIVATION-CONTINUATION-20261025-v2.json) |
 | CDR automatic restart | [Policy applied without process restart](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-CDR-SIDECAR-RESTART-PROMOTION-20261025-v1.json) |
 | Native CDR destination | [URL switch and admission resumed](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-NATIVE-CDR-SIDECAR-TRANSITION-20261025-v2.json) |
@@ -942,3 +944,31 @@ CDR and upload now have separate restricted receivers, but legacy aliases and
 the old backend's elevated login remain pending retained-route/worker migration.
 Real recording delivery, interrupted delivery replay and cold-boot acceptance
 are not established by these malformed-request checks.
+
+
+### Restricted legacy connection and CDR retry transport — source integration
+
+The maintained PBX database module now supports an explicit owned connection
+binding before its first pool access. It fixes the actual JavaScript driver,
+verified CA/hostname TLS, discrete target, deadlines and search path. The actual
+auth adapter and route code share that module graph's pool. Its closer captures
+that pool once and prevents reopening after closure or a failed close. Existing
+unconfigured processes retain their previous behavior; this is not a live
+credential or privilege change. Independent review accepted database source
+`b7eaa835…`; 31 focused pool tests plus four runtime tests passed, including a
+rerun after restoring the repository's pinned package manager/dependencies.
+Strict standalone TypeScript passed. Targeted ESLint found only the unchanged
+legacy dynamic environment lookup at `server/pbx/db.ts:91`; it did not pass cleanly.
+
+The maintained call-record replay directory now includes the reviewed fixed
+loopback HTTP transport (`8a67176e…`). It sends the worker's exact encoded request
+once, with bounded response parsing and a total I/O deadline. Unknown outcomes
+remain blocked from automatic retry; original files and durable snapshots stay
+intact. Ten owned-loopback integration cases passed. Independent source review
+accepted it; no production replay or service activation occurred.
+
+A live replay driver still needs private credential/runtime binding, current
+route and tenant admission, and independent producer-completion evidence. The
+transport does not provide those by itself. The remaining legacy authenticated
+route/worker migration and real cold-boot/delivery acceptance remain open. Keep
+the 60-second trial; Android and phone testing remain deferred.
