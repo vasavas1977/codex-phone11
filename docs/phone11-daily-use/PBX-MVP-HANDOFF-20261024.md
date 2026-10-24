@@ -23,6 +23,7 @@ it does not renew acceptance for other domains or authorize additional changes.
 | Exact API artifact | Image `sha256:17b8553fb5ad57b5c766b8396f0dd65bdaea11d8b1593003264a8504578d3d62`; installed bundle `e1c270e67b1f6d4bc3ed484a74a90c3143cc3b6ddb8db5698208173988c60e5b`. The inherited health build marker identifies the base source; use the derivative manifest and installed bundle for this release. |
 | Directory/issuer and FreeSWITCH | Directory and local fallback issuer/redemption remain on **3013**. The replacement issuer passed one-use protocol and directory-auth checks in both directions. The 23 October immutable FreeSWITCH replacement and loaded guards passed; original recording/voicemail volumes and outbox were preserved. These are protocol/configuration checks. |
 | Local voicemail route | The replacement Kamailio router is admitted with runtime and persisted maintenance gates zero; FreeSWITCH admission is restored. Scope is authenticated local **3001 ↔ 1020**, native Siprix **SDES80**, terminal no-answer **408**. Both personal mailboxes were enabled through the signed-in admin portal. Busy/DND, carrier inbound and browser fallback retain their previous behavior and are outside this release's acceptance. |
+| Nginx recovery | On 25 October Bangkok time, an owned systemd drop-in set `Restart=on-failure` and `RestartSec=5s`. Daemon reload and exact readback passed with MainPID 2045591, startup commands and existing 5 starts/10 seconds limits unchanged. The service remained active/enabled; no nginx restart, nginx config reload or host reboot occurred. This is loaded recovery policy, not an induced-failure or cold-boot test. |
 | Trusted relay | The trusted local-fallback lane is enabled with a boot-enabled timer and 30-second retry schedule. The global voicemail hook remains off. The 12:17 UTC observer found the timer active/waiting and its last oneshot worker exited successfully; an inactive/dead oneshot between passes is expected. Its bounded observation is not continuous monitoring and did not enumerate the outbox or read audio. |
 
 Protected outbound policy, mutual TLS and the synthetic CDR receiver/persistence
@@ -408,3 +409,23 @@ and a private error spool; this change does not establish automatic live replay
 or accept the spool recovery path.
 
 Evidence: [local event retry result](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/pbx/cdr-retry-oct25-v1/LOCAL-PG-RESULT-v1.json).
+
+## Legacy authentication permission boundary
+
+The actual installed BetterAuth 1.7.3 permission paths were captured read-only
+from the current legacy backend, including its exact PostgreSQL adapter binding.
+The source-derived minimum permits existing-column SELECTs, session and rate-limit
+INSERT/DELETE, and UPDATE only on session expiry/update timestamps and rate-limit
+count/window timestamps. The allowed email sign-in path does not require writes
+to auth users, credential accounts, canonical users or identity mappings. No auth
+sequence, schema-create, ownership or RLS-bypass grant follows from these paths.
+DELETE remains relation-wide; application predicates provide its scope.
+
+This closes source attribution, not the production role transition. Actual
+authentication workflow qualification, enabled worker permissions and the separate
+audit/fraud RLS requirements remain necessary. The legacy backend still uses its
+existing login. No customer credentials or session values were captured.
+
+Evidence: [installed permission sources](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-INSTALLED-AUTH-SQL-SOURCE-CAPTURE-20261025-v4.json),
+[permission matrix](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/pbx/legacy-session-attribution-oct25-v1/AUTH-ADAPTER-PERMISSIONS.md),
+[nginx policy installation](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-NGINX-RECOVERY-INSTALL-20261025-v1.json).
