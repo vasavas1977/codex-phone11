@@ -461,3 +461,29 @@ The derivative is prepared, not deployed.
 
 - [Actual installed authentication PG16 proof](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-PG16-ACTUAL-AUTH-QUALIFICATION-20261025-v1.json)
 - [Exact legacy CDR derivative database proof](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/pbx/cdr-retry-oct25-v1/candidate/REAL-PG17-QUALIFICATION-v1.json)
+
+## Actual recording worker permissions — 25 October continuation
+
+The installed legacy recording analysis and retention functions passed against
+the exact deployed application image and an isolated PostgreSQL 16.13 restore.
+The dedicated clone login had explicit column grants on five tables, verified
+TLS, no ownership/memberships, and no elevated role attributes. Actual job claims,
+completion, retry exhaustion, tenant/token/expiry rejection, policy locks,
+concurrent claim exclusion, and owned-file retention cleanup passed. Fifteen
+forbidden database operations and wrong-password/plaintext/untrusted-CA logins
+were rejected. The policy timestamp UPDATE privilege is intentional for
+`FOR SHARE`; it permits timestamp writes and is not described as read-only.
+
+Only synthetic jobs and files were processed; analysis used an injected
+deterministic result, with no provider calls. The exact three worker tables were
+reset only inside the disposable restored clone after schema, collision, trigger
+and foreign-key checks. Both owned containers were removed, archive custody
+remained stable, and all protected production process identities were unchanged.
+
+This closes the analysis/retention permission slice. Chat, capture and remaining
+HTTP paths still require qualification before changing the live legacy login.
+It is not customer voicemail delivery, an AI-provider test, or a production
+permission cutover. Trial remains 60 seconds; Android and phone testing are deferred.
+
+- [Installed-image PG16 worker receipt](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-PG16-ACTUAL-RECORDING-WORKERS-20261025-v1.json)
+- [Independent packet review](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/pbx/legacy-session-attribution-oct25-v1/worker-qualification-recording.independent-review.json)
