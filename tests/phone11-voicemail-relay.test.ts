@@ -9,6 +9,9 @@ const durability = vi.hoisted(() => ({
   failUnlink: undefined as string | undefined,
   syncs: [] as { file: string; manifestExists: boolean }[],
   manifest: "",
+  cursorHandles: 0,
+  cursorSyncs: [] as string[],
+  failCursorSync: undefined as ((file: string) => boolean) | undefined,
   handles: 0,
   beforeOpen: undefined as ((file: string) => Promise<void>) | undefined,
   afterRead: undefined as ((file: string) => Promise<void>) | undefined,
@@ -27,13 +30,23 @@ vi.mock("node:fs/promises", async importOriginal => {
         return value;
       }) as typeof handle.readFile;
       durability.handles++;
+      const cursorControl = String(args[0]).endsWith("/.relay-cursor.new");
+      if (cursorControl) durability.cursorHandles++;
       handle.sync = async () => {
         const file = String(args[0]);
+        // The same outbox directory is synced for cursor metadata and later
+        // quarantine. Held cursor-control FDs identify the phase, not an offset.
+        if (cursorControl || durability.cursorHandles > 0) {
+          durability.cursorSyncs.push(file);
+          if (durability.failCursorSync?.(file)) throw Object.assign(new Error("fixture cursor sync failure"), { code: "EIO" });
+          await sync();
+          return;
+        }
         durability.syncs.push({ file, manifestExists: await actual.stat(durability.manifest).then(() => true, () => false) });
         if (await durability.failSync?.(file)) throw Object.assign(new Error("fixture directory sync failure"), { code: "EIO" });
         await sync();
       };
-      handle.close = async () => { try { await close(); } finally { durability.handles--; } };
+      handle.close = async () => { try { await close(); } finally { durability.handles--; if (cursorControl) durability.cursorHandles--; } };
       return handle;
     },
     unlink: async (file: Parameters<typeof actual.unlink>[0]) => {
@@ -52,6 +65,7 @@ beforeEach(async () => {
   durability.failSync = undefined; durability.failUnlink = undefined;
   durability.beforeOpen = undefined; durability.afterRead = undefined;
   durability.syncs = []; durability.handles = 0;
+  durability.cursorSyncs = []; durability.cursorHandles = 0; durability.failCursorSync = undefined;
   directory = await realpath(await mkdtemp(path.join(tmpdir(), "phone11-vm-relay-")));
   config = {
     sourceRoot: path.join(directory, "source"),
@@ -77,6 +91,8 @@ afterEach(async () => {
   durability.failSync = undefined; durability.failUnlink = undefined;
   durability.beforeOpen = undefined; durability.afterRead = undefined;
   expect(durability.handles).toBe(0);
+  expect(durability.cursorHandles).toBe(0);
+  durability.failCursorSync = undefined;
   if (directory) await rm(directory, { recursive: true, force: true });
 });
 
@@ -201,6 +217,20 @@ describe("private voicemail relay outbox", () => {
     config.uploadUrl = "http://api.phone11.ai/api/recordings/voicemail";
     await expect(relayOnce(config, vi.fn() as typeof fetch)).rejects.toThrow("exact HTTPS endpoint");
     await stat(path.join(config.outboxRoot, `${uuid}.json`));
+  });
+
+  it.each(["file", "directory"])("retains manifest/WAV and never uploads after cursor %s sync failure", async phase => {
+    const original = await readFile(durability.manifest);
+    durability.failCursorSync = file => phase === "file" ? file.endsWith("/.relay-cursor.new") : file === config.outboxRoot;
+    const send = vi.fn(async () => new Response("", { status: 200 }));
+    await expect(relayOnce(config, send as typeof fetch)).rejects.toThrow("fixture cursor sync failure");
+    expect(send).not.toHaveBeenCalled();
+    expect(await readFile(durability.manifest)).toEqual(original);
+    expect(await readFile(path.join(config.sourceRoot, "domain", "3001", `${uuid}.wav`))).toEqual(audio);
+    expect(durability.syncs).toEqual([]); // No quarantine phase began.
+    expect(durability.cursorSyncs.some(file => file.endsWith("/.relay-cursor.new"))).toBe(true);
+    durability.failCursorSync = undefined;
+    expect(await relayOnce(config, send as typeof fetch)).toEqual({ delivered: 1, quarantined: 0, retry: 0 });
   });
 
   it.each([false, true])("retains the retry manifest until the quarantine directory entry is durable (existing=%s)", async existing => {

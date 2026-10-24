@@ -5,7 +5,7 @@
  * completes. This worker never derives ownership from a delayed file scan.
  */
 import { constants, type Stats } from "node:fs";
-import { open, lstat, readdir, realpath, link, mkdir, unlink } from "node:fs/promises";
+import { open, lstat, opendir, realpath, link, mkdir, unlink, rename } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -30,6 +30,127 @@ export type RelayConfig = {
   uploadUrl: string;
   integrationSecret: string;
 };
+
+// Fixed production defaults; smaller controls support deterministic offline tests.
+export type RelayControls = { maxEntries?: number; passMs?: number; wallMs?: number };
+type RelayCursor = { after: string; identity: Stats };
+const MAX_CENSUS = 4096;
+const CURSOR = ".relay-cursor.json";
+const CURSOR_NEW = ".relay-cursor.new";
+function passBudget(controls: RelayControls) {
+  const maxEntries = controls.maxEntries ?? 8;
+  const passMs = controls.passMs ?? 45000;
+  if (!Number.isInteger(maxEntries) || maxEntries < 1 || maxEntries > 8 ||
+      !Number.isInteger(passMs) || passMs < 1 || passMs > 45000)
+    throw new Error("Invalid relay pass budget");
+  return { maxEntries, deadline: performance.now() + passMs };
+}
+async function boundedNames(root: string): Promise<string[]> {
+  const directory = await opendir(root);
+  const names: string[] = [];
+  let dataEntries = 0;
+  try {
+    for (;;) {
+      const entry = await directory.read();
+      if (!entry) return names;
+      const control = entry.name === CURSOR || entry.name === CURSOR_NEW;
+      if (names.length >= MAX_CENSUS + 2 || (!control && ++dataEntries > MAX_CENSUS))
+        throw new Error("Relay census exceeds bound");
+      names.push(entry.name);
+    }
+  } finally { await directory.close(); }
+}
+async function readCursor(root: string, parent: Stats): Promise<RelayCursor | null> {
+  assertSamePrivateDirectory(parent, await lstat(root));
+  const file = path.join(root, CURSOR);
+  let handle: Awaited<ReturnType<typeof open>>;
+  try { handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
+  catch (error) { if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return null; throw error; }
+  try {
+    const identity = await handle.stat();
+    if (!identity.isFile() || identity.nlink !== 1 || (identity.mode & 511) !== 384 ||
+        identity.uid !== parent.uid || identity.gid !== parent.gid || identity.size <= 0 || identity.size > 1024)
+      throw new Error("Relay cursor custody refused");
+    let value: { schema?: number; after?: string } | null;
+    try { value = JSON.parse(await handle.readFile({ encoding: "utf8" })); }
+    catch { throw new Error("Relay cursor malformed"); }
+    if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join(",") !== "after,schema" || value.schema !== 1 ||
+        typeof value.after !== "string" || !value.after.endsWith(".json") ||
+        !UUID.test(value.after.slice(0, -5))) throw new Error("Relay cursor malformed");
+    assertSamePrivateManifest(identity, await handle.stat());
+    assertSamePrivateManifest(identity, await lstat(file));
+    assertSamePrivateDirectory(parent, await lstat(root));
+    return { after: value.after, identity };
+  } finally { await handle.close(); }
+}
+async function recoverCursorTemp(root: string, parent: Stats): Promise<void> {
+  // Caller holds the existing native flock. Only this reserved control file is
+  // disposable: its old pointer is safe to repeat, never delivery evidence.
+  assertSamePrivateDirectory(parent, await lstat(root));
+  const temporary = path.join(root, CURSOR_NEW);
+  let handle: Awaited<ReturnType<typeof open>>;
+  try { handle = await open(temporary, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
+  catch (error) { if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return; throw error; }
+  try {
+    const expected = await handle.stat();
+    if (!expected.isFile() || expected.nlink !== 1 || (expected.mode & 511) !== 384 ||
+        expected.uid !== parent.uid || expected.gid !== parent.gid || expected.size > 1024)
+      throw new Error("Relay temporary cursor custody refused");
+    const current = await lstat(temporary);
+    assertSamePrivateManifest(expected, current);
+    if (current.nlink !== 1 || current.ctimeMs !== expected.ctimeMs)
+      throw new Error("Relay temporary cursor changed");
+    assertSamePrivateManifest(expected, await handle.stat());
+    assertSamePrivateDirectory(parent, await lstat(root));
+    await unlink(temporary);
+    await syncDirectory(root, parent);
+  } finally { await handle.close(); }
+}
+async function saveCursor(root: string, parent: Stats, expected: RelayCursor | null, after: string): Promise<RelayCursor | null> {
+  const current = await readCursor(root, parent);
+  if ((expected === null) !== (current === null)) throw new Error("Relay cursor changed");
+  if (expected) {
+    if (!current) throw new Error("Relay cursor changed");
+    assertSamePrivateManifest(expected.identity, current.identity);
+  }
+  const temporary = path.join(root, CURSOR_NEW);
+  const handle = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 384);
+  try {
+    await handle.chmod(384);
+    await handle.writeFile(JSON.stringify({ schema: 1, after }) + "\n");
+    await handle.sync();
+    const written = await handle.stat();
+    if (!written.isFile() || written.nlink !== 1 || written.uid !== parent.uid || written.gid !== parent.gid)
+      throw new Error("Relay cursor write custody refused");
+    assertSamePrivateManifest(written, await lstat(temporary));
+    const again = await readCursor(root, parent);
+    if ((expected === null) !== (again === null)) throw new Error("Relay cursor changed");
+    if (expected) {
+      if (!again) throw new Error("Relay cursor changed");
+      assertSamePrivateManifest(expected.identity, again.identity);
+    }
+    assertSamePrivateDirectory(parent, await lstat(root));
+    await rename(temporary, path.join(root, CURSOR));
+    await syncDirectory(root, parent);
+    return await readCursor(root, parent);
+  } finally { await handle.close(); }
+  // Next locked pass removes only a strictly held owned control temporary.
+}
+export async function runBoundedOnce(config: RelayConfig, send: typeof fetch = fetch, controls: RelayControls = {}) {
+  const wallMs = controls.wallMs ?? 60000;
+  if (!Number.isInteger(wallMs) || wallMs < 1 || wallMs > 60000)
+    throw new Error("Invalid relay wall budget");
+  // A scheduled Node timer bounds asynchronous work; it cannot preempt a
+  // synchronous event-loop stall or uninterruptible kernel call.
+  // This exits only this native relay process. It never kills/stops Docker or
+  // another worker. Unknown HTTP may resend next pass; originals/WAV remain.
+  const timer = setTimeout(() => {
+    process.stderr.write("Voicemail relay wall deadline reached; outcome unknown\n");
+    process.exit(70);
+  }, wallMs);
+  try { return await relayOnce(config, send, controls); }
+  finally { clearTimeout(timer); }
+}
 
 function parseManifest(raw: string): RelayManifest {
   const value = JSON.parse(raw) as Partial<RelayManifest>;
@@ -100,7 +221,7 @@ async function assertKnownManifestLinks(source: string, expected: Stats): Promis
     }
   } catch (error: any) { if (error?.code !== "ENOENT") throw error; }
   let producerLinks = 0;
-  for (const name of (await readdir(root)).filter(name => PRODUCER_TEMP.test(name))) {
+  for (const name of (await boundedNames(root)).filter(name => PRODUCER_TEMP.test(name))) {
     let retained: Stats;
     try { retained = await lstat(path.join(root, name)); }
     catch (error: any) { if (error?.code === "ENOENT") continue; throw error; }
@@ -212,26 +333,43 @@ function assertSameWav(expected: Stats, current: Stats): void {
     throw new Error("Voicemail source changed");
 }
 
-export async function relayOnce(config: RelayConfig, send: typeof fetch = fetch) {
+export async function relayOnce(config: RelayConfig, send: typeof fetch = fetch, controls: RelayControls = {}) {
+  const budget = passBudget(controls);
   if (!config.integrationSecret || config.integrationSecret.length < 32) throw new Error("Integration secret is missing");
   // Validate before processing a manifest; configuration errors must not drain an outbox.
   uploadEndpoint(config, { message_uuid: "00000000-0000-4000-8000-000000000000", tenant_id: 1, extension: "1", relative_wav_path: "x.wav" });
-  const entries = (await readdir(config.outboxRoot)).filter(name => UUID.test(name.replace(/\.json$/, "")) && name.endsWith(".json")).sort();
+  const directory = await lstat(config.outboxRoot);
+  assertSamePrivateDirectory(directory, directory);
+  await recoverCursorTemp(config.outboxRoot, directory);
+  const names = (await boundedNames(config.outboxRoot)).filter(name => UUID.test(name.replace(/\.json$/, "")) && name.endsWith(".json")).sort();
+  let cursor = await readCursor(config.outboxRoot, directory);
+  const cursorAfter = cursor?.after;
+  const after = cursorAfter === undefined ? 0 : names.findIndex(name => name > cursorAfter);
+  const offset = after < 0 ? 0 : after;
+  const entries = [...names.slice(offset), ...names.slice(0, offset)];
   let delivered = 0;
   let quarantined = 0;
   let retry = 0;
+  let processed = 0;
   for (const name of entries) {
+    if (processed >= budget.maxEntries || performance.now() >= budget.deadline) break;
+    cursor = await saveCursor(config.outboxRoot, directory, cursor, name);
+    processed++;
     const file = path.join(config.outboxRoot, name);
     try {
       const { manifest, identity } = await readPrivateManifest(file);
       if (`${manifest.message_uuid}.json` !== name) throw new Error("Manifest identity mismatch");
+      if (performance.now() >= budget.deadline) { retry++; break; }
       const audio = await readPrivateWav(config.sourceRoot, manifest.relative_wav_path);
+      if (performance.now() >= budget.deadline) { retry++; break; }
       const response = await send(uploadEndpoint(config, manifest).toString(), {
         method: "POST",
         headers: { "content-type": "audio/wav", "x-fs-secret": config.integrationSecret },
         body: new Uint8Array(audio),
-        signal: AbortSignal.timeout(15_000),
+        signal: AbortSignal.timeout(Math.max(1, Math.min(15_000, Math.ceil(budget.deadline - performance.now())))),
       });
+      // Expired/lost acknowledgement is retained for existing duplicate-safe resend.
+      if (performance.now() >= budget.deadline) { retry++; break; }
       if (response.status === 200 || response.status === 201) {
         await assertKnownManifestLinks(file, identity);
         await unlink(file);
@@ -258,7 +396,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
     integrationSecret: process.env.FS_SHARED_SECRET || "",
   };
   const run = async () => {
-    const result = await relayOnce(config);
+    const result = await runBoundedOnce(config);
     process.stdout.write(`voicemail relay: delivered=${result.delivered} quarantined=${result.quarantined} retry=${result.retry}\n`);
   };
   if (process.argv.includes("--once")) {

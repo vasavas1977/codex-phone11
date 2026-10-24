@@ -752,3 +752,38 @@ remain separate from these metadata checks. The replacement upload receiver has
 not been installed. Exact receipts are retained in the operator directory:
 `PBX-UPLOAD-BIND-STORAGE-METADATA-20261025-v1.json` and its three preceding
 configuration/metadata observations.
+
+### Bounded voicemail recovery — maintained source, not installed
+
+The maintained relay now attempts at most eight manifests per pass, with a
+45-second cooperative work deadline and a 60-second native-process watchdog.
+A persisted, fsynced cursor advances even when early messages retry, preventing
+starvation. Enumeration admits at most 4096 data entries plus the two reserved
+cursor filenames. A full admitted queue therefore does not deadlock merely
+because the worker creates its cursor.
+
+An interrupted zero-byte or partial temporary cursor is recovered only after
+strict private ownership, mode, held-inode and single-link checks under the
+existing external native lock. Committed cursor corruption and unsafe temporary
+metadata still refuse. Original WAV data, accepted-response manifest removal
+and durable quarantine rules are preserved. An uncertain HTTP outcome can be
+resent by the existing duplicate-safe upload path; counters are not delivery
+proof for a timed-out process.
+
+Author validation: **76 related Vitest cases**, **15 isolated Node cases** and
+**6 Python derivation checks** passed; targeted strict TypeScript and ESLint
+passed. Existing quarantine fault-injection tests now distinguish the added
+cursor fsync phase using held file descriptors, preserving their quarantine
+assertions. Root independently checked frozen source hashes and the focused
+changes. Actual queued delivery, outage and host cold boot remain untested.
+
+The operational Python guard candidate additionally bounds its Docker client
+wait at 75 seconds. That candidate is not installed. The live guard deliberately
+continues to require the old exact relay and manifest hashes; changing the relay
+alone would refuse. Deployment requires a consistent derived bundle, private
+runtime packet and matching guard with a retained rollback, followed by metadata
+and scheduled-pass verification. No existing installer should be blindly replayed.
+
+Independent GPT-6.1 Sol high review accepted exact maintained relay SHA
+`11e01313548c60678b3be797d96b371b8f5d3bfe536ce26a390b0d5f0d669697`
+with no P0–P2 findings after the queue-boundary fix. This is source acceptance.
