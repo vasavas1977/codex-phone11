@@ -1,6 +1,10 @@
 import { randomBytes } from "node:crypto";
-import { Pool, type PoolClient } from "pg";
+import { lstatSync, realpathSync } from "node:fs";
+import { basename, dirname } from "node:path";
+import { URL } from "node:url";
+import { Pool, type PoolClient, type PoolConfig } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { assertPhoneProvisioningSchema, phoneProvisioningColumns } from "../server/pbx/phone-provisioning-schema";
 
 const state = vi.hoisted(() => ({ query: vi.fn(), transaction: vi.fn() }));
 vi.mock("../server/pbx/db", () => ({
@@ -12,179 +16,212 @@ vi.mock("../server/pbx/sip-secrets", () => ({
   decryptSecret: vi.fn(), regenerateSipCredentials: vi.fn(),
 }));
 type Provisioning = typeof import("../server/phone-provisioning");
-const guardSql = (sql: string) => sql.includes("DO $phone11_extension_tenant$");
-// Exercise the real actorless initializer callsite, stopping at the existing
-// transaction seam: these tests do not claim handler/SIP write acceptance.
+const catalogQuery = (sql: string) => sql.includes("pg_catalog.jsonb_to_recordset");
+// Stop at the existing transaction seam: no handler/SIP mutation is claimed.
 const initialize = (provisioning: Provisioning) =>
-  provisioning.createExtension({ orgId: 7, extensionNumber: "owned-synthetic-initializer" });
+  provisioning.createExtension({ orgId: 7, extensionNumber: "owned-synthetic-readiness" });
+const expectOnlyCatalogReads = () => {
+  for (const [statement] of state.query.mock.calls) {
+    expect(String(statement).trim()).toMatch(/^WITH expected AS/);
+    expect(String(statement)).not.toMatch(/\b(CREATE|ALTER|DROP|INSERT|UPDATE|DELETE|GRANT)\b/i);
+  }
+};
 
-// Never supply or discover a local DB connection for these offline lifecycle checks.
-describe("extension tenancy initializer lifecycle", () => {
+describe("commissioned provisioning schema lifecycle", () => {
   let provisioning: Provisioning;
   beforeEach(async () => {
     vi.resetModules(); state.query.mockReset(); state.transaction.mockReset();
     state.query.mockResolvedValue({ rows: [] });
     provisioning = await import("../server/phone-provisioning");
   });
-
-  it("creates mandatory explicit tenancy and a same-schema tenant FK without a default", async () => {
+  it("validates the commissioned public catalog before actorless writes without DDL or seeds", async () => {
     await initialize(provisioning);
-    const statements = state.query.mock.calls.map(([sql]) => String(sql));
-    const create = statements.find(sql => /CREATE TABLE IF NOT EXISTS extensions/.test(sql))!;
-    expect(create).toContain("tenant_id INTEGER NOT NULL REFERENCES tenants(id)");
-    expect(create).not.toMatch(/tenant_id INTEGER DEFAULT/);
-    const guard = statements.find(guardSql)!;
-    expect(guard).toContain("LOCK TABLE extensions IN ACCESS EXCLUSIVE MODE NOWAIT");
-    expect(guard.indexOf("LOCK TABLE")).toBeLessThan(guard.indexOf("IF EXISTS (SELECT 1 FROM extensions)"));
-    expect(guard.indexOf("IF EXISTS (SELECT 1 FROM extensions)")).toBeLessThan(guard.indexOf("ALTER TABLE extensions ADD COLUMN tenant_id"));
-    expect(guard.match(/attname = 'tenant_id'/g)).toHaveLength(2);
-    expect(guard).toContain("ERRCODE = '55000'");
-    expect(statements.some(sql => /ALTER TABLE extensions ADD COLUMN IF NOT EXISTS tenant_id/.test(sql))).toBe(false);
-    // Other tenant-table definitions remain outside this repair's scope.
-    expect(statements.find(sql => /CREATE TABLE IF NOT EXISTS sip_accounts/.test(sql))).toContain("tenant_id INTEGER DEFAULT 1");
+    expect(state.query).toHaveBeenCalledTimes(1);
+    expect(catalogQuery(String(state.query.mock.calls[0][0]))).toBe(true);
+    expectOnlyCatalogReads();
+    expect(state.transaction).toHaveBeenCalledTimes(1);
   });
-
-  it("does not issue an implicit tenant assignment, drop default, or alter existing nullability", async () => {
-    await initialize(provisioning);
-    const sql = state.query.mock.calls.map(([statement]) => String(statement)).join("\n");
-    expect(sql).not.toMatch(/UPDATE\s+extensions\s+SET\s+tenant_id/i);
-    expect(sql).not.toMatch(/ALTER\s+COLUMN\s+tenant_id|DROP\s+DEFAULT/i);
-    expect(sql).not.toMatch(/ALTER TABLE extensions ADD COLUMN IF NOT EXISTS tenant_id INTEGER DEFAULT 1/);
+  it("shares concurrent validation and caches success", async () => {
+    let resolve!: (value: { rows: unknown[] }) => void;
+    state.query.mockReturnValue(new Promise<{ rows: unknown[] }>(done => { resolve = done; }));
+    const first = initialize(provisioning); const second = initialize(provisioning);
+    expect(state.query).toHaveBeenCalledTimes(1); expect(state.transaction).not.toHaveBeenCalled();
+    resolve({ rows: [] }); await Promise.all([first, second]); await initialize(provisioning);
+    expect(state.query).toHaveBeenCalledTimes(1); expect(state.transaction).toHaveBeenCalledTimes(3);
+    expectOnlyCatalogReads();
   });
-
-  it("caches completed initialization rather than replaying DDL for every actorless write", async () => {
-    await initialize(provisioning); await initialize(provisioning);
-    expect(state.query.mock.calls.filter(([sql]) => guardSql(String(sql)))).toHaveLength(1);
-    expect(state.transaction).toHaveBeenCalledTimes(2);
-  });
-
-  it("propagates populated-partial refusal, stops dependent initialization, and clears the failed cache", async () => {
-    let refuse = true;
-    state.query.mockImplementation(async (sql: string) => {
-      if (guardSql(sql) && refuse) throw Object.assign(new Error("Reviewed tenant migration required"), { code: "55000" });
-      return { rows: [] };
-    });
-    await expect(initialize(provisioning)).rejects.toMatchObject({ code: "55000" });
-    expect(state.query.mock.calls.some(([sql]) => String(sql).includes("CREATE TABLE IF NOT EXISTS user_extensions"))).toBe(false);
-    refuse = false; await expect(initialize(provisioning)).resolves.toBeUndefined();
-    expect(state.query.mock.calls.filter(([sql]) => guardSql(String(sql)))).toHaveLength(2);
-  });
-
-  it("does not retry or bypass a contended missing-column table lock", async () => {
-    state.query.mockImplementation(async (sql: string) => {
-      if (guardSql(sql)) throw Object.assign(new Error("Owned synthetic lock refused"), { code: "55P03" });
-      return { rows: [] };
-    });
-    await expect(initialize(provisioning)).rejects.toMatchObject({ code: "55P03" });
-    expect(state.query.mock.calls.filter(([sql]) => guardSql(String(sql)))).toHaveLength(1);
+  it("refuses missing commissioned columns before writes and clears the failed cache", async () => {
+    state.query.mockResolvedValueOnce({ rows: [{ table_name: "extensions", column_name: "tenant_id" }] });
+    await expect(initialize(provisioning)).rejects.toMatchObject({ code: "PHONE_PROVISIONING_SCHEMA_UNAVAILABLE" });
     expect(state.transaction).not.toHaveBeenCalled();
+    await expect(initialize(provisioning)).resolves.toBeUndefined();
+    expect(state.query).toHaveBeenCalledTimes(2); expect(state.transaction).toHaveBeenCalledTimes(1);
+    expectOnlyCatalogReads();
+  });
+  it("preserves a database failure without retrying the request and allows later validation", async () => {
+    const failure = Object.assign(new Error("Owned synthetic catalog unavailable"), { code: "08006" });
+    state.query.mockRejectedValueOnce(failure);
+    await expect(initialize(provisioning)).rejects.toBe(failure);
+    expect(state.query).toHaveBeenCalledTimes(1); expect(state.transaction).not.toHaveBeenCalled();
+    await initialize(provisioning);
+    expect(state.query).toHaveBeenCalledTimes(2); expectOnlyCatalogReads();
+  });
+  it("retains the actor-bound transaction path without global initialization before authorization", async () => {
+    await provisioning.createExtension({ orgId: 7, extensionNumber: "owned-actor-seam", actorUserId: 17 });
+    expect(state.query).not.toHaveBeenCalled(); expect(state.transaction).toHaveBeenCalledTimes(1);
   });
 });
 
-// Same established fixture contract as the prerequisite PostgreSQL suite. The
-// worker runs with this variable absent; the required CI job supplies it.
+// CI supplies the existing dedicated loopback database. This suite creates one
+// separately named disposable database so its required public schema cannot
+// collide with other suites using the shared prerequisite database.
 const databaseUrl = process.env.PHONE11_PBX_TEST_DATABASE_URL;
+const socketDirectory = process.env.PHONE11_PROVISIONING_TEST_SOCKET_DIR;
+let base: URL | undefined;
 if (databaseUrl) {
-  const target = new URL(databaseUrl);
-  if (!["postgres:", "postgresql:"].includes(target.protocol) ||
-      !["127.0.0.1", "localhost", "[::1]"].includes(target.hostname) ||
-      target.pathname !== "/phone11_pbx_test" || !target.port || target.search || target.hash) {
-    throw new Error("Extension initializer tests require the dedicated loopback phone11_pbx_test database and explicit port");
+  base = new URL(databaseUrl);
+  if (!["postgres:", "postgresql:"].includes(base.protocol) ||
+      !["127.0.0.1", "localhost", "[::1]"].includes(base.hostname) ||
+      base.pathname !== "/phone11_pbx_test" || !base.port || base.search || base.hash) {
+    throw new Error("Provisioning schema tests require dedicated loopback phone11_pbx_test and an explicit port");
   }
 }
+if (socketDirectory) {
+  // Optional Unix-socket-only local PG17 rehearsal. Never discover a socket or
+  // redirect to an arbitrary existing cluster; both directories must be owned,
+  // private, nonsymlink paths in a specifically named disposable fixture root.
+  const parent = dirname(socketDirectory);
+  if (!base || realpathSync(socketDirectory) !== socketDirectory || basename(socketDirectory) !== "socket" ||
+      !/^phone11-provisioning-pg-[A-Za-z0-9_-]+$/.test(basename(parent)) ||
+      ![parent, socketDirectory].every(path => {
+        const info = lstatSync(path);
+        return info.isDirectory() && !info.isSymbolicLink() && info.uid === process.getuid?.() && (info.mode & 0o777) === 0o700;
+      })) throw new Error("Provisioning Unix socket must belong to the explicitly owned disposable fixture");
+}
+function connection(database: string): PoolConfig {
+  if (!base) throw new Error("Dedicated fixture URL required");
+  return { host: socketDirectory || base.hostname.replace(/^\[|\]$/g, ""), port: Number(base.port),
+    user: decodeURIComponent(base.username), password: decodeURIComponent(base.password), database,
+    ssl: false, max: 2, connectionTimeoutMillis: 5000, query_timeout: 10000 };
+}
+const sqlType: Record<number, string> = { 16: "boolean", 17: "bytea", 23: "integer", 25: "text", 1043: "varchar(128)", 1184: "timestamptz", 2950: "uuid" };
+const identifier = (value: string) => {
+  if (!/^[a-z_][a-z0-9_]*$/.test(value)) throw new Error("Unsafe synthetic fixture identifier");
+  return `"${value}"`;
+};
+async function commission(client: PoolClient) {
+  for (const [table, columns] of Object.entries(phoneProvisioningColumns)) {
+    const definitions = Object.entries(columns).map(([column, oid]) => {
+      if (!sqlType[oid]) throw new Error("Unmapped fixture type OID");
+      return `${identifier(column)} ${sqlType[oid]}${column === "id" ? " PRIMARY KEY" : table === "extensions" && column === "tenant_id" ? " NOT NULL" : ""}`;
+    });
+    await client.query(`CREATE TABLE public.${identifier(table)} (${definitions.join(", ")})`);
+  }
+  await client.query(`ALTER TABLE public.extensions ADD CONSTRAINT fixture_extension_tenant_fk
+    FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+    INSERT INTO public.tenants(id,name,plan,status) VALUES(1,'Owned synthetic A','business','active'),(2,'Owned synthetic B','business','active');
+    INSERT INTO public.organizations(id,name,plan) VALUES(1,'Owned synthetic','business')`);
+}
 
-describe.skipIf(!databaseUrl)("extension initializer on the owned PostgreSQL fixture", () => {
-  let pool: Pool;
-  let client: PoolClient;
-  let schema: string;
-  let provisioning: Provisioning;
+describe.skipIf(!databaseUrl)("commissioned provisioning catalog on an isolated PostgreSQL fixture", () => {
+  const ownedDatabase = `p11_provisioning_${randomBytes(12).toString("hex")}`;
+  let admin: Pool; let pool: Pool; let client: PoolClient | undefined;
+  let databaseCreated = false; let provisioning: Provisioning;
   beforeAll(async () => {
-    pool = new Pool({ connectionString: databaseUrl, ssl: false, max: 2,
-      connectionTimeoutMillis: 5000, query_timeout: 10000 });
-    expect((await pool.query("SELECT current_database() AS database")).rows[0].database).toBe("phone11_pbx_test");
+    admin = new Pool(connection("phone11_pbx_test"));
+    expect((await admin.query("SELECT current_database() AS database")).rows[0].database).toBe("phone11_pbx_test");
+    await admin.query(`CREATE DATABASE ${identifier(ownedDatabase)}`); databaseCreated = true;
+    pool = new Pool(connection(ownedDatabase));
+    expect((await pool.query("SELECT current_database() AS database")).rows[0].database).toBe(ownedDatabase);
   });
   beforeEach(async () => {
     vi.resetModules(); state.query.mockReset(); state.transaction.mockReset();
-    schema = `p11_ext_init_${randomBytes(8).toString("hex")}`;
     client = await pool.connect();
-    await client.query(`CREATE SCHEMA ${schema}; SET search_path TO ${schema}`);
-    state.query.mockImplementation((sql: string, values?: unknown[]) => client.query(sql, values));
+    await client.query("DROP SCHEMA public CASCADE; CREATE SCHEMA public; SET search_path TO public");
+    await commission(client);
+    state.query.mockImplementation((sql: string, values?: unknown[]) => client!.query(sql, values));
     provisioning = await import("../server/phone-provisioning");
   });
   afterEach(async () => {
     if (client) {
-      try { await client.query(`RESET search_path; DROP SCHEMA ${schema} CASCADE`); }
-      finally { client.release(); }
+      try { await client.query("ROLLBACK; RESET search_path"); }
+      finally { client.release(); client = undefined; }
     }
   });
-  afterAll(async () => { await pool?.end(); });
-
-  async function tenantShape() {
-    return (await client.query(`SELECT a.attnotnull AS mandatory,
-      pg_catalog.pg_get_expr(d.adbin,d.adrelid) AS default_sql,
-      (SELECT count(*)::integer FROM pg_catalog.pg_constraint c
-        WHERE c.conrelid=a.attrelid AND c.contype='f' AND c.conkey=ARRAY[a.attnum]::smallint[]
-          AND c.confrelid=pg_catalog.to_regclass('tenants') AND c.convalidated AND NOT c.condeferrable) AS foreign_keys
-      FROM pg_catalog.pg_attribute a LEFT JOIN pg_catalog.pg_attrdef d
-        ON d.adrelid=a.attrelid AND d.adnum=a.attnum
-      WHERE a.attrelid='extensions'::regclass AND a.attname='tenant_id' AND NOT a.attisdropped`)).rows[0];
-  }
-  async function hardenedWrites() {
-    expect(await tenantShape()).toEqual({ mandatory: true, default_sql: null, foreign_keys: 1 });
-    await client.query("INSERT INTO tenants(id,name,plan,status) VALUES(2,'Owned synthetic B','business','active')");
-    for (const [sql, code] of [
-      ["INSERT INTO extensions(extension_number) VALUES('omitted')", "23502"],
-      ["INSERT INTO extensions(tenant_id,extension_number) VALUES(NULL,'null')", "23502"],
-      ["INSERT INTO extensions(tenant_id,extension_number) VALUES(999999,'orphan')", "23503"],
-    ]) await expect(client.query(sql)).rejects.toMatchObject({ code });
-    await client.query("INSERT INTO extensions(tenant_id,extension_number) VALUES(1,'valid-a'),(2,'valid-b')");
-    expect((await client.query("SELECT tenant_id FROM extensions ORDER BY tenant_id")).rows).toEqual([{ tenant_id: 1 }, { tenant_id: 2 }]);
-  }
-
-  it("hardens new empty bootstrap and refuses omitted, NULL and orphan tenants", async () => {
-    await initialize(provisioning); await hardenedWrites();
-  });
-  it("adds a hardened tenant column to an empty partial extension table", async () => {
-    await client.query("CREATE TABLE extensions(id SERIAL PRIMARY KEY, extension_number VARCHAR(32) NOT NULL)");
-    await initialize(provisioning); await hardenedWrites();
-  });
-  it("preserves an existing hardened column and tenant FK", async () => {
-    await client.query(`CREATE TABLE tenants(id INTEGER PRIMARY KEY, name VARCHAR(128) NOT NULL,
-      plan VARCHAR(64) DEFAULT 'business', status VARCHAR(32) DEFAULT 'active');
-      INSERT INTO tenants(id,name) VALUES(1,'Owned synthetic A');
-      CREATE TABLE extensions(id SERIAL PRIMARY KEY, tenant_id INTEGER NOT NULL REFERENCES tenants(id),
-        extension_number VARCHAR(32) NOT NULL); INSERT INTO extensions(tenant_id,extension_number) VALUES(1,'retained')`);
-    const before = await tenantShape();
-    await initialize(provisioning);
-    expect(await tenantShape()).toEqual(before);
-    expect((await client.query("SELECT tenant_id FROM extensions WHERE extension_number='retained'")).rows).toEqual([{ tenant_id: 1 }]);
-    await client.query("DELETE FROM extensions"); await hardenedWrites();
-  });
-  it("leaves existing legacy default, nullable tenancy and rows for reviewed migration", async () => {
-    await client.query(`CREATE TABLE extensions(id SERIAL PRIMARY KEY, tenant_id INTEGER DEFAULT 1,
-      extension_number VARCHAR(32) NOT NULL); INSERT INTO extensions(tenant_id,extension_number) VALUES(NULL,'legacy-null'),(777,'legacy-orphan')`);
-    const before = await tenantShape();
-    const rows = (await client.query("SELECT id,tenant_id,extension_number FROM extensions ORDER BY id")).rows;
-    await initialize(provisioning);
-    expect(await tenantShape()).toEqual(before);
-    expect(before).toEqual({ mandatory: false, default_sql: "1", foreign_keys: 0 });
-    expect((await client.query("SELECT id,tenant_id,extension_number FROM extensions ORDER BY id")).rows).toEqual(rows);
-  });
-  it("refuses populated missing-column state without adding or assigning tenancy", async () => {
-    await client.query(`CREATE TABLE extensions(id SERIAL PRIMARY KEY, extension_number VARCHAR(32) NOT NULL);
-      INSERT INTO extensions(extension_number) VALUES('unassigned')`);
-    await expect(initialize(provisioning)).rejects.toMatchObject({ code: "55000" });
-    expect((await client.query("SELECT count(*)::integer AS count FROM pg_attribute WHERE attrelid='extensions'::regclass AND attname='tenant_id' AND NOT attisdropped")).rows[0].count).toBe(0);
-    expect((await client.query("SELECT id,extension_number FROM extensions")).rows).toEqual([{ id: 1, extension_number: "unassigned" }]);
-    expect((await client.query("SELECT to_regclass('user_extensions') AS relation")).rows[0].relation).toBeNull();
-  });
-  it("refuses a concurrent missing-column writer lock without partial DDL", async () => {
-    await client.query("CREATE TABLE extensions(id SERIAL PRIMARY KEY, extension_number VARCHAR(32) NOT NULL)");
-    const other = await pool.connect();
+  afterAll(async () => {
     try {
-      await other.query(`BEGIN; LOCK TABLE ${schema}.extensions IN ROW EXCLUSIVE MODE`);
-      await expect(initialize(provisioning)).rejects.toMatchObject({ code: "55P03" });
-      expect((await client.query("SELECT count(*)::integer AS count FROM pg_attribute WHERE attrelid='extensions'::regclass AND attname='tenant_id' AND NOT attisdropped")).rows[0].count).toBe(0);
-    } finally { await other.query("ROLLBACK"); other.release(); }
+      await pool?.end();
+      // Drop only the exact generated database whose CREATE succeeded here.
+      if (databaseCreated) await admin.query(`DROP DATABASE ${identifier(ownedDatabase)}`);
+    } finally { await admin?.end(); }
+  });
+  async function tenantShape() {
+    return (await client!.query(`SELECT a.attnotnull AS mandatory,
+      pg_catalog.pg_get_expr(d.adbin,d.adrelid) AS default_sql,
+      (SELECT count(*)::integer FROM pg_catalog.pg_constraint c WHERE c.conrelid=a.attrelid
+        AND c.contype='f' AND c.conkey=ARRAY[a.attnum]::smallint[]
+        AND c.confrelid='public.tenants'::regclass AND c.convalidated AND NOT c.condeferrable) AS foreign_keys
+      FROM pg_catalog.pg_attribute a LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid=a.attrelid AND d.adnum=a.attnum
+      WHERE a.attrelid='public.extensions'::regclass AND a.attname='tenant_id' AND NOT a.attisdropped`)).rows[0];
+  }
+  it("validates inside READ ONLY and preserves precommissioned tenant constraints and rows", async () => {
+    const before = await tenantShape();
+    await client!.query("BEGIN READ ONLY");
+    try { await initialize(provisioning); } finally { await client!.query("ROLLBACK"); }
+    expectOnlyCatalogReads(); expect(await tenantShape()).toEqual(before);
+    expect(before).toEqual({ mandatory: true, default_sql: null, foreign_keys: 1 });
+    expect((await client!.query("SELECT count(*)::integer AS count FROM public.tenants")).rows[0].count).toBe(2);
+    for (const [sql, code] of [
+      ["INSERT INTO public.extensions(id,extension_number) VALUES(1,'omitted')", "23502"],
+      ["INSERT INTO public.extensions(id,tenant_id,extension_number) VALUES(1,NULL,'null')", "23502"],
+      ["INSERT INTO public.extensions(id,tenant_id,extension_number) VALUES(1,999999,'orphan')", "23503"],
+    ]) await expect(client!.query(sql)).rejects.toMatchObject({ code });
+    await client!.query("INSERT INTO public.extensions(id,tenant_id,extension_number) VALUES(1,1,'valid-a'),(2,2,'valid-b')");
+    expect((await client!.query("SELECT tenant_id FROM public.extensions ORDER BY id")).rows).toEqual([{ tenant_id: 1 }, { tenant_id: 2 }]);
+  });
+  it("refuses an empty missing tenant column and retries only after explicit fixture commissioning", async () => {
+    await client!.query("ALTER TABLE public.extensions DROP COLUMN tenant_id CASCADE");
+    await expect(initialize(provisioning)).rejects.toMatchObject({ code: "PHONE_PROVISIONING_SCHEMA_UNAVAILABLE" });
+    expect(state.transaction).not.toHaveBeenCalled();
+    expect((await client!.query("SELECT count(*)::integer AS count FROM pg_attribute WHERE attrelid='public.extensions'::regclass AND attname='tenant_id' AND NOT attisdropped")).rows[0].count).toBe(0);
+    await client!.query("ALTER TABLE public.extensions ADD COLUMN tenant_id integer NOT NULL REFERENCES public.tenants(id)");
+    await initialize(provisioning); expect(state.query).toHaveBeenCalledTimes(2); expectOnlyCatalogReads();
+  });
+  it("refuses populated missing tenancy without adding a column or assigning existing rows", async () => {
+    await client!.query("ALTER TABLE public.extensions DROP COLUMN tenant_id CASCADE; INSERT INTO public.extensions(id,extension_number) VALUES(1,'owned-unassigned')");
+    await expect(initialize(provisioning)).rejects.toMatchObject({ code: "PHONE_PROVISIONING_SCHEMA_UNAVAILABLE" });
+    expect((await client!.query("SELECT id,extension_number FROM public.extensions")).rows).toEqual([{ id: 1, extension_number: "owned-unassigned" }]);
+    expect((await client!.query("SELECT count(*)::integer AS count FROM pg_attribute WHERE attrelid='public.extensions'::regclass AND attname='tenant_id' AND NOT attisdropped")).rows[0].count).toBe(0);
+    expectOnlyCatalogReads(); expect(state.transaction).not.toHaveBeenCalled();
+  });
+  it("accepts the established text/varchar family without changing storage types", async () => {
+    await client!.query("ALTER TABLE public.extensions ALTER COLUMN display_name TYPE text; ALTER TABLE public.subscriber ALTER COLUMN username TYPE text; ALTER TABLE public.did_numbers ALTER COLUMN description TYPE varchar(128)");
+    await assertPhoneProvisioningSchema(client!);
+    expect((await client!.query("SELECT atttypid::integer AS oid FROM pg_attribute WHERE attrelid='public.extensions'::regclass AND attname='display_name'")).rows[0].oid).toBe(25);
+  });
+  it.each([
+    ["extensions", "user_id", "text"], ["extensions", "voicemail_owner_epoch", "text"],
+    ["sip_accounts", "secret_ciphertext", "text"],
+  ])("refuses changed non-string type %s.%s", async (table, column, type) => {
+    await client!.query(`ALTER TABLE public.${identifier(table)} ALTER COLUMN ${identifier(column)} TYPE ${type} USING NULL`);
+    await expect(assertPhoneProvisioningSchema(client!)).rejects.toMatchObject({ code: "PHONE_PROVISIONING_SCHEMA_UNAVAILABLE" });
+  });
+  it("refuses dropped and generated required columns", async () => {
+    await client!.query("ALTER TABLE public.extensions DROP COLUMN display_name");
+    await expect(assertPhoneProvisioningSchema(client!)).rejects.toMatchObject({ code: "PHONE_PROVISIONING_SCHEMA_UNAVAILABLE" });
+    await client!.query("ALTER TABLE public.extensions ADD COLUMN display_name varchar(128) GENERATED ALWAYS AS ('owned-generated'::varchar(128)) STORED");
+    await expect(assertPhoneProvisioningSchema(client!)).rejects.toMatchObject({ code: "PHONE_PROVISIONING_SCHEMA_UNAVAILABLE" });
+  });
+  it("refuses search-path shadowing and recovers after restoring public resolution", async () => {
+    await client!.query("CREATE SCHEMA owned_shadow; CREATE TABLE owned_shadow.extensions (LIKE public.extensions); SET search_path TO owned_shadow,public");
+    await expect(initialize(provisioning)).rejects.toMatchObject({ code: "PHONE_PROVISIONING_SCHEMA_UNAVAILABLE" });
+    expect(state.transaction).not.toHaveBeenCalled();
+    await client!.query("SET search_path TO public"); await initialize(provisioning);
+    expect(state.query).toHaveBeenCalledTimes(2); expectOnlyCatalogReads();
+  });
+  it("refuses a same-named view instead of admitting a substitute relation", async () => {
+    await client!.query("ALTER TABLE public.subscriber RENAME TO owned_subscriber_original; CREATE VIEW public.subscriber AS SELECT * FROM public.owned_subscriber_original");
+    await expect(initialize(provisioning)).rejects.toMatchObject({ code: "PHONE_PROVISIONING_SCHEMA_UNAVAILABLE" });
+    expectOnlyCatalogReads(); expect(state.transaction).not.toHaveBeenCalled();
   });
 });
