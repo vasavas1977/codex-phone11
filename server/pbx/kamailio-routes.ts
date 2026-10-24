@@ -103,16 +103,15 @@ router.post("/auth", verifyKamAuth, async (req: Request, res: Response) => {
  */
 router.post("/register", verifyKamAuth, async (req: Request, res: Response) => {
   try {
-    const { username, domain, contact, expires, user_agent } = req.body;
+    const { username, domain, contact } = req.body;
 
     if (username && domain) {
       await query(
         `UPDATE sip_accounts SET 
           last_registered_at = NOW(), 
-          last_registered_contact = $1,
-          user_agent = $2
-         WHERE sip_username = $3 AND sip_domain = $4 AND deleted_at IS NULL`,
-        [contact || "", user_agent || "", username, domain]
+          last_registered_contact = $1
+         WHERE sip_username = $2 AND sip_domain = $3 AND deleted_at IS NULL`,
+        [contact || "", username, domain]
       );
 
       // Invalidate cache
