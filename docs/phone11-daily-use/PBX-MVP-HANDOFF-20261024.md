@@ -877,3 +877,23 @@ Receipts: `PBX-VOICEMAIL-ADDITIVE-RELAY-INSTALL-20261025-v1.json` and
 `PBX-VOICEMAIL-ADDITIVE-RELAY-SCHEDULED-20261025-v1.json`. New guard SHA256 is
 `6414ae0c2f88a7b59ed85f63147d964bbe0e712e4c73841f4ee7812285748a51`.
 The old elevated legacy role still requires retained-route and worker migration.
+
+### Restricted upload receiver activated — 25 October 06:05 Bangkok
+
+The staged upload receiver is running on loopback 3031 under UID 1001. Its exact
+restricted role now permits LOGIN through the scoped TLS/SCRAM rules. Live checks
+proved its identity and denied incorrect credentials, plaintext and an untrusted
+CA. Its mounted recording directory passed an exclusive harmless temporary-file
+write/read/hash/removal check. No recording or customer row was created or read.
+
+Receipt `PBX-UPLOAD-RECEIVER-ACTIVATION-20261025-v1.json` reports exit 0,
+cleanup confirmed, unchanged protected processes and no unknown mutation outcome.
+Missing/wrong HTTP secrets returned 403; invalid input with the correct secret
+returned 400 before SQL; excluded routes returned 404. Root verified 14 exact
+source pins and independent review accepted packet `ce73be23…`; author checks
+passed 11 focused cases and four isolated PG17 LOGIN cases.
+
+Restart policy is still `no`, and public upload ingress still selects the old
+backend. Policy promotion and route transition follow separately. This activation
+does not retire the old elevated database role or establish real recording
+arrival, in-flight upload drain or host cold-boot recovery.
