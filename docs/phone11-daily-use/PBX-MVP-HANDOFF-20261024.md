@@ -810,3 +810,40 @@ The bounded voicemail release has also been built from committed source
 passed independent source review. Fifteen isolated generated-bundle cases and
 five protocol-derivation cases passed. These artifacts are not yet installed;
 the live scheduled worker remains on its previous coherent release.
+
+### Additive voicemail release custody — 25 October 05:46 Bangkok
+
+A live read-only check confirmed the new bounded relay can be added under the
+existing directory mount without replacing the old relay's separately bound
+inode. The exact eight mounts, old relay bytes, current guard and private packet
+remained unchanged. The new filename was absent in both host and native views.
+The existing host/native lock was the same inode; the observation did not acquire
+it or claim an installation fence.
+
+Receipt `PBX-VOICEMAIL-ADDITIVE-RELAY-CUSTODY-20261025-v1.json` reports exit 0
+and cleanup confirmed. Packet `3245d9be…` passed independent source review and
+seven focused tests. Installation still requires timer scheduling control and
+the actual lock, followed by coherent new relay/guard/packet selection. The old
+relay and its mounts will remain available for rollback. No queue entries or
+audio were read, and no service or storage changes occurred in this check.
+
+### Restricted upload receiver staged — 25 October 05:47 Bangkok
+
+The reviewed stopped-stage packet completed successfully on production. New role
+`phone11_upload_runtime_20261025_v1` (OID 26458) is NOLOGIN with the exact
+ten-table column grants and no sequence permissions. Candidate container
+`b3b037cb…` is created but stopped, with UID 1001, read-only root, all capabilities
+dropped, restricted resources and loopback port 3031 mapped to container 3000.
+The existing recordings bind was preserved; no recording data was read or written.
+
+Receipt `PBX-UPLOAD-RECEIVER-STOPPED-STAGE-20261025-v1.json` reports exit 0,
+confirmed role/container outcomes, cleanup and unchanged protected processes.
+Root verified all 20 source pins; independent GPT-6.1 Sol high review accepted
+packet `a3815dc5…`. Author checks passed 10 focused cases and nine isolated PG17
+constructor/readback cases. The earlier exact-image PG16 factory proof remains
+separate from this stage.
+
+No LOGIN, HBA, startup, public upload route or old backend changes occurred. The
+next activation must prove restricted TLS access, actual UID 1001 storage access
+and listener lifecycle before switching ingress. This does not remove the old
+legacy service's elevated role or prove actual recording delivery.
