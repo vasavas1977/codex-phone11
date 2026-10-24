@@ -533,3 +533,27 @@ This completes the capture **database** slice, not the full legacy permission
 cutover or real recording/voicemail delivery. The live legacy login is unchanged.
 
 - [Installed-image PG16 capture-worker receipt](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-PG16-ACTUAL-CAPTURE-WORKERS-20261025-v1.json)
+
+## Call-record receiver: isolated HTTP passed, production stage stopped
+
+The exact production-image CDR-only candidate passed its seventh isolated PG16
+HTTP qualification at 20:52 UTC on 24 October. Actual authenticated HTTP requests,
+assigned and ownerless call graphs, replay and missing-event repair, tenant/SIP
+rejections, 20 denied database operations and strict TLS login negatives passed.
+All 18 fixed graph readbacks passed, and both temporary containers were removed.
+The policy row-lock negative also confirmed that HTTP 200 alone does not prove a
+cloud-recording row was created. This is receiver qualification, not automatic
+production switch delivery or handset acceptance.
+
+The subsequent production stage created the dedicated CDR role with login
+disabled and created its container in the stopped state. It refused during the
+Docker configuration comparison. A read-only diagnostic classified additional
+environment entries and health-check fields, then refused its final epoch check.
+The original failed stage receipt is retained. Do not replay the stage or adopt
+the container without a separately reviewed continuation. No candidate start,
+HBA change, login enablement, native CDR destination change or legacy restart
+occurred. The existing legacy database login remains unchanged.
+
+- [Exact-image HTTP qualification](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-PG16-CDR-SIDECAR-HTTP-QUALIFICATION-20261025-v7.json)
+- [Stopped-stage result](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-CDR-SIDECAR-STOPPED-STAGE-20261025-v1.json)
+- [Current progress](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-COMMISSIONING-PROGRESS-20261025-v13.json)
