@@ -47,7 +47,7 @@ historical generation or configuration pin for a later action.
 
 | Evidence | Local record |
 | --- | --- |
-| Latest scoped progress | [Current configuration and remaining boundaries](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-COMMISSIONING-PROGRESS-20261025-v18.json) |
+| Latest scoped progress | [Current configuration and remaining boundaries](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-COMMISSIONING-PROGRESS-20261025-v20.json) |
 | Restricted CDR activation | [Qualified running receiver](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-CDR-SIDECAR-ACTIVATION-CONTINUATION-20261025-v2.json) |
 | CDR automatic restart | [Policy applied without process restart](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-CDR-SIDECAR-RESTART-PROMOTION-20261025-v1.json) |
 | Native CDR destination | [URL switch and admission resumed](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-NATIVE-CDR-SIDECAR-TRANSITION-20261025-v2.json) |
@@ -634,3 +634,40 @@ is separate and has no automatic replay established by this evidence. See the
 [source-bound restart gap/runbook note](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/pbx/reboot-recovery-oct25-v1/DELIVERY-RESTART-GAPS-v1.md).
 The 60-second trial, deferred phone/Android tests, and unaccepted real
 recording/voicemail delivery and full cold-boot recovery remain unchanged.
+
+### Actual recording-upload database boundary — 25 October, 04:37 Bangkok
+
+The installed recording-upload HTTP handler and its retained ingestion SQL passed
+on the exact legacy application image against the isolated restored PostgreSQL
+16.13 database. The restricted role uses explicit column permissions on ten
+relations with no sequence permissions. Actual authenticated HTTP, file bytes
+and owner-private mode, replay without replacement, CDR URL, cloud recording
+readiness/storage and queued-job readback passed. All 21 forbidden SQL operations
+and wrong-password, plaintext and untrusted-CA connections were rejected. Both
+owned clones were removed; protected production processes and the archive stayed
+unchanged. No production grants or login were changed.
+
+This exposed, rather than fixed, an existing ownership limit: disabled or
+ambiguous owner validation occurs after file and CDR URL writes. The handler
+returns HTTP 200 with `analysisQueued:false` but no ready cloud recording or job.
+The rehearsal explicitly required that outcome and does not count HTTP 200 as
+delivery acceptance. A pre-storage ownership fix remains necessary before the
+endpoint transition. AI-off uploads similarly report ingestion accepted without
+creating an analysis job; that separate behavior was verified by readback. Native
+upload transport, actual voicemail delivery and cold-boot recovery remain open.
+
+- [Exact-image PG16 upload receipt](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-PG16-ACTUAL-UPLOAD-SINK-20261025-v1.json)
+- [Scope, permissions and known behavior](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/pbx/legacy-session-attribution-oct25-v1/upload-qualification-oct25-v1/README.md)
+
+### Native failed-call-record queue — 25 October, 04:39 Bangkok
+
+A bounded read-only observation found **zero entries and zero bytes** in the fixed
+private native CDR error spool, with no unexpected files or entry types. Two
+metadata snapshots agreed. The host/native directory inode, root-only mode,
+FreeSWITCH process epoch and retained 3030 transition configuration matched. No
+spool entry was opened, exported, resent or deleted. Disk and served XML still
+specify a three-second timeout and zero additional retries; cached module
+parameters were not independently inspected. An empty queue at this instant
+does not establish future delivery or automatic replay after an outage.
+
+- [Private-spool metadata receipt](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-NATIVE-CDR-SPOOL-METADATA-20261025-v2.json)
