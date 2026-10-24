@@ -717,3 +717,19 @@ are denied as new requests.
 
 - [Exact-image owner-admission receipt](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-PG16-UPLOAD-OWNER-CANDIDATE-20261025-v1.json)
 - [Candidate provenance and revocation limits](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/pbx/legacy-session-attribution-oct25-v1/upload-owner-fix-oct25-v1/README.md)
+
+### Non-destructive CDR recovery engine — integrated source only
+
+The reviewed recovery engine is now versioned under
+`scripts/phone11-cdr-replay/`. Its 24 offline cases pass from the maintained
+checkout. It preserves native originals, fsyncs exact payload snapshots and
+intent/acknowledgement state, and rotates a persisted cursor so retained files
+cannot starve later records. Known HTTP 500/503 retries are capped at three;
+timeouts and interrupted intent remain blocked for reconciliation.
+
+Independent GPT-6.1 Sol high review accepted exact worker SHA
+`25cd6f8eba2d22b24e03a6c18cb5e5829cd46981a350f4ac233d269406391437`
+with no P0–P2 findings. This is not an installed recovery service. Authenticated
+transport, current tenant/route authority, independent producer-completion
+proof and service lifecycle qualification remain required. A CDR acknowledgement
+does not establish recording registration or voicemail delivery.
