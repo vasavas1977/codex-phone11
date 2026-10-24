@@ -51,6 +51,35 @@ describe.skipIf(!socket)('native CDR isolated PostgreSQL',()=>{
   expect((await db.pool.query('SELECT * FROM call_legs')).rows).toHaveLength(1);
   expect((await db.pool.query('SELECT * FROM call_events')).rows).toHaveLength(3);
  });
+ it('returns failure on unavailable event storage and repairs a completed leg on retry',async()=>{
+  await db.pool.query('ALTER TABLE call_events RENAME TO call_events_unavailable');
+  try {
+   await expect(processCdr({variables:vars})).rejects.toThrow();
+   expect((await db.pool.query('SELECT * FROM call_records')).rows).toHaveLength(1);
+   expect((await db.pool.query('SELECT ended_at FROM call_legs')).rows[0].ended_at).toEqual(new Date(1700000020000));
+  } finally { await db.pool.query('ALTER TABLE call_events_unavailable RENAME TO call_events'); }
+  await Promise.all([processCdr({variables:vars}),processCdr({variables:vars})]);
+  expect((await db.pool.query('SELECT event_type FROM call_events ORDER BY event_timestamp')).rows.map(r=>r.event_type)).toEqual(['call_start','answer','hangup']);
+  expect((await db.pool.query('SELECT * FROM call_legs')).rows).toHaveLength(1);
+ });
+ it('repairs only missing events from an earlier partial delivery',async()=>{
+  await processCdr({variables:vars});
+  const start=(await db.pool.query("SELECT * FROM call_events WHERE event_type='call_start'")).rows[0];
+  await db.pool.query("DELETE FROM call_events WHERE event_type!='call_start'");
+  await Promise.all([processCdr({variables:vars}),processCdr({variables:vars})]);
+  expect((await db.pool.query('SELECT * FROM call_events')).rows).toHaveLength(3);
+  expect((await db.pool.query("SELECT * FROM call_events WHERE event_type='call_start'")).rows).toEqual([start]);
+ });
+ it('rolls back a partial event batch and succeeds once event storage recovers',async()=>{
+  await db.pool.query("ALTER TABLE call_events ADD CONSTRAINT reject_hangup CHECK(event_type!='hangup')");
+  try {
+   await expect(processCdr({variables:vars})).rejects.toThrow();
+   expect((await db.pool.query('SELECT * FROM call_events')).rows).toHaveLength(0);
+   expect((await db.pool.query('SELECT * FROM call_records')).rows).toHaveLength(1);
+  } finally { await db.pool.query('ALTER TABLE call_events DROP CONSTRAINT reject_hangup'); }
+  await processCdr({variables:vars});
+  expect((await db.pool.query('SELECT * FROM call_events')).rows).toHaveLength(3);
+ });
  it('rejects cross-tenant parent collision without changing parent or adding leg',async()=>{
   await db.pool.query("INSERT INTO call_records(call_uuid,tenant_id,direction,from_number,to_number,started_at,metadata) VALUES($1,20,'inbound','','',now(),'{\"owner\":\"foreign\"}')",[uuid]);
   const before=(await db.pool.query('SELECT * FROM call_records')).rows;

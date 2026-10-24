@@ -387,3 +387,24 @@ diff checks passed. These are source-component results with synthetic principals
 not live phone ingress or production mailbox-delivery acceptance.
 
 - [Six-case voicemail integration evidence](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/pbx/voicemail-delivery-oct25-v1/SOURCE-VALIDATION-v1.json)
+
+## Call-event retry repair — source only
+
+The native receiver proof exposed a separate failure path: event insertion errors
+were swallowed after committing the call and leg; completed-leg retries then
+skipped all events. The source now reconciles missing event identities in a
+separate transaction, locking the exact tenant's parent and leg in the established
+order. Event-store errors propagate to the webhook's existing HTTP 500 response
+while preserving the committed call facts. A later identical delivery repairs
+missing events without duplicating already stored ones.
+
+The isolated PostgreSQL 17.11 suite passed all eleven cases, including concurrent
+retries, unavailable event storage, repair of a previously partial event history,
+and a late event failure that rolls back the event batch. Seventeen focused input
+and ownership tests passed. Scoped lint had no errors and seven existing warnings.
+The private Unix-socket database was stopped and removed. This source change has
+not replaced the live legacy receiver. Its current native producer has retries=0
+and a private error spool; this change does not establish automatic live replay
+or accept the spool recovery path.
+
+Evidence: [local event retry result](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/pbx/cdr-retry-oct25-v1/LOCAL-PG-RESULT-v1.json).

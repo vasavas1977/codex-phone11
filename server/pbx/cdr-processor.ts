@@ -295,7 +295,7 @@ export async function processCdr(cdr: any): Promise<{ callRecordId: number; call
     const callLegId = legResult.rows[0].id;
     if(recordingRoute) await client.query("UPDATE call_legs SET extension_id=$2 WHERE id=$1 AND tenant_id=$3",[callLegId,recordingRoute.extensionId,recordingRoute.tenantId]);
 
-    return { callRecordId, callLegId, previouslyCompleted: existingLeg?.ended_at != null };
+    return { callRecordId, callLegId };
   });
 
   if(process.env.PHONE11_CLOUD_RECORDING_CAPTURE_ENABLED === "true" && recordingRoute) {
@@ -303,9 +303,9 @@ export async function processCdr(cdr: any): Promise<{ callRecordId: number; call
     catch { /* CDR already committed; recording reconciliation retries separately. */ }
   }
 
-  // 3. Insert call_events OUTSIDE the transaction (fire-and-forget)
-  // call_events is partitioned and may fail if partition doesn't exist.
-  // This must NOT abort the main call_records/call_legs transaction.
+  // Keep committed call facts when event storage is unavailable, but fail the
+  // webhook so the native producer can retry. Reconcile missing events under
+  // the same parent-row lock used by concurrent CDR and snapshot writers.
   const events: Array<[string, number, string?]> = [];
   if (parsed.startEpoch > 0) events.push(["call_start", parsed.startEpoch]);
   if (parsed.progressEpoch > 0) events.push(["ringing", parsed.progressEpoch]);
@@ -313,19 +313,30 @@ export async function processCdr(cdr: any): Promise<{ callRecordId: number; call
   if (parsed.bridgeEpoch > 0) events.push(["bridge", parsed.bridgeEpoch]);
   if (parsed.endEpoch > 0) events.push(["hangup", parsed.endEpoch, parsed.hangupCause]);
 
-  for (const [eventType, epoch, detail] of result.previouslyCompleted ? [] : events) {
-    try {
-      await query(
+  if (events.length) await withTransaction(async (client) => {
+    const parent = await client.query(
+      "SELECT id FROM call_records WHERE id=$1 AND tenant_id=$2 AND call_uuid=$3 FOR UPDATE",
+      [result.callRecordId, parsed.tenantId, parsed.callUuid]
+    );
+    if (parent.rows.length !== 1) throw new Error("Call event parent unavailable");
+    const leg = await client.query(
+      "SELECT id FROM call_legs WHERE id=$1 AND call_record_id=$2 AND tenant_id=$3 AND leg_uuid=$4 FOR UPDATE",
+      [result.callLegId, result.callRecordId, parsed.tenantId, parsed.callUuid]
+    );
+    if (leg.rows.length !== 1) throw new Error("Call event leg unavailable");
+    for (const [eventType, epoch, detail] of events) {
+      await client.query(
         `INSERT INTO call_events (tenant_id, call_record_id, call_leg_id, event_type, event_timestamp, metadata)
-         VALUES ($1, $2, $3, $4, to_timestamp($5), $6)`,
-        [parsed.tenantId, result.callRecordId, result.callLegId, eventType, epoch, 
+         SELECT $1, $2, $3, $4, to_timestamp($5), $6
+         WHERE NOT EXISTS (
+           SELECT 1 FROM call_events WHERE tenant_id=$1 AND call_record_id=$2
+             AND call_leg_id=$3 AND event_type=$4 AND event_timestamp=to_timestamp($5)
+         )`,
+        [parsed.tenantId, result.callRecordId, result.callLegId, eventType, epoch,
          detail ? JSON.stringify({ cause: detail }) : '{}']
       );
-    } catch (e: any) {
-      // call_events is partitioned — may fail if partition doesn't exist, that's OK
-      console.warn(`[CDR] Failed to insert call_event ${eventType}:`, e.message);
     }
-  }
+  });
 
   return { callRecordId: result.callRecordId, callLegId: result.callLegId };
 }
