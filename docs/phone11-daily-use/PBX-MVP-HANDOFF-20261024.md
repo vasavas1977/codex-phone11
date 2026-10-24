@@ -480,10 +480,34 @@ reset only inside the disposable restored clone after schema, collision, trigger
 and foreign-key checks. Both owned containers were removed, archive custody
 remained stable, and all protected production process identities were unchanged.
 
-This closes the analysis/retention permission slice. Chat, capture and remaining
-HTTP paths still require qualification before changing the live legacy login.
+This closes the analysis/retention permission slice. Chat qualification also
+passed as recorded below; capture and remaining HTTP paths still require
+qualification before changing the live legacy login.
 It is not customer voicemail delivery, an AI-provider test, or a production
 permission cutover. Trial remains 60 seconds; Android and phone testing are deferred.
 
 - [Installed-image PG16 worker receipt](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-PG16-ACTUAL-RECORDING-WORKERS-20261025-v1.json)
 - [Independent packet review](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/pbx/legacy-session-attribution-oct25-v1/worker-qualification-recording.independent-review.json)
+
+## Notification and media-cleanup permissions — 25 October
+
+The installed notification repository/dispatcher and chat-media cleanup passed
+with a restricted login against the exact application image and an isolated
+PostgreSQL 16.13 restore. Actual dispatch authorization, device revision checks,
+invalid-token deletion, queue pruning, concurrent claims, media locks and
+owned-file cleanup passed. Seventeen prohibited operations plus wrong-password,
+plaintext and untrusted-CA logins were rejected. Eight focused packet checks and
+exact source/manifest assembly also passed.
+
+The sender was inert: no APNS request was sent. Only synthetic queues and files
+were processed; both clone containers were removed and production processes
+remained unchanged. The attachment timestamp UPDATE grant permits writes and is
+required by the existing row-lock query. Existing notification predicates do not
+check message deletion, so deleted-message exclusion is not claimed. Media-file
+removal before a database commit is not an atomic filesystem rollback.
+
+This qualifies the worker slice, not the remaining legacy HTTP/capture paths or
+a live database-login replacement. Trial remains 60 seconds; Android and phone
+tests are deferred.
+
+- [Installed-image PG16 chat-worker receipt](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-PG16-ACTUAL-CHAT-WORKERS-20261025-v1.json)
