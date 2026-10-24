@@ -262,3 +262,83 @@ restricted-login transition must preserve those workers and account for RLS and
 lazy provisioning DDL. No legacy login or privileges have yet changed.
 
 - [Current worker conditions and catalog](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-CURRENT-3000-WORKER-CATALOG-20261025-v1.json)
+
+
+### Provisioning schema privileges: source prepared
+
+Commit `24adb19` replaces request-time provisioning schema creation/alteration
+with a read-only catalog check. It checks the seven required public tables,
+required column types and search-path resolution, accepts compatible text/varchar
+columns, and refuses missing or incompatible schema before writes. Failed checks
+clear the existing initialization promise so a corrected migration can be retried.
+Schema changes remain a separate migration operation.
+
+Independent review accepted the source. The focused schema suite passed 19/19
+against an owned PostgreSQL 17.11 fixture, including missing tenancy, incompatible
+columns, views, generated columns, search-path shadows and recovery. The backend
+bundle, scoped lint and diff checks passed. Full-project TypeScript checking still
+fails in unrelated Electron and other existing files; it is not reported green.
+No GitHub run was found for this commit during the check. These are source and
+local-fixture results, not a deployment or a completed legacy-login transition.
+
+### Native call-record isolation: failure retained
+
+The disposable switch's third bounded attempt returned
+`ERR_DESTINATION_OUT_OF_ORDER`, produced no native HTTP form, and was removed
+with its owned temporary resources. Production process identities remained
+unchanged. Its retained console contained four core SQLite bootstrap errors;
+these alone do not establish the originate failure's cause. No call was placed
+on the production switch and no handset or carrier was contacted. Native CDR
+producer delivery and real API ingestion remain unproven.
+
+
+The subsequent exact-image PostgreSQL 16 rehearsal passed at 18:54 UTC on
+24 October (01:54 Bangkok on 25 October). An isolated restore plus the five
+reviewed migrations supported the captured legacy provisioning functions using
+a real restricted SCRAM login over verified TLS. Ten forbidden operations,
+`FOR SHARE` without an UPDATE grant, bad passwords, plaintext connections and
+untrusted certificates were denied. The unassigned-account read and read-only
+schema check passed. Both temporary containers were removed and production
+process identities remained unchanged. This does not qualify assigned SIP
+credential reads or all API/background-worker privileges.
+
+- [Exact-image PG16 restricted read proof](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-PG16-ACTUAL-3000-PROVISIONING-READ-20261025-v1.json)
+
+The fourth isolated native CDR attempt corrected the fixture's session-rate
+budget from one to two while retaining a two-session maximum and one originate
+command. It returned the expected successful UUID and captured a native HTTP
+form, but the strict fixture parser refused it. Cleanup was confirmed; raw data
+remains private for diagnosis. Capture alone is not accepted delivery.
+
+
+The fifth isolated attempt passed at 19:01 UTC on 24 October (02:01 Bangkok
+on 25 October). The fixture supplied its destination as a channel variable;
+the strict parser was unchanged. The exact deployed FreeSWITCH image emitted
+an 8,873-byte native form, the local receiver accepted it with HTTP 200, the
+expected UUID completed with zero billable seconds, and the clone returned to
+idle before cleanup. Protected production epochs remained unchanged. The
+record's fixture tenant is 2147483647: it must not be retagged or posted to the
+live API under tenant-1 authority. This closes isolated native emission and
+receiver acceptance, not the joined native-to-production-database path.
+
+- [Native producer and strict receiver PASS](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-ISOLATED-NATIVE-CDR-QUALIFICATION-20261025-v5.json)
+
+
+The assigned-authority successor also passed on exact PG16 at 19:03 UTC.
+Three reserved synthetic account/workspace fixtures were created only in the
+owned restored clone. Captured legacy code selected the expected synthetic
+subscriber credential privately and executed its unchanged workspace `FOR SHARE`
+query. Wrong tenant, inactive membership, deleted extension and unassigned user
+were denied. Nineteen forbidden operations and the transport negatives passed.
+The role had only four explicit UPDATE columns needed for row-lock privileges;
+those columns are writable, so this is not a total-DML-denial claim. Both clones
+were removed and production identities remained unchanged.
+
+This qualifies the subscriber-password fallback and authority query execution,
+not encrypted-secret decryption, retained concurrent locks, all auth/worker
+operations or a production login switch. The remaining actual legacy dependencies
+include its installed auth adapter writes, role-specific audit/fraud RLS,
+enabled recording/chat worker cycles, and missing optional schema objects.
+
+- [Assigned authority PG16 PASS](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-PG16-ACTUAL-3000-ASSIGNED-AUTHORITY-20261025-v2.json)
+- [Actual legacy permission requirements](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/pbx/legacy-session-attribution-oct25-v1/ACTUAL-3000-TRANSITION-DELTA.md)
