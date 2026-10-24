@@ -26,6 +26,10 @@ error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 # =============================================================================
 log "Running pre-flight checks..."
 
+# This historical deploy path has no reviewed private CDR configuration mount.
+# Editing the tracked template or supplying credentials cannot qualify that mount.
+error "Legacy generic deployment is blocked: CDR is uncommissioned and no reviewed private runtime mount is bound. Use the separately reviewed private commissioning operator; never add CDR credentials to tracked source."
+
 command -v aws >/dev/null 2>&1 || error "AWS CLI not found. Install: https://docs.aws.amazon.com/cli/latest/userguide/install-cliv2.html"
 command -v terraform >/dev/null 2>&1 || error "Terraform not found. Install: https://developer.hashicorp.com/terraform/install"
 command -v docker >/dev/null 2>&1 || error "Docker not found. Install: https://docs.docker.com/get-docker/"
