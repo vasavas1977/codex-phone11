@@ -1,5 +1,5 @@
 {
-  "schema": "PHONE11_MAINTAINED_RETAINED_SOURCE_PINS_V3",
+  "schema": "PHONE11_MAINTAINED_RETAINED_SOURCE_PINS_V4",
   "operationalReviewedArtifactSha256": "82ddacbb272d4989bcf9ab602a54d96d31571a2902d9b1c8936e83170264d8e9",
   "restrictedDatabaseProof": false,
   "inputs": [
@@ -10,13 +10,13 @@
     },
     {
       "path": "scripts/phone11-retained-runtime/bound.ts",
-      "bytes": 8688,
-      "sha256": "4ed571fc6200fb1930cfbb46aed7f5d86ea743ccab91c7e035ad58025f8565c6"
+      "bytes": 11002,
+      "sha256": "f46bba16b8d62acd6bd6c0cb4a1f2b4edf28be07b0585e84cdc0baa2ee463497"
     },
     {
       "path": "scripts/phone11-retained-runtime/composition.ts",
-      "bytes": 4754,
-      "sha256": "648eea341c097e667df89a9d08e6a2a69f6277dc559c689a113724b7a43e5ec2"
+      "bytes": 5033,
+      "sha256": "48bcf3764c2e3d4ccdf3ca7c9ce404f4865c49117bb1d7f85b7df7268dd28d74"
     },
     {
       "path": "server/_core/auth-routes.ts",
@@ -179,5 +179,187 @@
       "sha256": "f49c86179b38c7ea610bdb51ecf90c14a34953cab56b75ce57f1ada5479a55c1"
     }
   ],
-  "sourceChange": "Owned wake drain and bound pool-close ordering; source-compatible route dependency Pick. Historical733a same-pool isolated proof does not qualify this successor."
+  "sourceChange": "Owned wake drain and bound pool-close ordering; source-compatible route dependency Pick. Historical733a same-pool isolated proof does not qualify this successor.",
+  "listenerInputs": [
+    {
+      "path": "lib/chat/all-mentions.ts",
+      "bytes": 2268,
+      "sha256": "7054424ee8035e4908580f1d826b058d81e070f9fb0c02811a28091564a79cca"
+    },
+    {
+      "path": "scripts/phone11-retained-runtime/bound.ts",
+      "bytes": 11002,
+      "sha256": "f46bba16b8d62acd6bd6c0cb4a1f2b4edf28be07b0585e84cdc0baa2ee463497"
+    },
+    {
+      "path": "scripts/phone11-retained-runtime/composition.ts",
+      "bytes": 5033,
+      "sha256": "48bcf3764c2e3d4ccdf3ca7c9ce404f4865c49117bb1d7f85b7df7268dd28d74"
+    },
+    {
+      "path": "scripts/phone11-retained-runtime/listener.ts",
+      "bytes": 7814,
+      "sha256": "5137da1d5e80970215783e47597d00fd74800bf4a3806d432f86a99efb96fa02"
+    },
+    {
+      "path": "server/_core/auth-routes.ts",
+      "bytes": 7028,
+      "sha256": "166fbdf9002adef861d8181699a751937c6016b82d35fedf8c7afb3015c20d8e"
+    },
+    {
+      "path": "server/_core/phone11-auth-readiness.ts",
+      "bytes": 5327,
+      "sha256": "e72f805493ca9c916b5f5da8781a59648a77d4dda9feb5af0aa0df4c0e5e19c3"
+    },
+    {
+      "path": "server/_core/phone11-auth.ts",
+      "bytes": 21968,
+      "sha256": "bc34593829fc65d8f3bc774ac53ddbc25253ee1bb007205b7825198305718507"
+    },
+    {
+      "path": "server/_core/phone11-password-reset-resend.ts",
+      "bytes": 5186,
+      "sha256": "10b6ddcc3a0b3b0839dcb4a95c2cd1b3187badbeb938cbf692d1a37e25ccbaf1"
+    },
+    {
+      "path": "server/_core/runtime-role.ts",
+      "bytes": 8863,
+      "sha256": "e8ff1b475e2e473369a55176215d66c27b277ea31b53affe89865e8915822117"
+    },
+    {
+      "path": "server/_core/sdk.ts",
+      "bytes": 364,
+      "sha256": "2a4ae2d11dd22edbb84c8fcd2994b806a29960e538dde8755bbdcf2abf992fd6"
+    },
+    {
+      "path": "server/chat-notifications/repository.ts",
+      "bytes": 10822,
+      "sha256": "38a9128e1f2018fee6075161860a6103a133c28b06b9d17c2fdf1c0bc9b84cd5"
+    },
+    {
+      "path": "server/chat/intelligence.ts",
+      "bytes": 3750,
+      "sha256": "197cc30fede6a19112e2cb812a6fa32f0d0ed14632567be00aca37b274355322"
+    },
+    {
+      "path": "server/chat/link-preview.ts",
+      "bytes": 11806,
+      "sha256": "69020624980ae34dc604fecffbbcf8c7bb465462c16d287008d9b04735f8485a"
+    },
+    {
+      "path": "server/chat/media.ts",
+      "bytes": 26368,
+      "sha256": "d02f52b656344affc954bd132467bd600eb863756a145f87339888409b94e966"
+    },
+    {
+      "path": "server/chat/office-package.ts",
+      "bytes": 6281,
+      "sha256": "49fcda7eb4bf771fca15879a6fdbadb25704d41a06c03aff28b75d5a07b94395"
+    },
+    {
+      "path": "server/chat/service.ts",
+      "bytes": 83606,
+      "sha256": "9a15d9116939d391ad33548f44f295ef47f5ca5931a17903b9dc14f81102b032"
+    },
+    {
+      "path": "server/chat/typing.ts",
+      "bytes": 2478,
+      "sha256": "d2a8f78e5c5770f7e184326c1af91337c071befd80e12f5c247e9ea0a0fe72bf"
+    },
+    {
+      "path": "server/cloud-recordings/failure.ts",
+      "bytes": 1431,
+      "sha256": "174ad702a76da0a76179e8fde393ab0e49d54df7a0a5c8821789f30c0ff121a8"
+    },
+    {
+      "path": "server/cloud-recordings/gemini.ts",
+      "bytes": 12191,
+      "sha256": "a67516d398b888eaaa9a7280410ffe1500d94933f4a2093b76cf8b421a297ff1"
+    },
+    {
+      "path": "server/cloud-recordings/ingestion.ts",
+      "bytes": 510,
+      "sha256": "7ae67c7d085579311a24d8f8b220ee5762307a4484244a0e95c4317f1ffc4ccb"
+    },
+    {
+      "path": "server/cloud-recordings/repository.ts",
+      "bytes": 20669,
+      "sha256": "a3481a9c90bacd153d4a00c0f84e33a294051fe8fcb611ef882ffba2b5f5dff0"
+    },
+    {
+      "path": "server/cloud-recordings/speaker-identity.ts",
+      "bytes": 3105,
+      "sha256": "ded50e93e385a513eb4a3aeca75f01ca008f3f6893ded00acee10ce91be7cd93"
+    },
+    {
+      "path": "server/pbx/db.ts",
+      "bytes": 8145,
+      "sha256": "b7eaa8358d5c5743d50c7ee8b5861bee837da428d08285f2f0fa49d3f3ba7b11"
+    },
+    {
+      "path": "server/pbx/integration-auth.ts",
+      "bytes": 1598,
+      "sha256": "3705b0ee6f59014e7d24fbe62978568ee6d536137ecc70287b561514d30c91f6"
+    },
+    {
+      "path": "server/pbx/js-postgres-driver.ts",
+      "bytes": 579,
+      "sha256": "766dffc8fbaa92d75f5e7bd1718510c6779df21a8a5a834683c8c91b41b9a7c0"
+    },
+    {
+      "path": "server/pbx/media-access.ts",
+      "bytes": 3340,
+      "sha256": "c0ed3dd6a664c5e84814f8fb3bfedd0f8bc70cbbdbaeb8fad477feeb4db2ab89"
+    },
+    {
+      "path": "server/pbx/recording-storage.ts",
+      "bytes": 32583,
+      "sha256": "59724a46831153c6fc683d85dcf94014f28bb8807930873a31f6dee8eab05e0b"
+    },
+    {
+      "path": "server/pbx/voicemail-filesystem.ts",
+      "bytes": 3374,
+      "sha256": "2164802e7e906dbc8edaca374ae9bcf9ec65fe686ffdf34ba373cfe82a4b4aa6"
+    },
+    {
+      "path": "server/profile/photo.ts",
+      "bytes": 37738,
+      "sha256": "e2f676fb7b4855abad4b6113443b35383a97890d9f1a1b23d45cfada3604396a"
+    },
+    {
+      "path": "server/profile/status.ts",
+      "bytes": 7424,
+      "sha256": "764c7f4f7e81fecffcc29096fa6b9f4ae4384dcbd098bedbe9dd8a3dc22d3b97"
+    },
+    {
+      "path": "server/push/apns.ts",
+      "bytes": 12347,
+      "sha256": "372665e19b9be421eb1a24aa10eab5951c5aaad6c09d62bbfc7d3e17a4bff048"
+    },
+    {
+      "path": "server/push/repository.ts",
+      "bytes": 8649,
+      "sha256": "ae2659626bc2efa8860d1eb2a79465f4cc46334b9c0b5d922f17bc7ecd516a39"
+    },
+    {
+      "path": "server/push/wake-repository.ts",
+      "bytes": 17505,
+      "sha256": "03342ce22083f6615bea5d1acab08b1e12e48403d427d8e0fc063ba808a3c027"
+    },
+    {
+      "path": "server/push/wake-routes.ts",
+      "bytes": 2704,
+      "sha256": "1e577ac8a48722dadc14175c2b51d53a03885e916803ac3d49ac067194c6d1f7"
+    },
+    {
+      "path": "server/push/wake-service.ts",
+      "bytes": 10484,
+      "sha256": "cb896c43f44783dd3d1c21c2bbf9bc2f53f96dd8310ab93b29a0ff575fb33976"
+    },
+    {
+      "path": "shared/_core/errors.ts",
+      "bytes": 602,
+      "sha256": "f49c86179b38c7ea610bdb51ecf90c14a34953cab56b75ce57f1ada5479a55c1"
+    }
+  ]
 }

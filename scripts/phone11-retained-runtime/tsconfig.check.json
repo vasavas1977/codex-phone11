@@ -1,0 +1,25 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "incremental": false,
+    "skipLibCheck": true,
+    "baseUrl": "../..",
+    "types": ["node"],
+    "paths": {
+      "@/*": ["./*"], "@shared/*": ["./shared/*"],
+      "phone11-maintained/runtime-role": ["server/_core/runtime-role.ts"],
+      "phone11-maintained/auth-routes": ["server/_core/auth-routes.ts"],
+      "phone11-maintained/wake-routes": ["server/push/wake-routes.ts"],
+      "phone11-maintained/chat-media": ["server/chat/media.ts"],
+      "phone11-maintained/recording-storage": ["server/pbx/recording-storage.ts"],
+      "phone11-maintained/auth": ["server/_core/phone11-auth.ts"],
+      "phone11-maintained/db": ["server/pbx/db.ts"],
+      "phone11-maintained/wake-service": ["server/push/wake-service.ts"],
+      "phone11-maintained/apns": ["server/push/apns.ts"],
+      "phone11-maintained/integration-auth": ["server/pbx/integration-auth.ts"]
+    }
+  },
+  "include": ["bound.ts", "composition.ts", "listener.ts"],
+  "exclude": []
+}

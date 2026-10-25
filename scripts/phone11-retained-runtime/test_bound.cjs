@@ -1,3 +1,4 @@
+/* global __dirname */
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const Module=require('node:module');
@@ -36,6 +37,7 @@ function reset(){
 const binding=()=>({database:{host:'postgres',port:5432,database:'phone11ai',user:'phone11_retained_runtime',password:'PRIVATE_TEST_PASSWORD',tlsCaPem:rootCertificates[0]},
  databaseAuthority:{roleOid:12345,databaseOid:54321,clientAddress:'127.0.0.1',serverAddress:'127.0.0.1',serverPort:5432},
  auth:{baseURL:'https://auth.example.invalid',secret:'PRIVATE_SYNTHETIC_AUTH_SECRET_32_BYTES',trustedOrigins:[]},recordingsPath:'/owned/synthetic/recordings',chatMediaPath:'/owned/synthetic/chat'});
+const fullBinding=()=>({...binding(),profile:'retained-full',wake:{pilotSipUris:['sip:3001@pilot.invalid'],pushSharedSecret:'PRIVATE_SYNTHETIC_PUSH_SECRET_32_BYTES',apns:{keyPath:'/owned/synthetic/apns.p8',keyId:'ABCDEFGHIJ',teamId:'KLMNOPQRST',bundleId:'invalid.pilot.app',environment:'sandbox'}}});
 async function rejected(promise,code){const e=await promise.catch(e=>e);assert(e instanceof Error);assert.equal(e.message,code);assert.equal(e.cause,undefined);assert(!JSON.stringify(e).includes('PRIVATE'));}
 async function serve(app,fn){const server=createServer(app);await new Promise(r=>server.listen(0,'127.0.0.1',r));try{await fn(server,`http://127.0.0.1:${server.address().port}`);}finally{if(server.listening)await new Promise((r,j)=>server.close(e=>e?j(e):r()));}}
 
@@ -46,7 +48,7 @@ test('import is inert; setup attests exactly one same-graph lease without auth/l
  await rejected(m.createBoundRetainedRuntime(binding()),'RETAINED_BOUND_SETUP_REFUSED');await c.close();assert.equal(shared.end,1);
 });
 test('actual auth/me and SDK media/playback share one owned graph pool and two auth instances',async()=>{
- const m=reset(),c=await m.createBoundRetainedRuntime(binding());
+ const m=reset(),c=await m.createBoundRetainedRuntime(fullBinding());
  await serve(c.app,async(server,url)=>{
   for(const p of ['/api/auth/me','/api/chat/media/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','/api/recordings/play/synthetic']){
    const r=await fetch(url+p,{headers:{connection:'close'}});assert.equal(r.status,401,p);await r.arrayBuffer();
@@ -131,8 +133,7 @@ test('failed attestation plus failed actual pool end reports cleanup unconfirmed
  const m=reset();shared.failQuery=shared.failEnd=true;await rejected(m.createBoundRetainedRuntime(binding()),'RETAINED_BOUND_SETUP_CLEANUP_UNCONFIRMED');assert.deepEqual(shared.releases,[true]);assert.equal(shared.end,1);await rejected(m.createBoundRetainedRuntime(binding()),'RETAINED_BOUND_SETUP_REFUSED');
 });
 test('owned wake transaction settles before direct close ends its actual graph pool',async()=>{
- const m=reset(),c=await m.createBoundRetainedRuntime(binding());
- process.env.PHONE11_WAKE_ENABLED='1';process.env.PHONE11_WAKE_PILOT_SIP_URI='sip:3001@pilot.invalid';process.env.PUSH_SHARED_SECRET='PRIVATE_SYNTHETIC_PUSH_SECRET_32_BYTES';
+ const m=reset(),c=await m.createBoundRetainedRuntime(fullBinding());
  let started,finish;const entered=new Promise(r=>started=r),pending=new Promise(r=>finish=r);
  shared.queryHook=async config=>{if(typeof config==='string'&&config.startsWith('INSERT INTO phone11_wake_terminals')){started();await pending;}return {rows:[],rowCount:0};};
  await serve(c.app,async(_server,url)=>{
@@ -142,8 +143,7 @@ test('owned wake transaction settles before direct close ends its actual graph p
  });await c.close();assert.equal(shared.end,1);
 });
 test('uncertain owned wake persistence rejects close and retains pool without false cleanup',async()=>{
- const m=reset(),c=await m.createBoundRetainedRuntime(binding());
- process.env.PHONE11_WAKE_ENABLED='1';process.env.PHONE11_WAKE_PILOT_SIP_URI='sip:3001@pilot.invalid';process.env.PUSH_SHARED_SECRET='PRIVATE_SYNTHETIC_PUSH_SECRET_32_BYTES';
+ const m=reset(),c=await m.createBoundRetainedRuntime(fullBinding());
  let started,fail;const entered=new Promise(r=>started=r),pending=new Promise((_r,j)=>fail=j);
  shared.queryHook=async config=>{if(typeof config==='string'&&config.startsWith('INSERT INTO phone11_wake_terminals')){started();await pending;}return {rows:[],rowCount:0};};
  await serve(c.app,async(_server,url)=>{
@@ -151,6 +151,27 @@ test('uncertain owned wake persistence rejects close and retains pool without fa
   await entered;const closing=c.close();const rejectedClose=rejected(closing,'PHONE11_WAKE_DRAIN_UNCONFIRMED');fail(Error('PRIVATE_PERSISTENCE_DETAIL'));await rejectedClose;assert.equal(c.close(),closing);assert.equal(shared.end,0);
   const response=await request;assert.equal(response.status,503);await response.arrayBuffer();
  });assert.equal(shared.end,0);
+});
+test('default auth-playback profile excludes chat and all wake routes before getters',async()=>{
+ const m=reset(),c=await m.createBoundRetainedRuntime(binding());
+ await serve(c.app,async(_server,url)=>{for(const [method,p]of[['GET','/api/chat/media/owned'],['POST','/api/chat/media/upload'],...['claim','ready','status','end','offer','terminal'].map(a=>['POST','/api/phone11/wake/'+a])]){
+  const response=await fetch(url+p,{method,headers:{connection:'close'}});assert.equal(response.status,404,p);await response.arrayBuffer();
+ }});assert.equal(shared.sql,1);assert.equal(shared.auth.length,0);await c.close();
+});
+test('full profile requires complete explicit maintained wake/pilot/APNS config and no ambient conflict',async()=>{
+ for(const alter of [b=>delete b.wake,b=>b.wake.pilotSipUris=[],b=>b.wake.pilotSipUris=['sip:a@b','sip:a@b'],b=>b.wake.pilotSipUris=['invalid'],b=>b.wake.pushSharedSecret='short',b=>b.wake.apns.keyId='bad',b=>b.wake.apns.environment='unknown',b=>b.wake.apns.keyPath='relative']){
+  const m=reset(),b=fullBinding();alter(b);await rejected(m.createBoundRetainedRuntime(b),'RETAINED_BOUND_SETUP_REFUSED');assert.equal(shared.auth.length,0);
+ }
+ for(const key of ['PHONE11_WAKE_ENABLED','PHONE11_WAKE_PILOT_SIP_URI','PUSH_SHARED_SECRET','APNS_KEY_PATH']){
+  const m=reset();process.env[key]='PRIVATE_CONFLICT';await rejected(m.createBoundRetainedRuntime(fullBinding()),'RETAINED_BOUND_SETUP_REFUSED');assert.equal(shared.configs.length,0);
+ }
+});
+test('copied full profile config ignores later input mutations and ambient APNS drift fences before handlers',async()=>{
+ const m=reset(),b=fullBinding();let finish;shared.pendingQuery=new Promise(r=>finish=r);const opening=m.createBoundRetainedRuntime(b);await new Promise(r=>setImmediate(r));
+ b.profile='auth-playback';b.wake.pilotSipUris[0]='sip:changed@invalid';b.wake.apns.keyId='XXXXXXXXXX';finish();const c=await opening;
+ assert.equal(process.env.PHONE11_WAKE_PILOT_SIP_URIS,'sip:3001@pilot.invalid');assert.equal(process.env.APNS_KEY_ID,'ABCDEFGHIJ');
+ process.env.APNS_KEY_ID='PRIVATE_DRIFT';await serve(c.app,async(_server,url)=>{const response=await fetch(url+'/api/phone11/wake/terminal',{method:'POST',headers:{connection:'close'}});assert.equal(response.status,503);await response.arrayBuffer();});
+ assert.equal(shared.sql,1);await c.close();
 });
 test('artifact graph has one actual db module and includes maintained TLS driver/lifecycle without global index',()=>{
  const m=JSON.parse(fs.readFileSync(path.join(__dirname,'../../.cache/phone11-retained-runtime/SOURCE-MANIFEST.json')));

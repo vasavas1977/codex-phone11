@@ -5,6 +5,8 @@ import { configureOwnedPbxPool, getPool, closeOwnedPbxPool, withTransaction, typ
 import { getPhone11Auth, readAuthConfig } from "phone11-maintained/auth";
 
 export interface PrivateRetainedBinding {
+  /** Explicit smaller admission profile is the safe default. */
+  profile?: "auth-playback" | "retained-full";
   database: OwnedPbxPoolBinding;
   databaseAuthority: {
     roleOid: number;
@@ -16,6 +18,11 @@ export interface PrivateRetainedBinding {
   auth: { baseURL: string; secret: string; trustedOrigins: string[] };
   recordingsPath: string;
   chatMediaPath: string;
+  wake?: {
+    pilotSipUris: string[];
+    pushSharedSecret: string;
+    apns: { keyPath: string; keyId: string; teamId: string; bundleId: string; environment: "production" | "sandbox" };
+  };
 }
 
 function requiredAuthority(value: PrivateRetainedBinding["databaseAuthority"]) {
@@ -94,13 +101,30 @@ export async function createBoundRetainedRuntime(binding: PrivateRetainedBinding
       || typeof binding.auth.secret !== "string" || binding.auth.secret.length > 4096 || binding.auth.secret.includes("\0")
       || !Array.isArray(binding.auth.trustedOrigins) || binding.auth.trustedOrigins.length > 16
       || binding.auth.trustedOrigins.some(value => typeof value !== "string" || value.length > 2048)) throw new Error();
-    const selected = {
+    const profile = binding.profile ?? "auth-playback";
+    if (!["auth-playback", "retained-full"].includes(profile) || (profile === "auth-playback" && binding.wake !== undefined)) throw new Error();
+    const selected: Record<string, string | undefined> = {
       PHONE11_AUTH_BASE_URL: binding.auth.baseURL,
       PHONE11_AUTH_SECRET: binding.auth.secret,
       PHONE11_AUTH_TRUSTED_ORIGINS: binding.auth.trustedOrigins.join(","),
       RECORDINGS_PATH: requiredPath(binding.recordingsPath),
       PHONE11_CHAT_MEDIA_PATH: requiredPath(binding.chatMediaPath),
+      PHONE11_WAKE_ENABLED: "0", PHONE11_WAKE_PILOT_SIP_URI: undefined,
+      PHONE11_WAKE_PILOT_SIP_URIS: undefined, PUSH_SHARED_SECRET: undefined,
+      APNS_KEY_PATH: undefined, APNS_KEY_ID: undefined, APNS_TEAM_ID: undefined,
+      APNS_BUNDLE_ID: undefined, APNS_ENVIRONMENT: undefined,
     };
+    if (profile === "retained-full") {
+      const wake = binding.wake;
+      if (!wake || !Array.isArray(wake.pilotSipUris) || wake.pilotSipUris.length < 1 || wake.pilotSipUris.length > 2
+        || wake.pilotSipUris.some(uri => typeof uri !== "string" || uri.length > 386 || uri.includes(","))
+        || !wake.apns || typeof wake.pushSharedSecret !== "string" || wake.pushSharedSecret.length > 4096 || wake.pushSharedSecret.includes("\0")) throw new Error();
+      Object.assign(selected, { PHONE11_WAKE_ENABLED: "1", PHONE11_WAKE_PILOT_SIP_URIS: wake.pilotSipUris.join(","),
+        PUSH_SHARED_SECRET: wake.pushSharedSecret, APNS_KEY_PATH: requiredPath(wake.apns.keyPath),
+        APNS_KEY_ID: wake.apns.keyId, APNS_TEAM_ID: wake.apns.teamId,
+        APNS_BUNDLE_ID: wake.apns.bundleId, APNS_ENVIRONMENT: wake.apns.environment });
+      if (Object.values(selected).some(value => value !== undefined && (typeof value !== "string" || value.length > 4096 || value.includes("\0")))) throw new Error();
+    }
     // Reuse maintained validation with explicit values, never its default env.
     readAuthConfig({ ...selected, NODE_ENV: "production" });
     if (Object.entries(selected).some(([key, value]) => process.env[key] !== undefined && process.env[key] !== value)) throw new Error();
@@ -110,16 +134,22 @@ export async function createBoundRetainedRuntime(binding: PrivateRetainedBinding
     poolBound = true;
     const authority = requiredAuthority(binding.databaseAuthority);
     const role = binding.database.user, database = binding.database.database;
-    for (const [key, value] of Object.entries(selected)) process.env[key] = value;
+    for (const [key, value] of Object.entries(selected)) { if (value !== undefined) process.env[key] = value; }
     const available = () => !closed && Object.entries(selected).every(([key, value]) => process.env[key] === value)
       && excludedMailer.every(key => !process.env[key]);
     await attestOwnedPool(role, database, authority);
     // Both imports resolve to the SAME statically pinned graph. Importing the
     // maintained wake service constructs no provider session or background job.
-    const [{ createRetainedRuntimeCandidate }, { createWakeService }] = await Promise.all([
+    const [{ createRetainedRuntimeCandidate }, { createWakeService, wakePilots }, { readApnsConfig }, { integrationSecretStatus }] = await Promise.all([
       import("./composition"), import("phone11-maintained/wake-service"),
+      import("phone11-maintained/apns"), import("phone11-maintained/integration-auth"),
     ]);
     if (!available()) throw new Error();
+    if (profile === "retained-full") {
+      // Actual maintained validators run against the explicit installed values.
+      wakePilots(); readApnsConfig();
+      if (integrationSecretStatus("PUSH_SHARED_SECRET", selected.PUSH_SHARED_SECRET) !== "ok") throw new Error();
+    }
     const wake = createWakeService();
     closeWake = () => wake.close();
     let closePromise: Promise<void> | undefined;
@@ -130,6 +160,7 @@ export async function createBoundRetainedRuntime(binding: PrivateRetainedBinding
       return closePromise ??= (async () => { await wake.close(); await closeOwnedPbxPool(); })();
     };
     const composed = createRetainedRuntimeCandidate({
+      profile,
       admissionAvailable: available,
       auth: { getAuth: getPhone11Auth, getDatabase: getPool },
       wake,

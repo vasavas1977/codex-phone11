@@ -11,20 +11,23 @@ import { createPhone11RuntimeLifecycle, createPhone11Shutdown } from "phone11-ma
 // HEAD follows the maintained Express GET contract. OPTIONS runs maintained
 // CORS only for an admitted path. This does not assert current ingress use.
 const read = (method: string) => method === "GET" || method === "HEAD";
-export function retainedRequestAdmitted(method: string, pathname: string): boolean {
+export type RetainedProfile = "auth-playback" | "retained-full";
+export function retainedRequestAdmitted(method: string, pathname: string, profile: RetainedProfile): boolean {
   if (typeof method !== "string" || typeof pathname !== "string") return false;
   const option = method === "OPTIONS";
   if (["/api/auth/me", "/api/ready/auth"].includes(pathname.replace(/\/$/, ""))) return option || read(method);
   if (/^\/api\/auth\/sign-out\/?$/.test(pathname)) return option || method === "POST";
+  if (/^\/api\/recordings\/play\/[^/]+\/?$/.test(pathname)) return option || read(method);
+  if (profile !== "retained-full") return false;
   if (/^\/api\/phone11\/wake\/(claim|ready|status|end|offer|terminal)\/?$/.test(pathname)) return option || method === "POST";
   if (/^\/api\/chat\/media\/upload\/?$/.test(pathname)) return option || method === "POST";
   if (/^\/api\/chat\/media\/[^/]+\/?$/.test(pathname)) return option || read(method);
-  if (/^\/api\/recordings\/play\/[^/]+\/?$/.test(pathname)) return option || read(method);
   return false;
 }
 
 type AuthDependencies = Required<NonNullable<Parameters<typeof registerAuthRoutes>[1]>>;
 export type CandidateBindings = {
+  profile: RetainedProfile;
   admissionAvailable: () => boolean;
   auth: AuthDependencies;
   wake: NonNullable<Parameters<typeof registerWakeRoutes>[1]>;
@@ -35,7 +38,7 @@ export type CandidateBindings = {
 
 const forbiddenWorker = () => { throw new Error("RETAINED_RUNTIME_WORKERS_FORBIDDEN"); };
 export function createRetainedRuntimeCandidate(bindings: CandidateBindings) {
-  if (!bindings || typeof bindings.admissionAvailable !== "function" || typeof bindings.auth?.getAuth !== "function" || typeof bindings.auth?.getDatabase !== "function" ||
+  if (!bindings || !["auth-playback", "retained-full"].includes(bindings.profile) || typeof bindings.admissionAvailable !== "function" || typeof bindings.auth?.getAuth !== "function" || typeof bindings.auth?.getDatabase !== "function" ||
       !bindings.wake || typeof bindings.wake.device !== "function" || typeof bindings.wake.offer !== "function" ||
       typeof bindings.wake.terminal !== "function" || typeof bindings.chatTransaction !== "function" ||
       typeof bindings.closeResources !== "function") throw new Error("RETAINED_RUNTIME_BINDINGS_REQUIRED");
@@ -46,12 +49,13 @@ export function createRetainedRuntimeCandidate(bindings: CandidateBindings) {
     stopFreeSwitchEventListener: forbiddenWorker, shutdownWebSockets: forbiddenWorker,
   });
   const app = express();
+  const profile = bindings.profile;
   app.disable("x-powered-by");
   // Explicitly retain the safer Express default: no trusted proxy/IP inference.
   // A future real proxy binding requires its own exact accepted CIDRs.
   app.set("trust proxy", false);
   const admission: RequestHandler = (req, res, next) => {
-    if (!retainedRequestAdmitted(req.method, req.path)) { res.status(404).json({ error: "Not found" }); return; }
+    if (!retainedRequestAdmitted(req.method, req.path, profile)) { res.status(404).json({ error: "Not found" }); return; }
     if (!bindings.admissionAvailable()) { res.status(503).json({ error: "Retained runtime is unavailable" }); return; }
     next();
   };
