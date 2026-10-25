@@ -32,3 +32,32 @@ durable journal or completion identity, and original encoded bytes stay unchange
 
 The engine passed 27 offline tests. No customer spool entries were
 read or replayed to qualify it. The 60-second trial remains unchanged.
+
+## Pure trusted-route admission SQL
+
+`admission.py` is a source-only, stdlib-only SELECT builder and strict input
+validator. It requires an active trusted direct UUID route or unique active wake
+route matching the original tenant/SIP identity, and refuses unbound, ambiguous
+or cross-tenant parent/leg records. It corrects the historical nonexistent
+`call_legs.call_uuid` reference to the actual `leg_uuid` column. It does not
+connect to PostgreSQL, attest a receiver, stop a producer or enable replay.
+
+Run `python3 -B scripts/phone11-cdr-replay/test_admission_pg.py -v`. The six
+focused tests use an owned Unix-socket-only local PostgreSQL16/17 cluster and
+synthetic rows. They skip explicitly when suitable local tools are unavailable;
+`PHONE11_REPLAY_PG_BIN` can select an existing installation. The embedded
+column/type/nullability projection comes from captured PG16 metadata; this is
+not a full restored-schema, constraint, trigger, TLS or production-role test.
+Integration passed all six cases on PostgreSQL17.11 and removed its owned
+cluster. Cases cover the historical42703 error, positive trusted routes, tenant
+and SIP refusals, ambiguity/inactive routes, parent/leg collisions and missing
+role/SELECT permissions.
+
+Separately, root's read-only PG16 diagnostic passed on 2026-10-25 at
+06:29:22–06:29:25 UTC (`PBX-CDR-NEGATIVE-ADMISSION-PG16-20261025-v1.json`):
+the exact corrected query parsed against the current catalog, the fixed
+reserved identity was absent, admission was false, and protected epochs and
+cleanup checks passed. This proves negative catalog compatibility only; no
+positive current route, restricted application pool, producer completion,
+spool access or replay was qualified by that observation. The W-specific
+runtime authority and operational packet are not part of this source module.

@@ -1406,3 +1406,35 @@ copies, preserved the original evidence, and confirmed unchanged process
 definitions/epochs. No unknown effect remains for this synthetic operation.
 The inert fixture principals remain intentionally retained; no customer
 outbox, call, provider, timer or global recording hook was used or changed.
+
+At06:27 UTC, `PBX-SAME-POOL-RETAINED-PG16-20261025-v1.json` qualified the
+current733a7bc8 retained artifact in the owned, network-isolated PG16 clone.
+Independent clone-admin OIDs matched the restricted diagnostic session; the
+actual factory's own pooled connection passed its prelisten identity/TLS/settings
+check. A deliberately wrong role OID refused before app return and left no
+runtime pool session. The actual auth/session/playback flows,16 denied writes
+and terminal drain passed. Both disposable containers were removed and protected
+production process identities stayed unchanged. Nine offline packet checks and
+independent source review preceded the single run. This supersedes the earlier
+mock-only limit for this narrow startup/auth/playback slice, but does not qualify
+all retained routes, workers, storage custody or a production listener switch.
+
+The final legacy-login dependency review confirms that changing credentials alone
+would retain unbounded global worker startup and unreliable old shutdown. The
+old DID query also selects a missing `tenants.slug` column. The maintained DID
+factory already removes that projection; its caller/secret transition remains
+separate. Complete the retained HTTP listener and a fenced worker replacement
+before removing the old backend's elevated connection. Do not disable the shared
+role globally: other consumers still use it.
+
+Call-record admission now uses the installed `call_legs.leg_uuid` column. The
+earlier `call_uuid` reference raised42703 before any admission result. Six owned
+PG17 schema-projection cases covered the corrected allow/deny behavior; this
+projection is not a restored production schema or trigger proof. At06:29 UTC,
+`PBX-CDR-NEGATIVE-ADMISSION-PG16-20261025-v1.json` ran the exact corrected SELECT
+against current PG16 with a fixed, absent reserved identity. Syntax/catalog
+execution passed, admission was false, command outcome and cleanup were known,
+and protected process identities stayed unchanged. Four offline packet cases
+and independent review preceded that read-only run. No customer values were
+exported, rows written, spool files read or records replayed. Positive current
+route authority and producer-completion binding remain separate from this check.
