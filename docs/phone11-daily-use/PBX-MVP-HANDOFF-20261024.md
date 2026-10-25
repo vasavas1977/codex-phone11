@@ -13,6 +13,12 @@ login can be retired. Delivery from real calls, historical call-record recovery,
 voicemail playback and actual host cold-boot recovery remain unaccepted. Loaded
 restart policies and malformed-request checks do not establish those outcomes.
 
+The replacement library's session and recording-playback paths passed isolated
+PostgreSQL16 qualification, including exact column grants, cross-user/tenant
+denials and shutdown. This is a completed permission slice, not a production
+login change. Chat-media and wake routes plus the old-worker replacement remain
+the concrete blockers to retiring the elevated backend credential.
+
 Keep the **60-second Siprix trial**. Android and physical-phone testing remain
 deferred. This handoff supersedes the earlier MVP scope record's missing-schema,
 ordinary-API-superuser and inactive-voicemail statements with the receipts below;
@@ -1053,3 +1059,22 @@ Moving auth/playback alone would remove no effective privilege from the old
 backend while its remaining handlers and workers retain the same credential.
 The next useful slice is actual chat-media SQL/file behavior, followed by wake
 and callback disposition and a controlled old-worker replacement.
+
+
+### Current boot policy readback — 25 October 07:00 Bangkok
+
+A bounded read-only check confirmed systemd255 (`255.4-1ubuntu8.18`), Docker
+enabled/active with restart-always, and the voicemail relay timer enabled and
+active/waiting. The timer-driven oneshot service was inactive with Result=success;
+its static unit and Restart=no are expected because the timer activates it.
+Its start limit remains five starts in ten seconds, and its dependency ordering
+includes Docker, network-online and required mounts. No daemon reload is pending.
+Both dedicated receivers3030/3031 were running with restart-always, unchanged
+process identities, zero restarts and no OOM indication across the read window.
+
+Receipt `PBX-REBOOT-POLICY-STATE-20261025-v1.json` reports exit0 and confirmed
+child cleanup. Nine offline diagnostic checks passed before independent source
+acceptance; the root execution made no configuration/service actions and read
+no journal, queues, audio, ExecStart or environment values. This closes the
+previous missing installed-version/current-policy metadata, not a reboot or
+dependency-outage delivery test. No scheduler change was justified.
