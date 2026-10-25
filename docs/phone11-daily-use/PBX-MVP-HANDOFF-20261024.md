@@ -16,8 +16,9 @@ restart policies and malformed-request checks do not establish those outcomes.
 The replacement library's session, recording-playback and chat-media paths
 passed isolated PostgreSQL16 qualification, including exact column grants,
 cross-user/tenant denials and shutdown. These are completed permission slices,
-not a production login change. Wake routes, callback disposition and old-worker
-replacement remain blockers to retiring the elevated backend credential.
+not a production login change. Call-wake claim/ready/status/end also passed;
+offer/terminal delivery, callback disposition and old-worker replacement remain
+blockers to retiring the elevated backend credential.
 
 Keep the **60-second Siprix trial**. Android and physical-phone testing remain
 deferred. This handoff supersedes the earlier MVP scope record's missing-schema,
@@ -55,7 +56,7 @@ historical generation or configuration pin for a later action.
 
 | Evidence | Local record |
 | --- | --- |
-| Latest scoped progress | [Current configuration and remaining boundaries](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-COMMISSIONING-PROGRESS-20261025-v44.json) |
+| Latest scoped progress | [Current configuration and remaining boundaries](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-COMMISSIONING-PROGRESS-20261025-v45.json) |
 | Restricted CDR activation | [Qualified running receiver](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-CDR-SIDECAR-ACTIVATION-CONTINUATION-20261025-v2.json) |
 | CDR automatic restart | [Policy applied without process restart](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-CDR-SIDECAR-RESTART-PROMOTION-20261025-v1.json) |
 | Native CDR destination | [URL switch and admission resumed](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-NATIVE-CDR-SIDECAR-TRANSITION-20261025-v2.json) |
@@ -1106,3 +1107,26 @@ were unchanged, and no production SQL, customer media or provider call occurred.
 The narrow timestamp/id lock columns remain directly writable capabilities.
 Concurrent revocation, unknown-COMMIT recovery, other wake routes and full worker
 drain remain unqualified; the original broad login is still present.
+
+
+### Actual restricted wake device paths pass PostgreSQL16 — 25 October 09:14 Bangkok
+
+The same bound candidate completed actual pending status, synthetic credential
+claim, ready/busy lease persistence, ready status and durable end transitions.
+Wrong grant/binding, a foreign call, expired claim and malformed input were denied;
+rejected fixture calls stayed unchanged. Eleven relations have exact selected
+columns and four narrow UPDATE sets: session/push/binding metadata for locks and
+call state/busy_until for transitions. All 20 forbidden operations were denied.
+These metadata grants are writable capabilities, not read-only permissions.
+
+Seven focused author checks and an owned PostgreSQL17 run preceded independent
+source review. Root verified 13 pins and ran the exact accepted packet once.
+Receipt `PBX-RETAINED-WAKE-DEVICE-PG16-20261025-v1.json` reports exit 0 and
+`PG16_RETAINED_WAKE_DEVICE_PROVEN_OFFER_PROVIDER_UNQUALIFIED`. Both temporary
+containers were removed; protected processes and archive custody were stable.
+The actual pool's role/TLS/database/address and maintained shutdown passed.
+
+No push request, SIP signaling, real credential export or production SQL occurred.
+Offer/notification, terminal/pruning, enrollment, concurrent reassignment and
+real-device behavior remain outside this slice. The legacy login remains live;
+Android and phone testing remain deferred and the trial stays at 60 seconds.
