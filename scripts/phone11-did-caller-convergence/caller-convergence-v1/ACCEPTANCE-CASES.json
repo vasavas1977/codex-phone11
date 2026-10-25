@@ -1,0 +1,15 @@
+{
+  "vendorRuntimeCasesExecuted": false,
+  "scope": "Required future owned parser/runtime acceptance, not a synthetic SIP execution receipt",
+  "cases": [
+    {"replyStatus":200,"body":{"action":"bridge","target":"sip:3001@sip.example.test"},"expected":"admit target to cache; actual full-SIP consumer compatibility remains unresolved"},
+    {"replyStatus":200,"body":{"action":"freeswitch","target":"phone11pbx-ivr-7-23"},"expected":"admit target to cache; actual internal-target consumer compatibility remains unresolved"},
+    {"replyStatus":200,"body":{"action":"ring_all","target":"phone11pbx-ringall-7-0"},"expected":"admit target to cache; actual internal-target consumer compatibility remains unresolved"},
+    {"replyStatus":200,"body":{"action":"reject","code":403},"expected":"SIP403 exit before cache/FreeSWITCH"},
+    {"replyStatus":200,"body":{"action":"reject","code":404},"expected":"SIP404 exit before cache/FreeSWITCH"},
+    {"replyStatus":200,"body":{"action":"reject","code":500},"expected":"SIP500 exit before cache/FreeSWITCH"},
+    {"replyStatus":200,"body":{"action":"bridge"},"expected":"SIP404 exit before cache/FreeSWITCH"},
+    {"replyStatus":200,"body":{},"expected":"SIP404 exit before cache/FreeSWITCH"},
+    {"replyStatus":404,"body":{},"expected":"preserve existing non200 transport fallback; no successful cache insertion"}
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "vendorRuntimeCasesExecuted": false,
+  "executionEligible": false,
+  "cases": [
+    {"source":"fresh","action":"bridge","target":"sip:t7e3001@sip.example.test","expected":"cache V2 key, set whole $ru, lookup; retain existing relay/RTP/Flexisip behavior"},
+    {"source":"fresh","action":"freeswitch","target":"phone11pbx-ivr-7-23","expected":"cache V2 key, set $rU, TO_FREESWITCH"},
+    {"source":"fresh","action":"ring_all","target":"phone11pbx-ringall-7-0","expected":"cache V2 key, set $rU, TO_FREESWITCH"},
+    {"source":"fresh","action":"bridge","target":"phone11pbx-ivr-7-23","expected":"fixed404, no cache or downstream routing"},
+    {"source":"fresh","action":"reject","code":403,"expected":"fixed403, no cache or transport fallback"},
+    {"source":"fresh","action":"reject","code":404,"expected":"fixed404, no cache or transport fallback"},
+    {"source":"fresh","action":"reject","code":500,"expected":"fixed500, no cache or transport fallback"},
+    {"source":"fresh","action":"bridge","expected":"missing target fixed404"},
+    {"source":"old cache namespace","target":"3001","expected":"ignored; perform fresh POST lookup"},
+    {"source":"V2 cache namespace","target":"3001","expected":"clear only current key, fixed404, no downstream routing"},
+    {"source":"V2 cache namespace","target":"sip:digest-user@tenant.example","expected":"derive SIP branch from validated target shape"},
+    {"source":"V2 cache namespace","target":"phone11pbx-ivr-7-0","expected":"clear only current key and fixed404"},
+    {"source":"transport","status":404,"expected":"existing non200 fallback preserved; no successful cache write"}
+  ]
+}
