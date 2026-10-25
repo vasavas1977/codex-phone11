@@ -1365,3 +1365,44 @@ The old shared elevated login remains active. Dedicated CDR/upload receivers
 do not cover the remaining authenticated API and workers, and the shared role
 must not be disabled for unrelated consumers. Trial60 continues; Android and
 physical-phone acceptance remain explicitly deferred.
+
+Read-only reconciliation at06:03 UTC confirmed zero reserved fixture rows across
+all seven relations. Under the captured `pg_catalog` search path, the catalog
+hash matched; adding `public` changed six default,27 trigger and84 constraint
+definitions without changing other metadata. The fixed v3 uses the captured
+path for comparison, then restores the original DML path. Its fixture commit
+and synthetic relay step completed at06:06 UTC, but the verification SELECT
+failed because generated numeric literals were adjacent to `AND`. The v3
+operation is retained for readback and owned cleanup; do not send it again.
+
+Commit `8b47ef3` adds an explicit same-pool connection check before the retained
+API factory returns an app. It verifies role/database OIDs, current/session
+identity, TLS, addresses, settings, selected escalation flags and ownership;
+failures discard the lease and terminally close the owned pool. Independent
+source review, the35-input build and16 focused cases passed. Those cases mock
+PostgreSQL responses; they do not prove real restricted-role execution or exact
+object grants. The historical82dd artifact receipts do not qualify the new
+733a7bc8 artifact. No production listener or login was switched by this change.
+
+At06:13 UTC, `PBX-SAME-POOL-QUERY-READONLY-20261025-v1.json` executed that exact
+attestation SELECT on the current PG16.13 catalog using the diagnostic admin
+connection. Syntax/catalog execution passed and the deliberately mismatched,
+elevated connection was rejected by the identity/escalation predicates. This
+read-only negative check is not positive restricted-pool or application-TLS proof.
+
+`PBX-VOICEMAIL-EXISTING-V3-PERSISTENCE-20261025-v1.json` then proved the retained
+delivery without re-emitting it: exactly one matching message and admission,
+matching owner epoch and stored16044-byte WAV hash, relay delivered1/retry0/
+quarantined0, and unchanged protected process definitions/epochs. The numeric
+SQL-token correction was independently reproduced on an owned disposable PG17
+cluster; the corrected readback then succeeded on live PG16. Synthetic server
+delivery is proven. Native phone deposit, scheduled customer delivery and phone
+playback remain separate, unperformed acceptance.
+
+The separately reviewed cleanup completed at06:15 UTC in
+`PBX-VOICEMAIL-EXISTING-V3-CLEANUP-20261025-v1.json`. It recomputed and matched
+the positive proof, removed exactly the owned message/admission and both WAV
+copies, preserved the original evidence, and confirmed unchanged process
+definitions/epochs. No unknown effect remains for this synthetic operation.
+The inert fixture principals remain intentionally retained; no customer
+outbox, call, provider, timer or global recording hook was used or changed.
