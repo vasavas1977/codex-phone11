@@ -85,7 +85,7 @@ class Directory:
         self.fds = []
 
 
-def parse_payload(raw, name, limit):
+def _parse_payload_with_route(raw, name, limit):
     match = NAME.fullmatch(name)
     need(match is not None and 0 < len(raw) <= limit, 'NAME_OR_SIZE')
     # Producer's curl escaping uses percent escapes, never literal form delimiters.
@@ -120,8 +120,18 @@ def parse_payload(raw, name, limit):
         return int(value)
     start, answer, end = (epoch(k) for k in ('start_epoch', 'answer_epoch', 'end_epoch'))
     need(0 < start <= end <= time.time() + 2 and (answer == 0 or start <= answer <= end), 'TERMINAL_EPOCHS')
-    # No parent/callflow fallback ownership; no body mutation or caller-profile assertion.
-    return {'uuid': uuid, 'tenantId': int(tenant), 'sha256': hashlib.sha256(raw).hexdigest()}
+    # This is untrusted channel data, not an ownership assertion. Admission
+    # must bind it to the current trusted route; never infer it from a parent.
+    sip_call_id = values.get('sip_call_id') or None
+    need(sip_call_id is None or (len(sip_call_id) <= 512
+         and not any(ord(c) < 32 or ord(c) == 127 for c in sip_call_id)), 'SIP_CALL_ID')
+    identity = {'uuid': uuid, 'tenantId': int(tenant), 'sha256': hashlib.sha256(raw).hexdigest()}
+    return identity, sip_call_id
+
+
+def parse_payload(raw, name, limit):
+    # Preserve the durable journal/completion identity and public parser shape.
+    return _parse_payload_with_route(raw, name, limit)[0]
 
 class Worker:
     def __init__(self, spool, state, transport, admit, completion_proof, *,
@@ -153,8 +163,10 @@ class Worker:
             os.lseek(fd, 0, os.SEEK_SET)
             need(os.read(fd, self.limits.body_bytes + 1) == raw, 'ENTRY_CHANGED')
             self.same_entry(directory, name, expected, fd)
-            identity = parse_payload(raw, name, self.limits.body_bytes)
-            need(self.admit(dict(identity)) is True, 'ADMISSION')
+            identity, sip_call_id = _parse_payload_with_route(raw, name, self.limits.body_bytes)
+            # Only admission sees the extra route key. It is not logged or
+            # added to journals, and callback mutation cannot change identity.
+            need(self.admit({**identity, 'sipCallId': sip_call_id}) is True, 'ADMISSION')
             need(self.completion(dict(identity), expected) is True, 'COMPLETION_UNPROVED')
             self.same_entry(directory, name, expected, fd)
             return fd, expected, raw, identity

@@ -1,6 +1,6 @@
 # CDR replay transport integration
 
-This source-only adapter is paired with the unchanged replay engine. It has no
+This source-only adapter is paired with the SIP-aware replay engine. It has no
 command-line driver, daemon or credential loader, and it is not installed on the
 PBX. The 60-second trial remains unchanged.
 
@@ -11,10 +11,13 @@ python3 -B scripts/phone11-cdr-replay/test_transport.py -q
 ```
 
 `transport.py` is byte-identical to the reviewed transport candidate. Its tests
-change only the worker import path for this directory layout.
+use the worker import path for this directory layout and pin the reviewed
+SIP-aware worker (`c93dc545…`). Its ten fixture tests were rerun against that
+worker, including acknowledged and unknown delivery outcomes.
 `TRANSPORT-REQUIREMENTS.json` preserves the candidate's original requirements,
 source hashes and evidence references; its test hash describes the original
-candidate test, before that import-path adjustment.
+candidate test, before the import-path and worker-pin adjustments. The original
+`workerUnchangedSha256` is historical evidence, not the current worker hash.
 
 A future reviewed driver can pass `Transport(secret, attest)` as the engine's
 transport callback. The secret must come from the existing private integration

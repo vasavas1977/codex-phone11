@@ -63,6 +63,43 @@ class ReplayTests(unittest.TestCase):
         self.assertEqual(r.frame(self.file.stat()), r.frame(before))
         self.assertEqual(self.journal()['identity']['sha256'], hashlib.sha256(self.raw).hexdigest())
 
+    def test_admission_receives_exact_decoded_sip_identity_without_journal_change(self):
+        self.raw = payload(extra='<sip_call_id>owned%40example.test</sip_call_id>')
+        self.file.write_bytes(self.raw)
+        seen = []; completed = []
+        def admit(value):
+            seen.append(dict(value))
+            value['tenantId'] = 99
+            return True
+        worker = self.worker(admit=admit,
+            completion_proof=lambda identity, _: completed.append(identity) or True)
+        self.assertEqual(worker.run()['acknowledged'], 1)
+        identity = r.parse_payload(self.raw, NAME, 524288)
+        self.assertEqual(seen, [{**identity, 'sipCallId': 'owned@example.test'}])
+        self.assertEqual(completed, [identity])
+        self.assertEqual(self.journal()['identity'], identity)
+        self.assertEqual(self.calls[0][0], b'cdr=' + self.raw)
+
+    def test_missing_sip_is_explicit_and_can_be_denied_before_intent(self):
+        seen = []
+        def admit(value):
+            seen.append(value)
+            return value['sipCallId'] is not None
+        self.assertEqual(self.worker(admit=admit).run()['retained'], 1)
+        self.assertIsNone(seen[0]['sipCallId'])
+        self.assertFalse(self.calls)
+        self.assertFalse(list(self.state.glob('*.body')))
+        self.assertFalse([p for p in self.state.glob('*.json') if p.name != 'scan-cursor.json'])
+
+    def test_malformed_sip_never_reaches_admission(self):
+        seen = []
+        for value in ['x' * 513, 'bad%00id', 'bad%0Aid', 'bad%7Fid']:
+            with self.subTest(value=value[:20]):
+                self.file.write_bytes(payload(extra='<sip_call_id>' + value + '</sip_call_id>'))
+                self.assertEqual(self.worker(admit=lambda value: seen.append(value) or True).run()['retained'], 1)
+        self.assertFalse(seen)
+        self.assertFalse(self.calls)
+
     def test_crash_after_http_before_ack_journal_never_redispatches(self):
         def crash(body, timeout):
             self.calls.append(body); raise Crash()

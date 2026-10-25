@@ -24,5 +24,11 @@ bounded; the engine cannot preempt arbitrary callbacks. A crashed temporary
 state write fails closed for operator reconciliation. No cleanup or retention
 policy for original files and durable snapshots is implemented here.
 
-The reviewed source passed 24 offline tests. No customer spool entries were
+Admission receives the original channel SIP Call-ID alongside UUID, tenant and
+payload hash. That value is untrusted: the production admission provider must
+match it against current trusted routing state. Missing SIP identity is explicit
+`None`, not a parent-derived fallback. The extra field is never added to the
+durable journal or completion identity, and original encoded bytes stay unchanged.
+
+The engine passed 27 offline tests. No customer spool entries were
 read or replayed to qualify it. The 60-second trial remains unchanged.

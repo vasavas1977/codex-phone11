@@ -78,7 +78,7 @@ class Tests(unittest.TestCase):
   with self.assertRaises(t.Refused)as caught:t.Transport(SECRET,fail)(BODY,1)
   self.assertNotIn(SECRET,str(caught.exception));self.assertIsNone(caught.exception.__cause__)
  def integrated(self,reply,expected):
-  path=D/'replay_worker.py';self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(),'25cd6f8eba2d22b24e03a6c18cb5e5829cd46981a350f4ac233d269406391437');spec=importlib.util.spec_from_file_location('retained_replay_worker',path);r=importlib.util.module_from_spec(spec);sys.modules[spec.name]=r;spec.loader.exec_module(r)
+  path=D/'replay_worker.py';self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(),'c93dc54537e66c6d9bc184303a3dda897a77c859753e0104ffa3aaadb05b44be');spec=importlib.util.spec_from_file_location('retained_replay_worker',path);r=importlib.util.module_from_spec(spec);sys.modules[spec.name]=r;spec.loader.exec_module(r)
   with tempfile.TemporaryDirectory()as temp,Fixture(reply)as f:
    root=Path(temp).resolve();spool=root/'spool';state=root/'state';spool.mkdir(mode=0o700);state.mkdir(mode=0o700);uuid='5f38611e-b4f7-4234-b2bf-6335804e9a73';xml='<cdr><variables><uuid>'+uuid+'</uuid><tenant_id>1</tenant_id><start_epoch>1</start_epoch><answer_epoch>2</answer_epoch><end_epoch>3</end_epoch></variables></cdr>';payload=urllib.parse.quote(xml,safe='').encode();original=spool/(uuid+'.cdr.xml');original.write_bytes(payload);original.chmod(0o644);before=r.frame(original.stat());calls=[];transport=t.Transport(SECRET,lambda *_:True,socket_factory=f.socket_factory)
    def one(body,timeout):calls.append(True);return transport(body,timeout)
