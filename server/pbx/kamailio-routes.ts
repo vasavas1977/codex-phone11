@@ -139,7 +139,7 @@ router.post("/route", verifyKamAuth, async (req: Request, res: Response) => {
 
     // Check if it's a DID number
     const didResult = await query(
-      `SELECT pn.*, t.slug as tenant_slug
+      `SELECT pn.tenant_id, pn.assigned_route_type, pn.assigned_route_id
        FROM phone_numbers pn
        JOIN tenants t ON pn.tenant_id = t.id
        WHERE pn.number_e164 = $1 AND pn.status = 'active' AND pn.deleted_at IS NULL AND t.status = 'active'
