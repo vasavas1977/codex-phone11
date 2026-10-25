@@ -1,0 +1,62 @@
+{
+  "schema": "PHONE11_CDR_UPSTREAM_PUBLICATION_SOURCE_FREEZE_V1",
+  "scope": "UPSTREAM_ONLY_PROTOTYPE_NO_DEPLOYED_MODULE_IDENTITY",
+  "files": {
+    "/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/pbx/cdr-retry-oct25-v1/producer-completion-oct25-v1/ASSESSMENT.json": {
+      "bytes": 2035,
+      "sha256": "298a1d226e6e6076c411324173a3ca921e81180a67729fb77bb2f80207a6a1ef"
+    },
+    "/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/pbx/cdr-retry-oct25-v1/producer-completion-oct25-v1/DESIGN.md": {
+      "bytes": 6189,
+      "sha256": "94cbebbdb6a18426c3ee93aba6f1120024b6ac7e68d7149687616663f74682b9"
+    },
+    "/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/pbx/cdr-retry-oct25-v1/producer-completion-oct25-v1/VALIDATION.json": {
+      "bytes": 568,
+      "sha256": "d725d43c488d02c94224f16e01717cebc2bbee3955f90817d38b5abc1f6117fb"
+    },
+    "/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/pbx/cdr-retry-oct25-v1/producer-completion-oct25-v1/candidate-mod_xml_cdr.c": {
+      "bytes": 25960,
+      "sha256": "7b0f79c689907864622fdb421b072ad76f9a9ece6f83d2c73a30f77f6f8ffd91"
+    },
+    "/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/pbx/cdr-retry-oct25-v1/producer-completion-oct25-v1/cdr_atomic_publish.h": {
+      "bytes": 3912,
+      "sha256": "4a3720b6bc1a7eed49b474311aa4a8521738335d3c08d82e0486672b1b325b13"
+    },
+    "/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/pbx/cdr-retry-oct25-v1/producer-completion-oct25-v1/derive.py": {
+      "bytes": 3975,
+      "sha256": "bbb896d53321ebfde9e031c8030329fb2008300aede8802c978ba137692f4b22"
+    },
+    "/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/pbx/cdr-retry-oct25-v1/producer-completion-oct25-v1/fault_driver.c": {
+      "bytes": 1802,
+      "sha256": "27dc46623bf34748d88f9eb53645c57a4658c7a6233aba52912a2d80031a0acf"
+    },
+    "/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/pbx/cdr-retry-oct25-v1/producer-completion-oct25-v1/test_publication.py": {
+      "bytes": 4848,
+      "sha256": "eb3f8ee9188fb7801a197660bdab7a5fb8758a4dc197811757d77f109d423692"
+    },
+    "/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/pbx/cdr-retry-oct25-v1/producer-completion-oct25-v1/upstream-prototype.patch": {
+      "bytes": 7712,
+      "sha256": "0856bebbb8f93dac36d33206679092d719174524a9b707d78c415ad7c0bd4e1d"
+    },
+    "/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/pbx/cdr-retry-oct25-v1/producer-completion-oct25-v1/upstream-v1.10.12-mod_xml_cdr.c": {
+      "bytes": 23532,
+      "sha256": "cc21d03d205979eb1c99f2db4d3d9f6eb4465eab64b676f8fdadd6368df811fc"
+    },
+    "/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/pbx/cdr-retry-oct25-v1/runtime-binding-oct25-v1/ASSESSMENT.json": {
+      "bytes": 2408,
+      "sha256": "08d3b13eea0d9ba3ff34953dbc668b2326b1c5e0bcd34283f2c8367c1cef2916"
+    },
+    "/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/pbx/cdr-retry-oct25-v1/runtime-binding-oct25-v1/README.md": {
+      "bytes": 6503,
+      "sha256": "8e4c18ad1204cf720d8ba47824d95441d6ff0462d93f5bf645654081b002371d"
+    },
+    "/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/pbx/cdr-retry-oct25-v1/replay-candidate/FORMAT-PROOF-AND-REPLAY-HANDOFF-v1.json": {
+      "bytes": 6736,
+      "sha256": "082c4fa8820ffa0e5fddd6ba0bacf44ea815dc34a904d97eae3e27df8711753e"
+    },
+    "/Users/vasavas16macbookpro/Documents/Codex/phone11-production-close-20261022/infra/docker/freeswitch/Dockerfile": {
+      "bytes": 2102,
+      "sha256": "3c28aa0973420f29448fe1beaebdc5fa4bcf53ca3742ad9fe05afa23fa17cc50"
+    }
+  }
+}

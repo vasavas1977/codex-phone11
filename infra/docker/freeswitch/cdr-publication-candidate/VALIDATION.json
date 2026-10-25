@@ -1,0 +1,21 @@
+{
+  "schema": "PHONE11_CDR_UPSTREAM_PUBLICATION_LOCAL_VALIDATION_V1",
+  "host": "Darwin",
+  "machine": "arm64",
+  "fullModuleBuild": false,
+  "nativeHelperCompiled": true,
+  "compilerCommand": [
+    "/usr/bin/cc",
+    "-std=c99",
+    "-Wall",
+    "-Wextra",
+    "-Werror"
+  ],
+  "unittestCommand": "python3 -m unittest discover -s . -p test_publication.py -v",
+  "testsPassed": 10,
+  "ownedFixtureDirectoriesRemoved": true,
+  "patchDryRunExit": 0,
+  "renameAdapter": "Darwin renameatx_np(RENAME_EXCL)",
+  "linuxAdapterTested": false,
+  "remoteOrProductionIo": false
+}

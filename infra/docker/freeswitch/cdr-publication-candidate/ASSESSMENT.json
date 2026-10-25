@@ -1,0 +1,33 @@
+{
+  "schema": "PHONE11_CDR_PRODUCER_PUBLICATION_ASSESSMENT_V1",
+  "status": "UPSTREAM_REFERENCE_PROTOTYPE_READY_DEPLOYED_MODULE_SOURCE_BUILD_UNBOUND",
+  "sourceOnly": true,
+  "upstreamUrl": "https://raw.githubusercontent.com/signalwire/freeswitch/v1.10.12/src/mod/xml_int/mod_xml_cdr/mod_xml_cdr.c",
+  "upstreamSha256": "cc21d03d205979eb1c99f2db4d3d9f6eb4465eab64b676f8fdadd6368df811fc",
+  "candidateSha256": "7b0f79c689907864622fdb421b072ad76f9a9ece6f83d2c73a30f77f6f8ffd91",
+  "headerSha256": "4a3720b6bc1a7eed49b474311aa4a8521738335d3c08d82e0486672b1b325b13",
+  "patchSha256": "0856bebbb8f93dac36d33206679092d719174524a9b707d78c415ad7c0bd4e1d",
+  "optInParameter": "error-completed-dir",
+  "legacyBehaviorUnchangedUnlessConfigured": true,
+  "completedOnlyNamespaceRequiresSeparateCustodyAdmission": true,
+  "originalsAndAllCreatedPendingOrFinalRecordsPreserved": true,
+  "noOverwriteRename": true,
+  "postPublicationDirectoryFsyncFailure": "UNCERTAIN_RETAINED_NO_AUTOMATIC_RETRY_OR_DELETE",
+  "producerDeployedOrBuilt": false,
+  "fullFreeSwitchModuleCompiled": false,
+  "linuxRenameAdapterExecuted": false,
+  "replayActivated": false,
+  "currentDeliveryPolicy": "RETAIN_ONLY",
+  "productionSpoolRead": false,
+  "productionMutation": false,
+  "phoneProviderOrCustomerIo": false,
+  "buildBlockers": [
+    "Exact mapped mod_xml_cdr ELF hash/build-id and installed binary/source package version/vendor patches are not captured.",
+    "Current image/executable/format evidence does not bind upstream v1.10.12 source to the loaded module.",
+    "Maintained Dockerfile installs unversioned vendor packages; no reproducible ABI/compiler/configuration/dependency recipe is established.",
+    "Linux full-module build/syscall, target filesystem durability, synchronous reporting latency, concurrent producer and exact-image crash qualification remain.",
+    "Fresh completed-only directory/mount custody and receiver admission/attestation/journal integration are not deployed."
+  ],
+  "trialSeconds": 60,
+  "deviceAcceptanceDeferred": true
+}
