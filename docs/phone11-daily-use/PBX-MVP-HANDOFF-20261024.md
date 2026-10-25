@@ -57,7 +57,7 @@ historical generation or configuration pin for a later action.
 
 | Evidence | Local record |
 | --- | --- |
-| Latest scoped progress | [Current configuration and remaining boundaries](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-COMMISSIONING-PROGRESS-20261025-v50.json) |
+| Latest scoped progress | [Current configuration and remaining boundaries](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-COMMISSIONING-PROGRESS-20261025-v51.json) |
 | Restricted CDR activation | [Qualified running receiver](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-CDR-SIDECAR-ACTIVATION-CONTINUATION-20261025-v2.json) |
 | CDR automatic restart | [Policy applied without process restart](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-CDR-SIDECAR-RESTART-PROMOTION-20261025-v1.json) |
 | Native CDR destination | [URL switch and admission resumed](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-NATIVE-CDR-SIDECAR-TRANSITION-20261025-v2.json) |
@@ -1227,3 +1227,41 @@ The no-provider cause is source-derived, not an observed runtime failure kind.
 Provider success, notification delivery, capture linking and the complete wake
 flow remain unqualified. Actual same-pool pre-listen attestation was not proved.
 This closes the isolated failure-path permission slice, not legacy-role retirement.
+
+### Maintained routing extraction and call-record publication candidate
+
+`server/pbx/kamailio-routing.ts` now exposes a routing-only factory with explicit
+query and secret-reader dependencies. The original full router delegates to it
+after its existing auth/register handlers. Route bodies, predicates, response
+shapes and header-only constant-time authentication remain unchanged. Importing
+the factory creates no database pool, Redis client, worker or listener. The
+proposed routing role needs column SELECT on eight relations and no DML,
+sequences, row locks, schema creation or credential columns. Actual installed
+Kamailio uses a different `http_connect` call shape whose method/path/body/auth
+remain unbound; this is not permission to repoint its connection or retire port 3000.
+
+Root integration checks: 63 tests passed across factory/DID/config/registration;
+two existing registration cases were skipped. Focused TypeScript compilation
+for the new factory and shared auth module passed. Independent source review
+accepted the final extraction and its 25 persistent regression cases. Full
+project compilation and deployment were not repeated for this source change.
+
+`infra/docker/freeswitch/cdr-publication-candidate/` preserves an independently
+reviewed upstream v1.10.12 prototype with an opt-in completed-only error directory.
+It uses exclusive pending files, checked writes/fsync/close, atomic no-replace
+publication and directory fsync. Existing and uncertain files remain retained;
+default behavior is unchanged and no automatic replay is enabled. All ten native
+helper tests passed again from the integrated repository path. Linux/full-module
+build, deployed-module source/ABI correspondence, filesystem crash durability,
+and receiver/admission integration remain outstanding. The Dockerfile does not
+include this candidate, so these changes do not replace the running switch.
+
+The final reboot configuration review found no additional demonstrated defect
+in 3030/3031 restart policies or relay ordering. No speculative service changes
+were made. Controlled cold boot and real mailbox delivery remain unperformed;
+warm scheduled passes and configured policies are not substitutes. The trial
+stays at 60 seconds; Android and physical-phone testing remain deferred.
+
+Source commits: `ac9d454` (routing extraction), `f6c2206` (upstream-only CDR
+publication candidate). Literal patch context whitespace is preserved for
+reproducible derivation; authored source whitespace checks passed.
