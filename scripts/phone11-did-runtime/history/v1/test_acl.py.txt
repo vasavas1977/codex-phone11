@@ -1,0 +1,43 @@
+"""Owned local PG16/17 DID ACL SQL proof only; no production or provider I/O."""
+import json,os,re,shutil,subprocess,tempfile,unittest
+from pathlib import Path
+P=Path(__file__).resolve().parent
+class Schema(unittest.TestCase):
+ @classmethod
+ def runpg(cls,name,args,**kw):return subprocess.run([str(cls.bin/name),*args],capture_output=True,text=True,timeout=30,**kw)
+ @classmethod
+ def sql(cls,text):return cls.runpg('psql',['-X','-w','-q','-h',str(cls.sock),'-p','55442','-U','owned_did_admin','-d','phone11ai','-At','-v','ON_ERROR_STOP=1','-v','VERBOSITY=sqlstate'],input=text)
+ @classmethod
+ def setUpClass(cls):
+  ctl=shutil.which('pg_ctl');selected=os.environ.get('PHONE11_DID_PG_BIN');cls.bin=Path(selected)if selected else(Path(ctl).resolve().parent if ctl else None)
+  if cls.bin is None or any(not(cls.bin/n).is_file()for n in ['postgres','initdb','pg_ctl','createdb','psql']):raise unittest.SkipTest('Existing local PostgreSQL16/17 tools required; no setup/install attempted')
+  version=cls.runpg('postgres',['--version']).stdout
+  if not re.search(r'PostgreSQL\) (16|17)\.',version)or os.geteuid()==0:raise unittest.SkipTest('Non-root owned PostgreSQL16/17 required')
+  cls.root=Path(tempfile.mkdtemp(prefix='p11-did-acl-',dir='/tmp'));cls.root.chmod(0o700);cls.data=cls.root/'data';cls.sock=cls.root/'s';cls.sock.mkdir(mode=0o700);cls.started=False;cls.addClassCleanup(cls.cleanup)
+  cls.runpg('initdb',['-D',str(cls.data),'-U','owned_did_admin','--auth-local=trust','--auth-host=reject','--no-locale','-E','UTF8']).check_returncode()
+  cls.started=True;cls.runpg('pg_ctl',['-D',str(cls.data),'-l',str(cls.root/'pg.log'),'-o',"-h '' -k "+str(cls.sock)+' -p 55442','-w','start']).check_returncode()
+  cls.runpg('createdb',['-h',str(cls.sock),'-p','55442','-U','owned_did_admin','phone11ai']).check_returncode()
+  matches=re.findall(r'text: `(WITH[\s\S]+?)`,\n    values:',(P/'acl.ts').read_text());assert len(matches)==1;cls.query=matches[0];result=subprocess.run(['node','-e',"const{buildSync}=require('esbuild'),Module=require('module');const r=buildSync({entryPoints:['scripts/phone11-did-runtime/acl.ts'],bundle:true,platform:'node',format:'cjs',external:['phone11-maintained/db'],write:false});const old=Module._load;Module._load=function(n,...a){return n==='phone11-maintained/db'?{}:old.call(this,n,...a)};const m=new Module(process.cwd()+'/synthetic-acl.cjs',module);m.filename=m.id;m._compile(Buffer.from(r.outputFiles[0].contents).toString(),m.filename);process.stdout.write(JSON.stringify(m.exports.didColumns));"],capture_output=True,text=True,timeout=10);result.check_returncode();cls.columns=json.loads(result.stdout)
+ @classmethod
+ def cleanup(cls):
+  if cls.started:
+   status=cls.runpg('pg_ctl',['-D',str(cls.data),'status']).returncode
+   if status==0:cls.runpg('pg_ctl',['-D',str(cls.data),'-m','fast','-w','stop']).check_returncode()
+   elif status!=3:raise RuntimeError('OWNED_PG_STOP_UNKNOWN_RETAINED')
+   assert cls.runpg('pg_ctl',['-D',str(cls.data),'status']).returncode==3
+  shutil.rmtree(cls.root)
+ def setUp(self):
+  self.sql("DROP SCHEMA public CASCADE;CREATE SCHEMA public;GRANT USAGE ON SCHEMA public TO PUBLIC;DO $$BEGIN IF NOT EXISTS(SELECT 1 FROM pg_roles WHERE rolname='did_reader')THEN CREATE ROLE did_reader NOLOGIN;END IF;END$$;").check_returncode()
+  for table,columns in self.columns.items():
+   self.sql('CREATE TABLE public.'+table+'('+','.join('"'+c+'" text'for c in [*columns,'synthetic_ungranted'])+');GRANT SELECT('+','.join('"'+c+'"'for c in columns)+')ON public.'+table+' TO did_reader;').check_returncode()
+ def gate(self):
+  result=self.sql('SET ROLE did_reader;PREPARE gate(jsonb)AS '+self.query+";EXECUTE gate('"+json.dumps(self.columns).replace("'","''")+"'::jsonb);")
+  self.assertEqual(result.returncode,0,result.stderr);return result.stdout.strip().split('|')
+ def test_exact_eight_relation_select_scope_is_accepted(self):self.assertEqual(self.gate(),['t']*6)
+ def test_extra_select_or_dml_or_sequence_authority_is_refused(self):
+  for grant,revoke,index in [('GRANT SELECT(synthetic_ungranted)ON tenants TO did_reader','REVOKE SELECT(synthetic_ungranted)ON tenants FROM did_reader',2),('GRANT UPDATE(status)ON tenants TO did_reader','REVOKE UPDATE(status)ON tenants FROM did_reader',2),('CREATE SEQUENCE did_forbidden;GRANT USAGE ON SEQUENCE did_forbidden TO did_reader','DROP SEQUENCE did_forbidden',4)]:
+   with self.subTest(grant=grant):self.sql(grant+';').check_returncode();self.assertEqual(self.gate()[index],'f');self.sql(revoke+';').check_returncode()
+ def test_missing_required_column_rls_or_executable_definer_is_refused(self):
+  self.sql('ALTER TABLE tenants ENABLE ROW LEVEL SECURITY;').check_returncode();self.assertEqual(self.gate()[0],'f');self.sql('ALTER TABLE tenants DISABLE ROW LEVEL SECURITY;').check_returncode()
+  self.sql("CREATE FUNCTION public.did_forbidden()RETURNS integer LANGUAGE sql SECURITY DEFINER AS $$SELECT 1$$;").check_returncode();self.assertEqual(self.gate()[5],'f');self.sql('DROP FUNCTION public.did_forbidden();ALTER TABLE tenants DROP COLUMN status;').check_returncode();self.assertEqual(self.gate()[1],'f')
+if __name__=='__main__':unittest.main()

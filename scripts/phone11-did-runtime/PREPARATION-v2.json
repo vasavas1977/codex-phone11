@@ -1,0 +1,86 @@
+{
+  "schema": "PHONE11_DID_RUNTIME_PREPARATION_V2",
+  "sourceOnly": true,
+  "productionInstalled": false,
+  "productionStarted": false,
+  "files": [
+    {
+      "path": "scripts/phone11-did-runtime/PREPARATION.json",
+      "bytes": 2537,
+      "sha256": "25fced0cb94ec98b2b4d0e1ed5e9d53aaf28430c9d7333a89b3a4dd3a07202f7"
+    },
+    {
+      "path": "scripts/phone11-did-runtime/README.md",
+      "bytes": 5688,
+      "sha256": "d7aab891b09d92b09d121cda016b09184e6f5df3f432a454cce2aedc1b824714"
+    },
+    {
+      "path": "scripts/phone11-did-runtime/SOURCE-PINS.json",
+      "bytes": 1855,
+      "sha256": "d9dd8f14e814eb6b1c9fce24c5cbca363c6ef556afa6fb94dc42766f32825afc"
+    },
+    {
+      "path": "scripts/phone11-did-runtime/V1-V2.patch",
+      "bytes": 3574,
+      "sha256": "55c35af136ab5ad766bd1f5606d918353046905ee232da52b70f84e922972bea"
+    },
+    {
+      "path": "scripts/phone11-did-runtime/acl.ts",
+      "bytes": 3065,
+      "sha256": "0d7f8282426af6a3e84568896af4efd3304d484ee952908f82683b02361cdc5c"
+    },
+    {
+      "path": "scripts/phone11-did-runtime/build.mjs",
+      "bytes": 4573,
+      "sha256": "e809f7cca0a6df2e9dbc3039408f0a439eee7be5b47943e2967d22e97c308fac"
+    },
+    {
+      "path": "scripts/phone11-did-runtime/listener.ts",
+      "bytes": 6939,
+      "sha256": "fce94af2b2d2e89b042bbb60db5f6b316ae77c1a2110712b6b350ec7581e815c"
+    },
+    {
+      "path": "scripts/phone11-did-runtime/maintained.d.ts",
+      "bytes": 616,
+      "sha256": "29b31424412784de362b50ffdbe5354a7f97570826144bf873d5a0f4730c7e21"
+    },
+    {
+      "path": "scripts/phone11-did-runtime/test_acl.py",
+      "bytes": 5608,
+      "sha256": "6836020eab12cfdcbef1db647cef557876d51287b89dd620061f393c10cb1b82"
+    },
+    {
+      "path": "scripts/phone11-did-runtime/test_listener.cjs",
+      "bytes": 10802,
+      "sha256": "0777b9510590b9bbae8fbc2e183fe94d791f67cc217007eed08e3e8c3a9bb2bd"
+    },
+    {
+      "path": ".cache/phone11-did-runtime/did-listener.cjs",
+      "bytes": 27461,
+      "sha256": "54fe9a3d81fa245bea7d05980cd7956410297e4d845bb43243c4ca21584ac4fd"
+    },
+    {
+      "path": ".cache/phone11-did-runtime/SOURCE-MANIFEST.json",
+      "bytes": 2048,
+      "sha256": "edf39f3f3a5e9be6c42eea3d418858e81af20c06631f5aa83406dc70d7b0d040"
+    }
+  ],
+  "validation": {
+    "listener": "9/9 previously PASS unchanged listener source; no redundant rerun",
+    "sql": "4/4 PASS PostgreSQL17.11 owned Unix-socket reconstructed catalog incl role/PUBLIC DELETE-only view; stopped/removed",
+    "typescript": "0diagnostics in scoped graph",
+    "eslint": "PASS scoped TS/MJS/CJS with existing import resolver disabled and __dirname Nodeglobal supplied",
+    "build": "8exactinputs; qualified575d source hashes and same retained attestation bodies",
+    "diffCheck": "PASS"
+  },
+  "actualImageReceiverQualified": false,
+  "nativeCallerOrIngressChanged": false,
+  "trialSeconds": 60,
+  "androidPhonesDeferred": true,
+  "supersedes": {
+    "path": "scripts/phone11-did-runtime/PREPARATION.json",
+    "bytes": 2537,
+    "sha256": "25fced0cb94ec98b2b4d0e1ed5e9d53aaf28430c9d7333a89b3a4dd3a07202f7"
+  },
+  "correction": "Effective table DELETE/TRUNCATE/TRIGGER census includes r,p,v,m,f, matching public column scope. DELETE-only view/PUBLIC authority refuses."
+}

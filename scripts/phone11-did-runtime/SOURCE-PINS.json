@@ -1,0 +1,54 @@
+{
+  "qualifiedRoutingFactorySha256": "575d8c88bd640e24622fd5798d4c2e99f66c77e54772394c2c5655110dbd3704",
+  "schema": "PHONE11_DID_RUNTIME_SOURCE_PINS_V1",
+  "inputs": [
+    {
+      "path": "scripts/phone11-did-runtime/acl.ts",
+      "bytes": 3065,
+      "sha256": "0d7f8282426af6a3e84568896af4efd3304d484ee952908f82683b02361cdc5c"
+    },
+    {
+      "path": "scripts/phone11-did-runtime/listener.ts",
+      "bytes": 6939,
+      "sha256": "fce94af2b2d2e89b042bbb60db5f6b316ae77c1a2110712b6b350ec7581e815c"
+    },
+    {
+      "path": "scripts/phone11-retained-runtime/bound.ts",
+      "bytes": 11002,
+      "sha256": "f46bba16b8d62acd6bd6c0cb4a1f2b4edf28be07b0585e84cdc0baa2ee463497"
+    },
+    {
+      "path": "server/pbx/db.ts",
+      "bytes": 8145,
+      "sha256": "b7eaa8358d5c5743d50c7ee8b5861bee837da428d08285f2f0fa49d3f3ba7b11"
+    },
+    {
+      "path": "server/pbx/did-route-target.ts",
+      "bytes": 1564,
+      "sha256": "6e79aa53b83307305b9c554fe85810e93da30aabe9d5ef2e1299a8c2f582509c"
+    },
+    {
+      "path": "server/pbx/integration-auth.ts",
+      "bytes": 1598,
+      "sha256": "3705b0ee6f59014e7d24fbe62978568ee6d536137ecc70287b561514d30c91f6"
+    },
+    {
+      "path": "server/pbx/js-postgres-driver.ts",
+      "bytes": 579,
+      "sha256": "766dffc8fbaa92d75f5e7bd1718510c6779df21a8a5a834683c8c91b41b9a7c0"
+    },
+    {
+      "path": "server/pbx/kamailio-routing.ts",
+      "bytes": 6921,
+      "sha256": "eddf5356fed707d63092421423c24df6591d97de9e79d1969b3854203b194132"
+    }
+  ],
+  "attestation": {
+    "source": "scripts/phone11-retained-runtime/bound.ts",
+    "virtualSha256": "3a1c5735ed7df864037c9a1540dc938253c75be3d56121397dd69e38f9ca955f",
+    "functionSha256": [
+      "b834aae08f0ed609126b29f7cffdfdc6824c158bd408df5a357b280d2c00a1ea",
+      "ecafab5c61d02c2c0096e6a4ca49bb2a7fe3afae7d272ffbb94b6fa5dbbd86bf"
+    ]
+  }
+}

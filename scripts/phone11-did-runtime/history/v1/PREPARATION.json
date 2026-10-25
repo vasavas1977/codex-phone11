@@ -1,0 +1,70 @@
+{
+  "schema": "PHONE11_DID_RUNTIME_PREPARATION_V1",
+  "sourceOnly": true,
+  "productionInstalled": false,
+  "productionStarted": false,
+  "files": [
+    {
+      "path": "scripts/phone11-did-runtime/README.md",
+      "bytes": 5272,
+      "sha256": "d663a5ba139674c74fd71f60019c469b4fe84189be7854951c5128f5da537b07"
+    },
+    {
+      "path": "scripts/phone11-did-runtime/SOURCE-PINS.json",
+      "bytes": 1855,
+      "sha256": "596158729658ee6b2d73cee7e759720e14b64bd381a267b3c197717e67645d7b"
+    },
+    {
+      "path": "scripts/phone11-did-runtime/acl.ts",
+      "bytes": 3053,
+      "sha256": "44e73867953db3273c2afd07443e3f52bab1a2f4db6cb8c1360ea00c980f9ce4"
+    },
+    {
+      "path": "scripts/phone11-did-runtime/build.mjs",
+      "bytes": 4573,
+      "sha256": "e809f7cca0a6df2e9dbc3039408f0a439eee7be5b47943e2967d22e97c308fac"
+    },
+    {
+      "path": "scripts/phone11-did-runtime/listener.ts",
+      "bytes": 6939,
+      "sha256": "fce94af2b2d2e89b042bbb60db5f6b316ae77c1a2110712b6b350ec7581e815c"
+    },
+    {
+      "path": "scripts/phone11-did-runtime/maintained.d.ts",
+      "bytes": 616,
+      "sha256": "29b31424412784de362b50ffdbe5354a7f97570826144bf873d5a0f4730c7e21"
+    },
+    {
+      "path": "scripts/phone11-did-runtime/test_acl.py",
+      "bytes": 5158,
+      "sha256": "d99e8e5e4cfee2135552ea97984e2501c184bbb3558cd80939401d1f612c0c87"
+    },
+    {
+      "path": "scripts/phone11-did-runtime/test_listener.cjs",
+      "bytes": 10802,
+      "sha256": "0777b9510590b9bbae8fbc2e183fe94d791f67cc217007eed08e3e8c3a9bb2bd"
+    },
+    {
+      "path": ".cache/phone11-did-runtime/did-listener.cjs",
+      "bytes": 27449,
+      "sha256": "f32d20c823639dd9705cce8bb24c9e29def62fc74311f12d4bcd075cbba1eeee"
+    },
+    {
+      "path": ".cache/phone11-did-runtime/SOURCE-MANIFEST.json",
+      "bytes": 2048,
+      "sha256": "093f8ad5dcfa553fd2e8754595975359f9e163ff72b54a64d6c8a60b6dbaba8d"
+    }
+  ],
+  "validation": {
+    "listener": "9/9 PASS real local loopback/native HTTP; external PG injected only",
+    "sql": "3/3 PASS PostgreSQL17.11 owned Unix-socket reconstructed schema, stopped/removed",
+    "typescript": "0diagnostics in scoped graph",
+    "eslint": "PASS scoped TS/MJS/CJS with existing import resolver disabled and __dirname Nodeglobal supplied",
+    "build": "8exactinputs; qualified575d source hashes and same retained attestation bodies",
+    "diffCheck": "PASS"
+  },
+  "actualImageReceiverQualified": false,
+  "nativeCallerOrIngressChanged": false,
+  "trialSeconds": 60,
+  "androidPhonesDeferred": true
+}

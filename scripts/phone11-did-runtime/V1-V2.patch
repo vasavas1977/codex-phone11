@@ -1,0 +1,25 @@
+--- v1/acl.ts
++++ v2/acl.ts
+@@ -16,7 +16,7 @@
+       (SELECT count(*)=8 AND bool_and(c.relkind='r' AND NOT c.relrowsecurity AND NOT c.relforcerowsecurity AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_rewrite w WHERE w.ev_class=c.oid)) FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname IN(SELECT DISTINCT relation FROM expected)) AS relations,
+       NOT EXISTS(SELECT 1 FROM expected e WHERE NOT EXISTS(SELECT 1 FROM columns c WHERE c.relname=e.relation AND c.attname=e.attribute)) AS expected_columns,
+       (SELECT coalesce(bool_and(has_column_privilege(current_user,c.oid,c.attnum,'SELECT')=EXISTS(SELECT 1 FROM expected e WHERE e.relation=c.relname AND e.attribute=c.attname) AND NOT has_column_privilege(current_user,c.oid,c.attnum,'INSERT,UPDATE,REFERENCES')),false) FROM columns c) AS columns,
+-      NOT EXISTS(SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind IN('r','p') AND has_table_privilege(current_user,c.oid,'DELETE,TRUNCATE,TRIGGER')) AS tables,
++      NOT EXISTS(SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind IN('r','p','v','m','f') AND has_table_privilege(current_user,c.oid,'DELETE,TRUNCATE,TRIGGER')) AS tables,
+       NOT EXISTS(SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind='S' AND has_sequence_privilege(current_user,c.oid,'USAGE,SELECT,UPDATE')) AS sequences,
+       NOT EXISTS(SELECT 1 FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.prosecdef AND has_function_privilege(current_user,p.oid,'EXECUTE')) AS definer`,
+     values: [JSON.stringify(didColumns)],
+--- v1/test_acl.py
++++ v2/test_acl.py
+@@ -37,6 +37,11 @@
+  def test_extra_select_or_dml_or_sequence_authority_is_refused(self):
+   for grant,revoke,index in [('GRANT SELECT(synthetic_ungranted)ON tenants TO did_reader','REVOKE SELECT(synthetic_ungranted)ON tenants FROM did_reader',2),('GRANT UPDATE(status)ON tenants TO did_reader','REVOKE UPDATE(status)ON tenants FROM did_reader',2),('CREATE SEQUENCE did_forbidden;GRANT USAGE ON SEQUENCE did_forbidden TO did_reader','DROP SEQUENCE did_forbidden',4)]:
+    with self.subTest(grant=grant):self.sql(grant+';').check_returncode();self.assertEqual(self.gate()[index],'f');self.sql(revoke+';').check_returncode()
++ def test_delete_only_unrelated_view_authority_is_refused_for_role_and_public(self):
++  self.sql('CREATE VIEW public.did_delete_view AS SELECT id FROM tenants;GRANT DELETE ON public.did_delete_view TO did_reader;').check_returncode()
++  self.assertEqual(self.gate()[3],'f')
++  self.sql('REVOKE DELETE ON public.did_delete_view FROM did_reader;GRANT DELETE ON public.did_delete_view TO PUBLIC;').check_returncode()
++  self.assertEqual(self.gate()[3],'f')
+  def test_missing_required_column_rls_or_executable_definer_is_refused(self):
+   self.sql('ALTER TABLE tenants ENABLE ROW LEVEL SECURITY;').check_returncode();self.assertEqual(self.gate()[0],'f');self.sql('ALTER TABLE tenants DISABLE ROW LEVEL SECURITY;').check_returncode()
+   self.sql("CREATE FUNCTION public.did_forbidden()RETURNS integer LANGUAGE sql SECURITY DEFINER AS $$SELECT 1$$;").check_returncode();self.assertEqual(self.gate()[5],'f');self.sql('DROP FUNCTION public.did_forbidden();ALTER TABLE tenants DROP COLUMN status;').check_returncode();self.assertEqual(self.gate()[1],'f')
