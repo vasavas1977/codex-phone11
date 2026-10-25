@@ -1265,3 +1265,65 @@ stays at 60 seconds; Android and physical-phone testing remain deferred.
 Source commits: `ac9d454` (routing extraction), `f6c2206` (upstream-only CDR
 publication candidate). Literal patch context whitespace is preserved for
 reproducible derivation; authored source whitespace checks passed.
+
+### Installed DID contract and SIP-aware recovery — 25 October
+
+Read-only receipt `PBX-DID-CONTRACT-CAPTURE-20261025-v1.json` completed at
+04:43 UTC with stable source/container identity and no database access or
+mutation. Installed Kamailio uses three-argument `http_connect` to loopback3000,
+GET `/api/kamailio/route?secret=…&number=…`, and reads response `target`.
+Main source SHA-256 is
+`92287d910a8886018a9f3207f127ff28953dee4b3c363732591b9fa5d0a89406`.
+The redacted capture does not prove loaded preprocessing or successful traffic.
+Inspection of the previously captured `57e80` backend shows only the
+header-authenticated POST handler; there is no successful GET contract to
+preserve. Do not add query-secret acceptance as a compatibility shortcut or
+repoint the connection blindly. Caller convergence to the maintained POST
+contract remains required, together with private secret binding and native
+configuration validation before activation.
+
+Commit `0e77434` passes original SIP Call-ID into recovery admission without
+changing encoded CDR bytes, journal identity or completion identity. Missing
+SIP remains explicit; malformed/control-bearing values refuse before admission.
+Independent source review accepted the exact worker. Engine27 and transport10
+tests passed; the transport's first integration run correctly refused the old
+worker hash, then passed after its reviewed pin was updated. The original
+transport requirements JSON remains historical evidence.
+
+The W-only runtime adapter adds bounded current receiver checks and trusted
+route admission, with five focused offline tests also repeated successfully by
+the lead. Unbound routes refuse recovery, even where ordinary receiver ingress
+would accept an ownerless record. Admission SQL semantics have not been run on
+PG16 in this slice. No replay daemon or unconditional completion callback was
+added. Positive producer completion and no-recreation control remain necessary
+before production spool replay. Legacy elevated login retirement and real
+mailbox delivery are still incomplete; trial60 and deferred Android/phone
+testing remain unchanged.
+
+The caller-convergence renderer is a non-executable W prototype, SHA
+`1b635046eb865c4ea1031614f00941f4dc3de1f462ba9e622327492e4318a4cf`.
+Its 13 source tests passed independently at integration. It removes query-secret
+construction and admits only successful actions with a destination before
+caching; HTTP200 reject/missing-target responses deny rather than routing.
+It has not rendered production bytes or passed the installed Kamailio parser.
+The remaining full-SIP-URI versus `$rU` consumer and existing-cache compatibility
+must be resolved before activation; secret equality alone is insufficient.
+
+The voicemail fixture catalog capture succeeded read-only at04:55 UTC in
+`PBX-VOICEMAIL-FIXTURE-CATALOG-20261025-v3.json`: eight relations,27 user triggers,
+five function definitions and101 constraints. Database/backend epochs stayed
+stable; client completion and descriptor cleanup were confirmed. No customer
+rows, database writes, application sessions or fixture delivery occurred.
+Raw catalog code is kept only in the private0600 receipt and suppressed from
+console output. V1 refused its49,152-byte limit; V2 measured63,097 bytes with all
+other limits satisfied. V3 used an evidence-based64,000-byte payload cap below
+the unchanged65,536-byte transport cap. All three receipts are retained.
+
+For a controlled CDR pass, the existing elegant-shutdown and same-container
+restore primitives can be reused; module-unload acknowledgement alone cannot
+prove the writer drained. Four focused source guard tests passed at integration.
+The current relay timer, native producer stop, held spool and no-recreation
+checks still need one qualified lifecycle. The historical replacement/recovery
+mains assume absent relay units and must not run unchanged against today's
+active relay. The new guards issue no completion authority and perform no live
+shutdown, restart or replay.
