@@ -88,6 +88,7 @@ export async function createBoundRetainedRuntime(binding: PrivateRetainedBinding
   if (setupAttempted) throw new Error("RETAINED_BOUND_SETUP_REFUSED");
   setupAttempted = true;
   let poolBound = false;
+  let closeWake: (() => Promise<void>) | undefined;
   try {
     if (!binding || !binding.auth || typeof binding.auth.baseURL !== "string" || !binding.auth.baseURL
       || typeof binding.auth.secret !== "string" || binding.auth.secret.length > 4096 || binding.auth.secret.includes("\0")
@@ -115,15 +116,23 @@ export async function createBoundRetainedRuntime(binding: PrivateRetainedBinding
     await attestOwnedPool(role, database, authority);
     // Both imports resolve to the SAME statically pinned graph. Importing the
     // maintained wake service constructs no provider session or background job.
-    const [{ createRetainedRuntimeCandidate }, { wakeService }] = await Promise.all([
+    const [{ createRetainedRuntimeCandidate }, { createWakeService }] = await Promise.all([
       import("./composition"), import("phone11-maintained/wake-service"),
     ]);
     if (!available()) throw new Error();
-    const close = () => { closed = true; return closeOwnedPbxPool(); };
+    const wake = createWakeService();
+    closeWake = () => wake.close();
+    let closePromise: Promise<void> | undefined;
+    const close = () => {
+      closed = true;
+      // A rejected/expired wake drain retains the pool: an underlying statement
+      // may still finish and enqueue its owned cancellation after HTTP closes.
+      return closePromise ??= (async () => { await wake.close(); await closeOwnedPbxPool(); })();
+    };
     const composed = createRetainedRuntimeCandidate({
       admissionAvailable: available,
       auth: { getAuth: getPhone11Auth, getDatabase: getPool },
-      wake: wakeService,
+      wake,
       chatTransaction: withTransaction,
       closeResources: close,
     });
@@ -133,7 +142,7 @@ export async function createBoundRetainedRuntime(binding: PrivateRetainedBinding
     // Never retry setup or restore environment after modules may have captured
     // it. A failed pool close is retained as unknown cleanup, never swallowed.
     if (poolBound) {
-      try { await closeOwnedPbxPool(); }
+      try { await closeWake?.(); await closeOwnedPbxPool(); }
       catch { throw new Error("RETAINED_BOUND_SETUP_CLEANUP_UNCONFIRMED"); }
     }
     throw new Error("RETAINED_BOUND_SETUP_REFUSED");

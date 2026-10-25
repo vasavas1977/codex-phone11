@@ -3,7 +3,7 @@ import { integrationSecretStatus } from "../pbx/integration-auth";
 import { WakeError } from "./wake-repository";
 import { wakeService,wakeDeviceCallSchema,wakeOfferSchema,wakeTerminalSchema } from "./wake-service";
 
-export function registerWakeRoutes(app:Express,service:typeof wakeService=wakeService) {
+export function registerWakeRoutes(app:Express,service:Pick<typeof wakeService,"device"|"offer"|"terminal">=wakeService) {
   const base="/api/phone11/wake";
   app.use(base,(_req:Request,res:Response,next:NextFunction)=>{res.setHeader("Cache-Control","no-store");next();},express.json({limit:"4kb"}),
     (error:unknown,_req:Request,res:Response,_next:NextFunction)=>{

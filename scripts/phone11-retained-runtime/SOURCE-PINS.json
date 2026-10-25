@@ -1,5 +1,5 @@
 {
-  "schema": "PHONE11_MAINTAINED_RETAINED_SOURCE_PINS_V2",
+  "schema": "PHONE11_MAINTAINED_RETAINED_SOURCE_PINS_V3",
   "operationalReviewedArtifactSha256": "82ddacbb272d4989bcf9ab602a54d96d31571a2902d9b1c8936e83170264d8e9",
   "restrictedDatabaseProof": false,
   "inputs": [
@@ -10,8 +10,8 @@
     },
     {
       "path": "scripts/phone11-retained-runtime/bound.ts",
-      "bytes": 8258,
-      "sha256": "43c8f8188ee15db319f67737f5825196e6ec39d3e959a313072acaae3df41743"
+      "bytes": 8688,
+      "sha256": "4ed571fc6200fb1930cfbb46aed7f5d86ea743ccab91c7e035ad58025f8565c6"
     },
     {
       "path": "scripts/phone11-retained-runtime/composition.ts",
@@ -165,13 +165,13 @@
     },
     {
       "path": "server/push/wake-routes.ts",
-      "bytes": 2670,
-      "sha256": "084aa433e7309182b31e4fcc4c4b41b276d93f3013faff51b8737985f78e26bf"
+      "bytes": 2704,
+      "sha256": "1e577ac8a48722dadc14175c2b51d53a03885e916803ac3d49ac067194c6d1f7"
     },
     {
       "path": "server/push/wake-service.ts",
-      "bytes": 7450,
-      "sha256": "75c95160efe5078b30447da5aaed3264523b3aeb932e9ca062b798f77b2945f0"
+      "bytes": 10484,
+      "sha256": "cb896c43f44783dd3d1c21c2bbf9bc2f53f96dd8310ab93b29a0ff575fb33976"
     },
     {
       "path": "shared/_core/errors.ts",
@@ -179,5 +179,5 @@
       "sha256": "f49c86179b38c7ea610bdb51ecf90c14a34953cab56b75ce57f1ada5479a55c1"
     }
   ],
-  "sourceChange": "Same-owned-pool prelisten identity/settings attestation; refresh separately accepted ac9d454 integration-auth input. operationalReviewedArtifactSha256 remains historical."
+  "sourceChange": "Owned wake drain and bound pool-close ordering; source-compatible route dependency Pick. Historical733a same-pool isolated proof does not qualify this successor."
 }

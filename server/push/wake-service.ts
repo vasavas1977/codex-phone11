@@ -24,33 +24,35 @@ export function wakePilot(): string {
   return configuredPilots()[0];
 }
 export function wakePilots(): readonly string[] { return configuredPilots(); }
-async function notify(call: WakeCall, deadline:number, signal:AbortSignal) {
+type RunWakeWork = <T>(run:()=>Promise<T>, cleanup?:boolean)=>Promise<T>;
+const directly:RunWakeWork=run=>run();
+async function notify(call: WakeCall, deadline:number, signal:AbortSignal, run:RunWakeWork=directly) {
   const check=()=>{if(signal.aborted || Date.now()>=deadline) throw new WakeError(410);};
   check();
-  const target=await wakeRepository.deliveryTarget(call.callUUID);
+  const target=await run(()=>wakeRepository.deliveryTarget(call.callUUID));
   check();
-  const candidates=(await pushRepository.list(target.sipUri)).filter(t=>t.revision===target.revision);
+  const candidates=(await run(()=>pushRepository.list(target.sipUri))).filter(t=>t.revision===target.revision);
   check();
   if(candidates.length!==1) throw new WakeError(410);
   const token=candidates[0];
   try {
-    await sendApnsPush(token,{callId:call.callUUID,callerNumber:"",wake:{v:1,callUUID:call.callUUID,bindingId:call.bindingId,expiresAt:call.expiresAt}},async()=>{
+    await run(()=>sendApnsPush(token,{callId:call.callUUID,callerNumber:"",wake:{v:1,callUUID:call.callUUID,bindingId:call.bindingId,expiresAt:call.expiresAt}},()=>run(async()=>{
     check();
-    const current=await wakeRepository.current(call.callUUID);
+    const current=await run(()=>wakeRepository.current(call.callUUID));
     check();
     if(!current || current.status!=="pending")return false;
-    const valid=await pushRepository.isCurrent(token);
+    const valid=await run(()=>pushRepository.isCurrent(token));
     check();
     return valid;
-    },Math.min(call.expiresAt,deadline));
+    }),Math.min(call.expiresAt,deadline)));
     check();
-    await pushRepository.markUsed(token);
+    await run(()=>pushRepository.markUsed(token));
   } catch(error) {
     const invalid=error as {invalidToken?:boolean;invalidatedAt?:number};
     if(!signal.aborted && Date.now()<deadline && invalid?.invalidToken===true
       && (invalid.invalidatedAt===undefined || token.registeredAt<=invalid.invalidatedAt)) {
       // A response for an old revision must never remove a refreshed device.
-      try { await pushRepository.removeInvalid(token); } catch { /* Original provider failure remains authoritative. */ }
+      try { await run(()=>pushRepository.removeInvalid(token)); } catch { /* Original provider failure remains authoritative. */ }
     }
     throw error;
   }
@@ -61,7 +63,31 @@ export function createWakeService(deps: {
   pilot?: ()=>string; pilots?: ()=>readonly string[];
   sleep?: (ms:number)=>Promise<void>; now?: ()=>number;
 }={}) {
-  const repository=deps.repository??wakeRepository,send=deps.notify??notify;
+  const repository=deps.repository??wakeRepository;
+  let closing=false,drainFailed=false,closePromise:Promise<void>|undefined;
+  const pending=new Set<Promise<unknown>>(),controllers=new Set<AbortController>();
+  let resolveDrain:(()=>void)|undefined,rejectDrain:((error:Error)=>void)|undefined,drainTimer:ReturnType<typeof setTimeout>|undefined;
+  const unconfirmed=()=>new Error("PHONE11_WAKE_DRAIN_UNCONFIRMED");
+  const settleDrain=()=>{
+    if(!closing || pending.size || !resolveDrain)return;
+    clearTimeout(drainTimer);const resolve=resolveDrain,reject=rejectDrain!;resolveDrain=rejectDrain=undefined;
+    if(drainFailed)reject(unconfirmed());else resolve();
+  };
+  const failed=(error:unknown,cleanup:boolean)=>{
+    if(cleanup || (closing && !(error instanceof WakeError && error.status===410)))drainFailed=true;
+  };
+  const track=<T>(promise:Promise<T>,kind:"operation"|"request",cleanup=false):Promise<T>=>{
+    pending.add(promise);
+    void promise.then(()=>{pending.delete(promise);settleDrain();},error=>{
+      if(kind==="operation")failed(error,cleanup);
+      pending.delete(promise);settleDrain();
+    });
+    return promise;
+  };
+  // Register the parent before invoking code that can throw or enqueue a child.
+  const run:RunWakeWork=(operation,cleanup=false)=>track(Promise.resolve().then(operation),"operation",cleanup);
+  const open=()=>{if(closing)throw new WakeError(503);};
+  const send=deps.notify??((call:WakeCall,deadline:number,signal:AbortSignal)=>notify(call,deadline,signal,run));
   const pilots=deps.pilots??(deps.pilot ? ()=>[deps.pilot!()] : wakePilots);
   const sleep=deps.sleep??(ms=>new Promise(resolve=>setTimeout(resolve,ms))),now=deps.now??Date.now;
   const requireTarget=(uri:string)=>{if(!pilots().includes(uri)) throw new WakeError(403);};
@@ -82,53 +108,73 @@ export function createWakeService(deps: {
       if(signal?.aborted || now()>=deadline)abort();else finish(undefined,value);
     },error=>finish(error));
   });
-  return {
-    enroll(sessionId:string,userId:number,input:z.infer<typeof wakeEnrollSchema>) {
-      return repository.enroll(sessionId,userId,input.deviceId,pilots());
-    },
-    resolve(sessionId:string,userId:number,bindingId:string) {pilots();return repository.resolve(bindingId,sessionId,userId);},
-    revoke(sessionId:string,userId:number,bindingId:string) {return repository.revoke(bindingId,sessionId,userId);},
-    device(action:"claim"|"ready"|"status"|"end",grant:string,input:z.infer<typeof wakeDeviceCallSchema>) {
-      pilots();return repository.deviceCall(input.bindingId,grant,input.callUUID,action);
-    },
-    terminal(input:z.infer<typeof wakeTerminalSchema>) {requireTarget(input.sipUri);return repository.transitionTrusted(input.sipUri,input.sipCallId,input.status);},
-    /** Proxy holds the original SIP transaction while this bounded request waits for registration. */
-    async offer(input:z.infer<typeof wakeOfferSchema>,signal?:AbortSignal) {
+  async function offer(input:z.infer<typeof wakeOfferSchema>,signal?:AbortSignal) {
       requireTarget(input.sipUri);
       if(signal?.aborted)throw new WakeError(410);
       const deadline=now()+25_000;
       const submission=new AbortController();
       const abortSubmission=()=>submission.abort();
       signal?.addEventListener("abort",abortSubmission,{once:true});
-      const cancel=()=>repository.transitionTrusted(input.sipUri,input.sipCallId,"cancelled");
+      let cancellation:Promise<void>|undefined;
+      const cancel=()=>cancellation??=run(()=>repository.transitionTrusted(input.sipUri,input.sipCallId,"cancelled"),true);
       let abandoned=false;
-      const offered=repository.offer(input.sipUri,input.sipCallId);
+      const offered=run(()=>repository.offer(input.sipUri,input.sipCallId));
+      // Abort can win after the result reaction but before the HTTP await resumes.
+      let observed:Awaited<typeof offered>|undefined;
       // A database operation may finish after its HTTP budget; it must never cause a later push.
-      void offered.then(result=>{if(abandoned && result.created)void cancel().catch(()=>{});},()=>{});
+      // Keep this parent chain pending through the late cancellation itself.
+      void track(offered.then(result=>{observed=result;if(abandoned && result.created)return cancel();},()=>{}),"request").catch(()=>{});
       let pending:Awaited<typeof offered>|undefined;
       try {
         pending=await bounded(deadline,()=>offered,signal);
         if(signal?.aborted) throw new WakeError(410);
         if(pending.created) {
           const submissionDeadline=Math.min(deadline,now()+5000);
-          await bounded(submissionDeadline,()=>send(pending!.call,submissionDeadline,submission.signal),signal);
+          await bounded(submissionDeadline,()=>run(()=>send(pending!.call,submissionDeadline,submission.signal)),signal);
         }
         while(now()<deadline && !signal?.aborted) {
-          const current=await bounded(deadline,()=>repository.current(pending!.call.callUUID),signal);
+          const current=await bounded(deadline,()=>run(()=>repository.current(pending!.call.callUUID)),signal);
           if(current?.status==="ready") return {v:1 as const,callUUID:current.callUUID,status:"ready" as const};
           if(!current || current.status!=="pending") throw new WakeError(410);
-          await bounded(deadline,()=>sleep(Math.min(500,deadline-now())),signal);
+          await bounded(deadline,()=>run(()=>sleep(Math.min(500,deadline-now()))),signal);
         }
         throw new WakeError(410);
       } catch(error) {
         abandoned=true;
         submission.abort();
-        if(pending?.created) {try{await bounded(now()+3000,cancel);}catch{/* Native call TTL still bounds an unavailable backend. */}}
+        if((pending??observed)?.created) {try{await bounded(now()+3000,cancel);}catch{/* Native call TTL still bounds an unavailable backend. */}}
         throw error instanceof WakeError ? error : new WakeError(503);
       } finally {
         signal?.removeEventListener("abort",abortSubmission);
         submission.abort();
       }
+  }
+  return {
+    enroll(sessionId:string,userId:number,input:z.infer<typeof wakeEnrollSchema>) {
+      open();const configured=pilots();return run(()=>repository.enroll(sessionId,userId,input.deviceId,configured));
+    },
+    resolve(sessionId:string,userId:number,bindingId:string) {open();pilots();return run(()=>repository.resolve(bindingId,sessionId,userId));},
+    revoke(sessionId:string,userId:number,bindingId:string) {open();return run(()=>repository.revoke(bindingId,sessionId,userId));},
+    device(action:"claim"|"ready"|"status"|"end",grant:string,input:z.infer<typeof wakeDeviceCallSchema>) {
+      open();pilots();return run(()=>repository.deviceCall(input.bindingId,grant,input.callUUID,action));
+    },
+    terminal(input:z.infer<typeof wakeTerminalSchema>) {open();requireTarget(input.sipUri);return run(()=>repository.transitionTrusted(input.sipUri,input.sipCallId,input.status));},
+    async offer(input:z.infer<typeof wakeOfferSchema>,signal?:AbortSignal) {
+      open();const controller=new AbortController(),abort=()=>controller.abort();controllers.add(controller);
+      signal?.addEventListener("abort",abort,{once:true});if(signal?.aborted)controller.abort();
+      const work=Promise.resolve().then(()=>offer(input,controller.signal)).finally(()=>{controllers.delete(controller);signal?.removeEventListener("abort",abort);});
+      return track(work,"request");
+    },
+    /** Terminal owned drain. A timeout/failure never authorizes pool closure. */
+    close():Promise<void> {
+      if(closePromise)return closePromise;
+      closing=true;
+      closePromise=new Promise<void>((resolve,reject)=>{
+        resolveDrain=resolve;rejectDrain=reject;
+        drainTimer=setTimeout(()=>{resolveDrain=rejectDrain=undefined;reject(unconfirmed());},30_000);
+      });
+      for(const controller of controllers)controller.abort();
+      settleDrain();return closePromise;
     },
   };
 }

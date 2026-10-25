@@ -1438,3 +1438,29 @@ and protected process identities stayed unchanged. Four offline packet cases
 and independent review preceded that read-only run. No customer values were
 exported, rows written, spool files read or records replayed. Positive current
 route authority and producer-completion binding remain separate from this check.
+
+The retained factory now owns a separate wake-service instance. Closing it fences
+new requests, aborts only its own offers, and tracks underlying database/provider
+work and late cancellation through settlement before closing PostgreSQL. A30s
+timeout or uncertain persistence keeps cleanup unconfirmed and retains the pool.
+Independent review reproduced a created-offer/cancellation microtask race in the
+first draft; the corrected version remembers the offer result and shares one
+cancellation promise across both orderings. Eleven new drain cases include a
+16-offset ordering sweep. All60 related wake cases and18 bound-runtime cases
+passed, as did the35-input build, scoped TypeScript diagnostics and scoped lint.
+These are source checks, not phone/provider or production-stop acceptance. The
+corrected artifact is `ba997fc8e03d29bfce7b110da0c756bf0dbb64e62bdbbd756abb83e149456831`
+(212982bytes). The held1df draft and its isolated packet were never dispatched.
+
+The controlled recovery driver is prepared under operator work
+`pbx/cdr-retry-oct25-v1/recovery-integration-next-v2/`, manifest
+`763d5affa630a0346e6a3cfe01f46d7c1a5677962a37de83193f3daab5b7c2e1`.
+It defaults to inert, exits without a stop for an empty spool, and binds the
+existing controller/worker for one fenced pass with private persistent journals.
+Ten offline composition cases passed. Root review corrected a false-admission
+path that skipped final runtime checks: per-entry denial is now reported only
+after receiver/database epochs, custody, budget and cleanup remain valid.
+No binding was supplied and no driver was installed, producer stopped or record
+replayed. Actual stop/hold/restore and complete authority timing remain unqualified;
+automatic recovery is disabled. The historical empty-spool observation does not
+justify a disruptive live recovery operation.

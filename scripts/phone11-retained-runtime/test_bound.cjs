@@ -15,7 +15,7 @@ class Pool{
  on(){}
  async end(){shared.end++;if(shared.failEnd)throw Error('PRIVATE_CLOSE_DETAIL');}
  async query(){shared.sql++;throw Error('UNQUALIFIED_SQL_FORBIDDEN');}
- async connect(){shared.connects++;if(shared.failConnect)throw Error('PRIVATE_CONNECT_DETAIL');return {query:async config=>{shared.sql++;shared.queries.push(config);if(shared.failQuery)throw Error('PRIVATE_QUERY_DETAIL');if(shared.pendingQuery)await shared.pendingQuery;return {rows:shared.rows};},release:destroy=>{shared.releases.push(destroy);if(shared.failRelease)throw Error('PRIVATE_RELEASE_DETAIL');}};}
+ async connect(){shared.connects++;if(shared.failConnect)throw Error('PRIVATE_CONNECT_DETAIL');return {query:async config=>{shared.sql++;shared.queries.push(config);if(shared.failQuery)throw Error('PRIVATE_QUERY_DETAIL');if(shared.pendingQuery)await shared.pendingQuery;if(shared.queryHook)return shared.queryHook(config);return {rows:shared.rows};},release:destroy=>{shared.releases.push(destroy);if(shared.failRelease)throw Error('PRIVATE_RELEASE_DETAIL');}};}
 }
 // Only external transport/vendor construction is inert. The bundled maintained
 // configure/get/close functions and route/default SDK code are actual source.
@@ -26,11 +26,11 @@ Module._load=function(name,...args){
  if(shared.failImport&&name==='express')throw Error('PRIVATE_IMPORT_DETAIL');
  return realLoad.call(this,name,...args);
 };
-const envKeys=['PHONE11_AUTH_BASE_URL','PHONE11_AUTH_SECRET','PHONE11_AUTH_TRUSTED_ORIGINS','RECORDINGS_PATH','PHONE11_CHAT_MEDIA_PATH','PHONE11_PASSWORD_RESET_PROVIDER','PHONE11_PASSWORD_RESET_RESEND_API_KEY','PHONE11_PASSWORD_RESET_FROM'];
+const envKeys=['PHONE11_AUTH_BASE_URL','PHONE11_AUTH_SECRET','PHONE11_AUTH_TRUSTED_ORIGINS','RECORDINGS_PATH','PHONE11_CHAT_MEDIA_PATH','PHONE11_PASSWORD_RESET_PROVIDER','PHONE11_PASSWORD_RESET_RESEND_API_KEY','PHONE11_PASSWORD_RESET_FROM','PHONE11_WAKE_ENABLED','PHONE11_WAKE_PILOT_SIP_URI','PHONE11_WAKE_PILOT_SIP_URIS'];
 function reset(){
  for(const k of envKeys)delete process.env[k];
  for(const k of Object.keys(process.env))if(/^(PG|DB_|POSTGRES|DATABASE|APNS|PUSH_)/.test(k))delete process.env[k];
- Object.assign(shared,{configs:[],auth:[],end:0,sql:0,connects:0,releases:[],queries:[],rows:[passingRow()],failEnd:false,failImport:false,failConnect:false,failQuery:false,failRelease:false,pendingQuery:null});
+ Object.assign(shared,{configs:[],auth:[],end:0,sql:0,connects:0,releases:[],queries:[],rows:[passingRow()],failEnd:false,failImport:false,failConnect:false,failQuery:false,failRelease:false,pendingQuery:null,queryHook:null});
  delete require.cache[require.resolve('../../.cache/phone11-retained-runtime/retained-bound.cjs')];return require('../../.cache/phone11-retained-runtime/retained-bound.cjs');
 }
 const binding=()=>({database:{host:'postgres',port:5432,database:'phone11ai',user:'phone11_retained_runtime',password:'PRIVATE_TEST_PASSWORD',tlsCaPem:rootCertificates[0]},
@@ -129,6 +129,28 @@ test('connect/query/release failures are sanitized, terminal and release exactly
 });
 test('failed attestation plus failed actual pool end reports cleanup unconfirmed',async()=>{
  const m=reset();shared.failQuery=shared.failEnd=true;await rejected(m.createBoundRetainedRuntime(binding()),'RETAINED_BOUND_SETUP_CLEANUP_UNCONFIRMED');assert.deepEqual(shared.releases,[true]);assert.equal(shared.end,1);await rejected(m.createBoundRetainedRuntime(binding()),'RETAINED_BOUND_SETUP_REFUSED');
+});
+test('owned wake transaction settles before direct close ends its actual graph pool',async()=>{
+ const m=reset(),c=await m.createBoundRetainedRuntime(binding());
+ process.env.PHONE11_WAKE_ENABLED='1';process.env.PHONE11_WAKE_PILOT_SIP_URI='sip:3001@pilot.invalid';process.env.PUSH_SHARED_SECRET='PRIVATE_SYNTHETIC_PUSH_SECRET_32_BYTES';
+ let started,finish;const entered=new Promise(r=>started=r),pending=new Promise(r=>finish=r);
+ shared.queryHook=async config=>{if(typeof config==='string'&&config.startsWith('INSERT INTO phone11_wake_terminals')){started();await pending;}return {rows:[],rowCount:0};};
+ await serve(c.app,async(_server,url)=>{
+  const request=fetch(url+'/api/phone11/wake/terminal',{method:'POST',headers:{connection:'close','content-type':'application/json','x-push-secret':process.env.PUSH_SHARED_SECRET},body:JSON.stringify({sipUri:'sip:3001@pilot.invalid',sipCallId:'owned-shutdown',status:'ended'})});
+  await entered;let closed=false;const closing=c.close().then(()=>closed=true);await new Promise(r=>setImmediate(r));assert.equal(shared.end,0);assert.equal(closed,false);
+  finish();const response=await request;assert.equal(response.status,200);await response.arrayBuffer();await closing;assert.equal(shared.end,1);assert.equal(closed,true);
+ });await c.close();assert.equal(shared.end,1);
+});
+test('uncertain owned wake persistence rejects close and retains pool without false cleanup',async()=>{
+ const m=reset(),c=await m.createBoundRetainedRuntime(binding());
+ process.env.PHONE11_WAKE_ENABLED='1';process.env.PHONE11_WAKE_PILOT_SIP_URI='sip:3001@pilot.invalid';process.env.PUSH_SHARED_SECRET='PRIVATE_SYNTHETIC_PUSH_SECRET_32_BYTES';
+ let started,fail;const entered=new Promise(r=>started=r),pending=new Promise((_r,j)=>fail=j);
+ shared.queryHook=async config=>{if(typeof config==='string'&&config.startsWith('INSERT INTO phone11_wake_terminals')){started();await pending;}return {rows:[],rowCount:0};};
+ await serve(c.app,async(_server,url)=>{
+  const request=fetch(url+'/api/phone11/wake/terminal',{method:'POST',headers:{connection:'close','content-type':'application/json','x-push-secret':process.env.PUSH_SHARED_SECRET},body:JSON.stringify({sipUri:'sip:3001@pilot.invalid',sipCallId:'owned-failure',status:'ended'})});
+  await entered;const closing=c.close();const rejectedClose=rejected(closing,'PHONE11_WAKE_DRAIN_UNCONFIRMED');fail(Error('PRIVATE_PERSISTENCE_DETAIL'));await rejectedClose;assert.equal(c.close(),closing);assert.equal(shared.end,0);
+  const response=await request;assert.equal(response.status,503);await response.arrayBuffer();
+ });assert.equal(shared.end,0);
 });
 test('artifact graph has one actual db module and includes maintained TLS driver/lifecycle without global index',()=>{
  const m=JSON.parse(fs.readFileSync(path.join(__dirname,'../../.cache/phone11-retained-runtime/SOURCE-MANIFEST.json')));
