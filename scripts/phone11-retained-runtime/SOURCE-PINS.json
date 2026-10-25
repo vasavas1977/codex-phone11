@@ -1,5 +1,5 @@
 {
-  "schema": "PHONE11_MAINTAINED_RETAINED_SOURCE_PINS_V1",
+  "schema": "PHONE11_MAINTAINED_RETAINED_SOURCE_PINS_V2",
   "operationalReviewedArtifactSha256": "82ddacbb272d4989bcf9ab602a54d96d31571a2902d9b1c8936e83170264d8e9",
   "restrictedDatabaseProof": false,
   "inputs": [
@@ -10,8 +10,8 @@
     },
     {
       "path": "scripts/phone11-retained-runtime/bound.ts",
-      "bytes": 4067,
-      "sha256": "80a26b01ab4257a795577f3ece02f2e66567849fe39654e046fa3b6dd7a36954"
+      "bytes": 8258,
+      "sha256": "43c8f8188ee15db319f67737f5825196e6ec39d3e959a313072acaae3df41743"
     },
     {
       "path": "scripts/phone11-retained-runtime/composition.ts",
@@ -115,8 +115,8 @@
     },
     {
       "path": "server/pbx/integration-auth.ts",
-      "bytes": 1122,
-      "sha256": "9e5a17cd550dfe0906b6cf6fca90d056cbe3a9b8b3b237a3863523d266f6fa39"
+      "bytes": 1598,
+      "sha256": "3705b0ee6f59014e7d24fbe62978568ee6d536137ecc70287b561514d30c91f6"
     },
     {
       "path": "server/pbx/js-postgres-driver.ts",
@@ -178,5 +178,6 @@
       "bytes": 602,
       "sha256": "f49c86179b38c7ea610bdb51ecf90c14a34953cab56b75ce57f1ada5479a55c1"
     }
-  ]
+  ],
+  "sourceChange": "Same-owned-pool prelisten identity/settings attestation; refresh separately accepted ac9d454 integration-auth input. operationalReviewedArtifactSha256 remains historical."
 }
