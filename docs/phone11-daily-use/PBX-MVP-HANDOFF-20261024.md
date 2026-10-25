@@ -56,7 +56,7 @@ historical generation or configuration pin for a later action.
 
 | Evidence | Local record |
 | --- | --- |
-| Latest scoped progress | [Current configuration and remaining boundaries](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-COMMISSIONING-PROGRESS-20261025-v45.json) |
+| Latest scoped progress | [Current configuration and remaining boundaries](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-COMMISSIONING-PROGRESS-20261025-v48.json) |
 | Restricted CDR activation | [Qualified running receiver](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-CDR-SIDECAR-ACTIVATION-CONTINUATION-20261025-v2.json) |
 | CDR automatic restart | [Policy applied without process restart](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-CDR-SIDECAR-RESTART-PROMOTION-20261025-v1.json) |
 | Native CDR destination | [URL switch and admission resumed](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-NATIVE-CDR-SIDECAR-TRANSITION-20261025-v2.json) |
@@ -1130,3 +1130,47 @@ No push request, SIP signaling, real credential export or production SQL occurre
 Offer/notification, terminal/pruning, enrollment, concurrent reassignment and
 real-device behavior remain outside this slice. The legacy login remains live;
 Android and phone testing remain deferred and the trial stays at 60 seconds.
+
+
+### Failed call-record replay remains retain-only
+
+The runtime-binding review confirmed that no-writer snapshots, unchanged file
+metadata and zero active channels cannot prove a native error file will never be
+reopened. The current writer has no atomic completed-only publication contract.
+The maintained replay engine therefore still requires an independent positive
+completion proof before INTENT or POST. No automatic replay daemon was enabled,
+no original was removed, and no placeholder completion callback was added.
+
+The shortest controlled recovery option requires an exact stopped-producer and
+no-recreation fence held through a bounded manual replay pass. Unattended replay
+requires a reviewed native file-finalization change. Receiver authority helpers
+exist, but their 15/30-second child deadlines must be adapted to the transport's
+five-second total budget; a partial metadata check cannot stand in for them.
+See the reviewed source boundary in
+[the replay assessment](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/pbx/cdr-retry-oct25-v1/runtime-binding-oct25-v1/README.md).
+No source-only note authorizes or proves an outage, replay or cold boot.
+
+
+### Wake terminal/replay and current callback disposition — 25 October 09:29 Bangkok
+
+The isolated PostgreSQL16 terminal/replay slice passed actual existing-ready
+offer replay without notification, terminal persistence with replay TTL retained,
+terminal-first offer rejection, and owned expired-row pruning while keeping the
+busy row. A whole-operation fence refused any unrelated row that could become
+prune-eligible; unrelated queue counts stayed unchanged. Exact grants passed
+with 20 forbidden operations denied. APNS attempts and SIP signaling stayed zero.
+Both temporary containers were removed and protected processes were unchanged.
+Receipt: `PBX-WAKE-TERMINAL-REPLAY-PG16-20261025-v1.json`, exit 0, packet
+`ecbea4a8467cd8ddbac825ee1897d28cd70305ffbb82921e92e4fb55c8b0875f`.
+Fresh-offer creation, notification delivery and full wake remain unqualified.
+
+The preceding read-only callback observation confirmed configured FreeSWITCH
+directory 3013, protected dialplan 19443 and local voicemail fallback 3013.
+Nginx capability requests select 3024, or 3023 for batches; supported photo
+methods select 3006 while unsupported methods retain the old3000 fallback.
+Kamailio's BACKEND_URL remains port3000, with three connection-name/variable
+HTTP expressions not resolved by that diagnostic. OTHER classifications must
+not be interpreted as an absent dependency. Old3000 remains configured/running
+on loopback. Receipt `PBX-CALLBACK-DISPOSITION-20261025-v2.json` records exit0,
+stable epochs and cleanup; it proves configured targets, not live traffic or
+module-cached URLs. No SQL, HTTP/SIP request or service mutation occurred.
