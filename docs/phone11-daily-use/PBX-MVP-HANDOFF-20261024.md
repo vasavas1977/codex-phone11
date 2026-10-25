@@ -1464,3 +1464,16 @@ No binding was supplied and no driver was installed, producer stopped or record
 replayed. Actual stop/hold/restore and complete authority timing remain unqualified;
 automatic recovery is disabled. The historical empty-spool observation does not
 justify a disruptive live recovery operation.
+
+At06:51 UTC, the correctedba997 artifact passed
+`PBX-SAME-POOL-RETAINED-PG16-20261025-v3.json`: actual owned-pool identity/TLS/
+settings, wrong-authority refusal, auth/session/playback,16 denied writes,
+maintained shutdown and both-clone cleanup. Protected production identities were
+unchanged. The v3 packet had nine offline checks and independent exact-source
+review before its single dispatch. This exercises idle wake close in the real
+image, not active provider races, all retained routes, a production listener
+switch or worker takeover. Active shutdown races retain the separate source-test
+evidence. Legacy3000's elevated connection remains active pending those cutovers.
+Independent review also accepted the exact recovery v2 source manifest and all
+13 bundled inputs after the denial-path correction; that verdict adds no live
+stop/replay or automatic recovery authority.
