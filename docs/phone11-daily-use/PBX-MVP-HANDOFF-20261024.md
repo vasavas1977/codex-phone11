@@ -16,9 +16,10 @@ restart policies and malformed-request checks do not establish those outcomes.
 The replacement library's session, recording-playback and chat-media paths
 passed isolated PostgreSQL16 qualification, including exact column grants,
 cross-user/tenant denials and shutdown. These are completed permission slices,
-not a production login change. Call-wake claim/ready/status/end also passed;
-offer/terminal delivery, callback disposition and old-worker replacement remain
-blockers to retiring the elevated backend credential.
+not a production login change. Call-wake claim/ready/status/end, terminal replay,
+bounded pruning and fresh-offer cancellation also passed. Provider-success
+delivery, the remaining DID consumer and old-worker replacement still block
+retiring the elevated backend credential.
 
 Keep the **60-second Siprix trial**. Android and physical-phone testing remain
 deferred. This handoff supersedes the earlier MVP scope record's missing-schema,
@@ -56,7 +57,7 @@ historical generation or configuration pin for a later action.
 
 | Evidence | Local record |
 | --- | --- |
-| Latest scoped progress | [Current configuration and remaining boundaries](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-COMMISSIONING-PROGRESS-20261025-v48.json) |
+| Latest scoped progress | [Current configuration and remaining boundaries](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-COMMISSIONING-PROGRESS-20261025-v50.json) |
 | Restricted CDR activation | [Qualified running receiver](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-CDR-SIDECAR-ACTIVATION-CONTINUATION-20261025-v2.json) |
 | CDR automatic restart | [Policy applied without process restart](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-CDR-SIDECAR-RESTART-PROMOTION-20261025-v1.json) |
 | Native CDR destination | [URL switch and admission resumed](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-NATIVE-CDR-SIDECAR-TRANSITION-20261025-v2.json) |
@@ -1174,3 +1175,55 @@ not be interpreted as an absent dependency. Old3000 remains configured/running
 on loopback. Receipt `PBX-CALLBACK-DISPOSITION-20261025-v2.json` records exit0,
 stable epochs and cleanup; it proves configured targets, not live traffic or
 module-cached URLs. No SQL, HTTP/SIP request or service mutation occurred.
+
+
+### Remaining configured callbacks resolved — 25 October 09:37 Bangkok
+
+The refined metadata-only reader resolved the fixed native wake URL expressions
+to loopback3018 for offer/terminal alternatives. Kamailio DID_ROUTE still uses
+a named connection based at loopback3000; its relative request path remains
+unresolved. This is configured-target evidence, not proof of branch execution
+or of the 3018 service's downstream dependencies. No fourth observer was run.
+Receipt `PBX-CALLBACK-DISPOSITION-20261025-v3.json` reports exit0, stable process
+epochs and closed resources, with no SQL, HTTP/SIP or configuration mutation.
+
+Source follow-up `11b0329` replaces the maintained DID query's `pn.*` and unused
+tenant slug with exactly `tenant_id`, `assigned_route_type`, `assigned_route_id`.
+Every consumed field remains present; joins, active/deleted/number predicates,
+LIMIT2 and tenant-denial branches are unchanged. Thirty existing DID-routing
+and Kamailio-contract tests passed; independent review accepted the exact change.
+It is committed/pushed source, not a deployment of a new DID receiver.
+
+The final configured-consumer delta and minimal successor requirements are in
+[the callback disposition](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/pbx/legacy-session-attribution-oct25-v1/callback-disposition-oct25-v1/v3/FINAL-DISPOSITION-DELTA.md).
+The elevated login cannot be retired from these configuration observations alone.
+
+### Fresh wake failure rehearsal — exact migration default correction
+
+The first PostgreSQL16 attempt refused at `CALL_CREATED_DEFAULT` before HTTP,
+after clone-only role/fixture setup may have occurred. Its local reconstruction
+assumed `now()`, while the maintained wake migration defines `clock_timestamp()`.
+Both temporary containers were removed; protected processes and archive custody
+were stable. Receipt `PBX-WAKE-FRESH-OFFER-FAILURE-PG16-20261025-v1.json` is
+preserved. This failed attempt does not qualify fresh-offer behavior. The
+correction pins the migration and requires its exact default without widening
+INSERT columns or accepting arbitrary defaults.
+
+### Fresh wake cancellation qualified — 25 October 09:44 Bangkok
+
+The corrected V2 packet passed on isolated PostgreSQL16 with the actual bound
+candidate. HTTP returned 503 with provider configuration absent; administrator
+readback confirmed the newly inserted owned call and matching terminal were
+cancelled. The push row and unrelated queue counts were unchanged. Exact minimal
+grants, all 20 forbidden-operation checks, actual pool TLS/role/database/address,
+and maintained drain/pool close passed. Both clones were removed, archive custody
+and protected processes were stable. Independent receipt review found no P0–P2
+inconsistency. No production SQL, APNS, SIP, customer request or phone test ran.
+
+Receipt: `PBX-WAKE-FRESH-OFFER-FAILURE-PG16-20261025-v2.json`, SHA-256
+`131158b843a20278b6fc6c689a89f74c14c3ec1f37244be5d96313bf0d615e62`;
+packet `c0f15ee4a6342772cb5bdb5bb0b02b6d240034fb9bfe6178037fc99789ae244e`.
+The no-provider cause is source-derived, not an observed runtime failure kind.
+Provider success, notification delivery, capture linking and the complete wake
+flow remain unqualified. Actual same-pool pre-listen attestation was not proved.
+This closes the isolated failure-path permission slice, not legacy-role retirement.
