@@ -13,11 +13,11 @@ login can be retired. Delivery from real calls, historical call-record recovery,
 voicemail playback and actual host cold-boot recovery remain unaccepted. Loaded
 restart policies and malformed-request checks do not establish those outcomes.
 
-The replacement library's session and recording-playback paths passed isolated
-PostgreSQL16 qualification, including exact column grants, cross-user/tenant
-denials and shutdown. This is a completed permission slice, not a production
-login change. Chat-media and wake routes plus the old-worker replacement remain
-the concrete blockers to retiring the elevated backend credential.
+The replacement library's session, recording-playback and chat-media paths
+passed isolated PostgreSQL16 qualification, including exact column grants,
+cross-user/tenant denials and shutdown. These are completed permission slices,
+not a production login change. Wake routes, callback disposition and old-worker
+replacement remain blockers to retiring the elevated backend credential.
 
 Keep the **60-second Siprix trial**. Android and physical-phone testing remain
 deferred. This handoff supersedes the earlier MVP scope record's missing-schema,
@@ -55,7 +55,7 @@ historical generation or configuration pin for a later action.
 
 | Evidence | Local record |
 | --- | --- |
-| Latest scoped progress | [Current configuration and remaining boundaries](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-COMMISSIONING-PROGRESS-20261025-v37.json) |
+| Latest scoped progress | [Current configuration and remaining boundaries](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-COMMISSIONING-PROGRESS-20261025-v44.json) |
 | Restricted CDR activation | [Qualified running receiver](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-CDR-SIDECAR-ACTIVATION-CONTINUATION-20261025-v2.json) |
 | CDR automatic restart | [Policy applied without process restart](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-CDR-SIDECAR-RESTART-PROMOTION-20261025-v1.json) |
 | Native CDR destination | [URL switch and admission resumed](/Users/vasavas16macbookpro/Documents/ChatGPT/supernumber/work/phone11-publish-pbx-20261014/operator/PBX-NATIVE-CDR-SIDECAR-TRANSITION-20261025-v2.json) |
@@ -1078,3 +1078,31 @@ acceptance; the root execution made no configuration/service actions and read
 no journal, queues, audio, ExecStart or environment values. This closes the
 previous missing installed-version/current-policy metadata, not a reboot or
 dependency-outage delivery test. No scheduler change was justified.
+
+
+### Actual restricted chat media passes PostgreSQL16 — 25 October 09:12 Bangkok
+
+The unchanged bound candidate `82ddacbb…` passed actual authenticated upload,
+byte-identical replay, changed/expired replay rejection, decoded-filename
+handling and attached-message download. Wrong tenant, nonmember, inactive user,
+wrong conversation, owner mismatch, missing session and wrong origin were denied.
+A known failed INSERT rolled back the database write and removed its owned file.
+The exact column grants passed with 28 forbidden operations denied; maintained
+shutdown closed the actual pool. Production permissions were unchanged.
+
+The first rehearsal rejected an existing member-removal trigger; its correction
+accepted only the captured exact trigger without dropping or disabling it. A
+second run stopped at a SQL failure without enough detail to identify its cause.
+Local reproduction then exposed a fixture sequence collision. V3 uses a checked
+reserved sequence range and finite SQL-stage/SQLSTATE diagnostics; it does not
+assert that collision was the actual second-run cause. Twelve focused checks and
+an owned PostgreSQL17 run passed, followed by independent exact-source review.
+
+Root verified all 32 pins and executed v3 once. Receipt
+`PBX-RETAINED-CHAT-MEDIA-PG16-20261025-v3.json` records exit 0 and
+`PG16_RETAINED_CHAT_MEDIA_PROVEN_OTHER_RETAINED_ROUTES_UNQUALIFIED`.
+Both temporary containers were removed, archive custody and protected processes
+were unchanged, and no production SQL, customer media or provider call occurred.
+The narrow timestamp/id lock columns remain directly writable capabilities.
+Concurrent revocation, unknown-COMMIT recovery, other wake routes and full worker
+drain remain unqualified; the original broad login is still present.
