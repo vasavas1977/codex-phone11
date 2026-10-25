@@ -1327,3 +1327,41 @@ checks still need one qualified lifecycle. The historical replacement/recovery
 mains assume absent relay units and must not run unchanged against today's
 active relay. The new guards issue no completion authority and perform no live
 shutdown, restart or replay.
+
+### Recovery queue and remaining login dependencies — 25 October, 05:28 UTC
+
+`PBX-NATIVE-CDR-SPOOL-METADATA-20261025-v3.json` confirmed zero entries and
+zero bytes in the protected native error spool. Current disk and served XML
+still select the dedicated 3030 receiver, with private failure spooling and
+bounded reporting timeouts. No record contents were read, replayed or deleted.
+There is no current backlog to recover. The W controlled-fence v3 controller
+passed 24 offline tests and central source review; no switch shutdown or
+automatic replay was performed. Its source acceptance is not live lifecycle
+or crash-durability proof.
+
+Commit `835cadb` integrates the DID caller renderers under
+`scripts/phone11-did-caller-convergence/`. The renderer accepts full SIP targets
+through `$ru`, preserves the separate internal PBX target path, and versions the
+DID cache to avoid consuming old four-digit entries. V1/V2 checks passed
+13/10 cases, with 39 actual encoder cases also passing. This is prepared source,
+not active routing. The isolated vendor-check attempt
+`PBX-DID-PRIVATE-VENDOR-QUALIFICATION-20261025-v1.json` refused at
+`DID_BACKEND_SECRET_BINDING` before staging files or creating its parser
+container. Protected process identities and cleanup were confirmed. Creation
+and initial-process environment cannot establish the old backend's later
+dotenv-loaded secret. No secret was exposed, fallback added, or live route changed.
+
+The synthetic voicemail v1 attempt stopped before database writes because its
+media inspection used UID0 in a capability-restricted container whose private
+storage belongs to UID1001. The bounded read-only diagnostic confirmed EACCES.
+V2 uses the verified backend UID/GID1001 without changing permissions. Its
+storage and catalog reads passed, but `FIXTURE_COMMIT` returned psql exit3.
+The original v2 operation and intent are retained; no delivery was attempted.
+The transaction outcome requires read-only reconciliation before another attempt.
+Source review identified a schema-deparser search-path mismatch as the likely
+pre-insert failure; that diagnosis alone does not prove rollback or delivery.
+
+The old shared elevated login remains active. Dedicated CDR/upload receivers
+do not cover the remaining authenticated API and workers, and the shared role
+must not be disabled for unrelated consumers. Trial60 continues; Android and
+physical-phone acceptance remain explicitly deferred.
