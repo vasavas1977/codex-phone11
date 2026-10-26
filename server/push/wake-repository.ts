@@ -29,9 +29,9 @@ const livePush = `JOIN phone11_auth_session auths ON auths.id=p.session_id AND a
  JOIN tenants t ON t.id=p.tenant_id AND t.status='active'
  JOIN sip_accounts sa ON sa.extension_id=e.id AND sa.tenant_id=t.id AND sa.status='active' AND sa.deleted_at IS NULL
  AND ('sip:'||sa.sip_username||'@'||lower(sa.sip_domain))=p.sip_uri`;
-const liveBinding = `JOIN phone11_push_devices p ON p.revision=b.push_revision AND p.session_id=b.session_id
+const liveBinding = () => `JOIN phone11_push_devices p ON p.revision=b.push_revision AND p.session_id=b.session_id
  AND p.user_id=b.user_id AND p.tenant_id=b.tenant_id AND p.extension_id=b.extension_id AND p.device_id=b.device_id
- AND p.platform='ios' AND p.token_type='voip' ${livePush}`;
+ AND ((p.platform='ios' AND p.token_type='voip')${process.env.PHONE11_ANDROID_WAKE_ENABLED === '1' ? " OR (p.platform='android' AND p.token_type='fcm' AND p.sandbox=false)" : ""}) ${livePush}`;
 
 export function createWakeRepository(runTransaction: Transaction = withTransaction) {
   const transaction:Transaction=fn=>runTransaction(async client=>{
@@ -45,13 +45,13 @@ export function createWakeRepository(runTransaction: Transaction = withTransacti
     // binding. Acquire authority rows first, then push, then binding explicitly.
     await client.query(`SELECT auths.id FROM phone11_auth_session auths
       JOIN phone11_wake_bindings b ON b.session_id=auths.id WHERE b.id=$1 FOR SHARE OF auths`, [bindingId]);
-    await client.query(`SELECT p.revision FROM phone11_wake_bindings b ${liveBinding}
+    await client.query(`SELECT p.revision FROM phone11_wake_bindings b ${liveBinding()}
       WHERE b.id=$1 FOR SHARE OF p,auths`, [bindingId]);
     await client.query(`SELECT p.revision FROM phone11_push_devices p
       JOIN phone11_wake_bindings b ON p.session_id=b.session_id AND p.user_id=b.user_id
         AND p.tenant_id=b.tenant_id AND p.extension_id=b.extension_id AND p.device_id=b.device_id
       WHERE b.id=$1 FOR SHARE OF p`, [bindingId]);
-    const rows = await client.query(`SELECT b.*,p.sip_uri FROM phone11_wake_bindings b ${liveBinding}
+    const rows = await client.query(`SELECT b.*,p.sip_uri FROM phone11_wake_bindings b ${liveBinding()}
       WHERE b.id=$1 AND b.expires_at>clock_timestamp()
       AND (($2::text IS NOT NULL AND b.grant_hash=$2) OR ($3::text IS NOT NULL AND b.session_id=$3 AND b.user_id=$4))
       -- Legacy assignment tables are read-only to the API role. Lock only the
@@ -76,7 +76,8 @@ export function createWakeRepository(runTransaction: Transaction = withTransacti
   }
   return {
     pruneExpired,
-    async enroll(sessionId: string, userId: number, deviceId: string, configuredPilots: readonly string[] | string) {
+    async enroll(sessionId: string, userId: number, deviceId: string, configuredPilots: readonly string[] | string, platform: "ios" | "android" = "ios") {
+      if (platform === "android" && process.env.PHONE11_ANDROID_WAKE_ENABLED !== "1") throw new WakeError(503, "Background incoming calls are not enabled");
       return transaction(async client => {
         const pilotUris=typeof configuredPilots === "string" ? [configuredPilots] : configuredPilots;
         // Lock every explicitly configured target in a stable order before
@@ -89,13 +90,13 @@ export function createWakeRepository(runTransaction: Transaction = withTransacti
           WHERE p.session_id=$1 AND p.user_id=$2 AND p.device_id=$3 AND p.sip_uri=ANY($4::text[])
           FOR SHARE OF p,auths`, [sessionId,userId,deviceId,pilotUris]);
         const result = await client.query(`SELECT p.*,auths."expiresAt" AS session_expiry FROM phone11_push_devices p ${livePush}
-          WHERE p.session_id=$1 AND p.user_id=$2 AND p.device_id=$3 AND p.platform='ios' AND p.token_type='voip'
-          AND p.sip_uri=ANY($4::text[]) FOR SHARE OF p,auths`, [sessionId,userId,deviceId,pilotUris]);
+          WHERE p.session_id=$1 AND p.user_id=$2 AND p.device_id=$3 AND p.platform=$5 AND p.token_type=$6 AND ($5='ios' OR p.sandbox=false)
+          AND p.sip_uri=ANY($4::text[]) FOR SHARE OF p,auths`, [sessionId,userId,deviceId,pilotUris,platform,platform === "ios" ? "voip" : "fcm"]);
         if (result.rows.length !== 1) throw new WakeError(403, "Register this phone before enabling incoming call wake");
         const p = result.rows[0];
         // Reclaim revoked/expired enrollment; an invalid grant must not lock out a new phone.
         await client.query(`DELETE FROM phone11_wake_bindings old WHERE old.tenant_id=$1 AND old.extension_id=$2
-          AND (old.expires_at<=clock_timestamp() OR NOT EXISTS (SELECT 1 FROM phone11_wake_bindings b ${liveBinding}
+          AND (old.expires_at<=clock_timestamp() OR NOT EXISTS (SELECT 1 FROM phone11_wake_bindings b ${liveBinding()}
             WHERE b.id=old.id))`, [p.tenant_id,p.extension_id]);
         // One phone per pilot account. Never silently replace a live different device/user.
         const existing = await client.query("SELECT * FROM phone11_wake_bindings WHERE tenant_id=$1 AND extension_id=$2 FOR UPDATE", [p.tenant_id,p.extension_id]);
@@ -128,7 +129,7 @@ export function createWakeRepository(runTransaction: Transaction = withTransacti
         await client.query(`SELECT p.revision FROM phone11_push_devices p ${livePush}
           WHERE p.sip_uri=$1 FOR SHARE OF p,auths`, [sipUri]);
         await client.query("SELECT revision FROM phone11_push_devices WHERE sip_uri=$1 FOR SHARE", [sipUri]);
-        const rows = await client.query(`SELECT b.*,p.sip_uri FROM phone11_wake_bindings b ${liveBinding}
+        const rows = await client.query(`SELECT b.*,p.sip_uri FROM phone11_wake_bindings b ${liveBinding()}
           WHERE p.sip_uri=$1 AND b.expires_at>clock_timestamp() FOR SHARE OF b,p,auths`, [sipUri]);
         if (rows.rows.length !== 1) throw new WakeError(404, "No enrolled phone is available");
         const b = rows.rows[0];
@@ -157,7 +158,7 @@ export function createWakeRepository(runTransaction: Transaction = withTransacti
     async current(callUUID: string) {
       return transaction(async client => {
         const rows = await client.query(`SELECT c.*,c.expires_at<=clock_timestamp() AS expired,c.busy_until>clock_timestamp() AS busy FROM phone11_wake_calls c
-          JOIN phone11_wake_bindings b ON b.id=c.binding_id ${liveBinding}
+          JOIN phone11_wake_bindings b ON b.id=c.binding_id ${liveBinding()}
           WHERE c.id=$1 AND b.expires_at>clock_timestamp()`, [callUUID]);
         return rows.rows.length===1 ? call(rows.rows[0]) : null;
       });
@@ -165,7 +166,7 @@ export function createWakeRepository(runTransaction: Transaction = withTransacti
     async deliveryTarget(callUUID: string) {
       return transaction(async client => {
         const rows=await client.query(`SELECT b.push_revision,p.sip_uri FROM phone11_wake_calls c
-          JOIN phone11_wake_bindings b ON b.id=c.binding_id ${liveBinding}
+          JOIN phone11_wake_bindings b ON b.id=c.binding_id ${liveBinding()}
           WHERE c.id=$1 AND c.state='pending' AND c.expires_at>clock_timestamp() AND b.expires_at>clock_timestamp()`,[callUUID]);
         if (rows.rows.length!==1) throw new WakeError(410);
         return { revision:rows.rows[0].push_revision as string,sipUri:rows.rows[0].sip_uri as string };

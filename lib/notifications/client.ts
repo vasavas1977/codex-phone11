@@ -11,8 +11,10 @@ import { ChatNotificationSetupError } from './coordinator';
 const deviceKey='phone11_chat_notification_device_v1';
 let devicePromise:Promise<string>|undefined;
 export function chatNotificationClientEnabled() {
- return Platform.OS==='ios'&&Constants.expoConfig?.extra?.phone11ChatNotificationsEnabled===true&&
-  Constants.expoConfig?.extra?.phone11ApnsEnvironment==='production';
+ const config=Constants.expoConfig;
+ if(Platform.OS==='android')return config?.extra?.phone11AndroidChatNotificationsEnabled===true&&
+  typeof config.extra.phone11FcmProjectId==='string'&&/^[a-z][a-z0-9-]{4,28}[a-z0-9]$/.test(config.extra.phone11FcmProjectId)&&!!config.android?.package;
+ return Platform.OS==='ios'&&config?.extra?.phone11ChatNotificationsEnabled===true&&config.extra.phone11ApnsEnvironment==='production';
 }
 async function deviceId() {
  if(!devicePromise)devicePromise=(async()=>{
@@ -34,8 +36,10 @@ async function request<T>(current:()=>boolean,run:(client:ReturnType<typeof crea
 }
 export async function chatNotificationPermission(requestPermission:boolean) {
  if(!chatNotificationClientEnabled())return false;
+ // Android 13 requires a channel before requesting notification permission/token.
+ if(Platform.OS==='android')await Notifications.setNotificationChannelAsync('phone11_team_chat',{name:'Team Chat',importance:Notifications.AndroidImportance.DEFAULT,sound:'default'});
  let permission=await Notifications.getPermissionsAsync();
- if(!permission.granted&&requestPermission)permission=await Notifications.requestPermissionsAsync({ios:{allowAlert:true,allowBadge:false,allowSound:true}});
+ if(!permission.granted&&requestPermission)permission=await Notifications.requestPermissionsAsync(Platform.OS==='ios'?{ios:{allowAlert:true,allowBadge:false,allowSound:true}}:{});
  return permission.granted;
 }
 export function parseOrdinaryApnsToken(value:unknown):string|null {
@@ -43,22 +47,31 @@ export function parseOrdinaryApnsToken(value:unknown):string|null {
  const result=value as {type?:unknown;data?:unknown};
  return result.type==='ios'&&typeof result.data==='string'&&/^[0-9a-fA-F]{32,512}$/.test(result.data)?result.data.toLowerCase():null;
 }
-export async function ordinaryApnsToken() {
+export function parseOrdinaryChatToken(value:unknown):string|null {
+ if(Platform.OS==='ios')return parseOrdinaryApnsToken(value);
+ if(Platform.OS!=='android'||!value||typeof value!=='object')return null;
+ const token=value as {type?:unknown;data?:unknown};
+ return token.type==='android'&&typeof token.data==='string'&&/^[A-Za-z0-9_:-]{32,4096}$/.test(token.data)?token.data:null;
+}
+export async function ordinaryChatToken() {
  // Expo's getter retains a rejected native promise. Retrying it cannot recover;
  // a later validated token event or a fresh app process may provide a token.
  try {
-  const token=parseOrdinaryApnsToken(await Notifications.getDevicePushTokenAsync());
+  const token=parseOrdinaryChatToken(await Notifications.getDevicePushTokenAsync());
   if(!token)throw new ChatNotificationSetupError(false);
   return token;
  }catch{throw new ChatNotificationSetupError(false);}
 }
+// Retain the named iOS helper for existing callers.
+export const ordinaryApnsToken=ordinaryChatToken;
 export async function registerChatNotificationToken(token:string,tenantId:number,current:()=>boolean) {
  if(!chatNotificationClientEnabled()||!current())return false;
  const id=await deviceId();if(!current())return false;
- const bundleId=Constants.expoConfig?.ios?.bundleIdentifier;if(!bundleId)return false;
+ const android=Platform.OS==='android';
+ const bundleId=android?Constants.expoConfig?.android?.package:Constants.expoConfig?.ios?.bundleIdentifier;if(!bundleId)return false;
  return request(current,async client=>{
-  const readiness=await client.chatNotifications.readiness.query();if(!current()||!readiness.available)return false;
-  const result=await client.chatNotifications.register.mutate({tenantId,deviceId:id,token,bundleId,environment:'production'});return result.registered===true;
+  const readiness=await client.chatNotifications.readiness.query(android?{platform:'android'}:undefined);if(!current()||!readiness.available)return false;
+  const result=await client.chatNotifications.register.mutate(android?{platform:'android',projectId:Constants.expoConfig!.extra!.phone11FcmProjectId,tenantId,deviceId:id,token,bundleId,environment:'production'}:{tenantId,deviceId:id,token,bundleId,environment:'production'});return result.registered===true;
  });
 }
 export async function resolveChatNotification(eventId:string,current:()=>boolean) {

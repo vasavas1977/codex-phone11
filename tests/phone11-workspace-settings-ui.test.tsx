@@ -91,6 +91,9 @@ vi.mock("../components/admin/admin-workspace-boundary", () => ({
   AdminWorkspaceBoundary: element,
 }));
 vi.mock("../components/ui/icon-symbol", () => ({ IconSymbol: () => null }));
+vi.mock("../components/admin/outbound-call-policy", () => ({
+  OutboundCallPolicy: () => createElement("section", null, "Outbound call policy"),
+}));
 vi.mock("../constants/oauth", () => ({
   portalSignInRoute: (path: string) => `/auth/sign-in?returnTo=${path}`,
 }));
@@ -280,7 +283,9 @@ describe("workspace timezone screen", () => {
       settingsAvailable: false,
       supportedSettings: [],
     });
-    expect(render()).toContain("Workspace timezone is unavailable");
+    const html = render();
+    expect(html).toContain("Workspace timezone is unavailable");
+    expect(html).toContain("Outbound call policy");
     expect(m.inputs.has("Workspace timezone")).toBe(false);
     expect(m.presses.has("Save workspace timezone")).toBe(false);
 

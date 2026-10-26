@@ -212,6 +212,87 @@ class PackagingChecks(unittest.TestCase):
         self.rewrite_apk(apk, {"assets/index.android.bundle": bytes.fromhex("c61fbc03c103191f") + b"synthetic-parser-bytecode" * 4})
         return apk, xml.replace('debuggable="true"', 'debuggable="false"')
 
+    def native_candidate_fixture(self):
+        apk, xml = self.standalone_fixture()
+        xml = xml.replace("ai.phone11.mobile.foregroundtrial", "ai.phone11.mobile.androidcandidate")
+        return apk, xml.replace("</application>", '<meta-data android:name="ai.phone11.siprix.NATIVE_CANDIDATE_ENABLED" android:value="true"/></application>')
+
+    def test_native_candidate_requires_its_own_package_and_literal_metadata(self):
+        apk, xml = self.native_candidate_fixture()
+        receipt = check.inspect_apk(apk, xml, trial=True, standalone=True, native_candidate=True)
+        self.assertEqual(receipt["package"], "ai.phone11.mobile.androidcandidate")
+        self.assertEqual(receipt["schema"], "phone11.android.native-candidate-inspection.v1")
+        self.assertTrue(receipt["native_source_candidate"])
+        self.assertFalse(receipt["wake_source_candidate"])
+        self.assertFalse(receipt["signature_verified"])
+        self.assertNotIn("signer_certificate_sha256", receipt)
+        for package in ("ai.phone11.mobile", "ai.phone11.mobile.foregroundtrial", "ai.phone11.mobile.androidcandidate.fake"):
+            with self.subTest(package=package), self.assertRaisesRegex(ValueError, "unexpected_apk_identity"):
+                check.inspect_apk(apk, xml.replace("ai.phone11.mobile.androidcandidate", package), trial=True, standalone=True, native_candidate=True)
+        metadata = '<meta-data android:name="ai.phone11.siprix.NATIVE_CANDIDATE_ENABLED" android:value="true"/>'
+        for changed in (xml.replace(metadata, ""), xml.replace(metadata, metadata.replace('"true"', '"false"')),
+                        xml.replace(metadata, metadata.replace('"true"', '"@bool/dynamic"')), xml.replace(metadata, metadata * 2)):
+            with self.subTest(changed=changed), self.assertRaisesRegex(ValueError, "native_candidate_metadata_required"):
+                check.inspect_apk(apk, changed, trial=True, standalone=True, native_candidate=True)
+        with self.assertRaisesRegex(ValueError, "runtime_gate"):
+            check.inspect_apk(apk, xml.replace('FOREGROUND_SOURCE_ENABLED" android:value="true"', 'FOREGROUND_SOURCE_ENABLED" android:value="false"'), trial=True, standalone=True, native_candidate=True)
+
+    def test_native_candidate_cannot_use_debug_or_ordinary_inspection(self):
+        apk, xml = self.native_candidate_fixture()
+        for trial, standalone in ((False, False), (True, False), (False, True)):
+            with self.subTest(trial=trial, standalone=standalone), self.assertRaisesRegex(ValueError, "native_candidate_standalone_required"):
+                check.inspect_apk(apk, xml, trial=trial, standalone=standalone, native_candidate=True)
+        with self.assertRaisesRegex(ValueError, "standalone_release_manifest_required"):
+            check.inspect_apk(apk, xml.replace('debuggable="false"', 'debuggable="true"'), trial=True, standalone=True, native_candidate=True)
+        # The old profile still rejects the candidate identity and emits its old schema for its own package.
+        with self.assertRaisesRegex(ValueError, "unexpected_apk_identity"):
+            check.inspect_apk(apk, xml, trial=True, standalone=True)
+        old_apk, old_xml = self.standalone_fixture()
+        self.assertEqual(check.inspect_apk(old_apk, old_xml, trial=True, standalone=True)["schema"], "phone11.android.standalone-inspection.v1")
+
+    def test_native_candidate_rejects_wake_metadata_and_telecom_activation(self):
+        apk, xml = self.native_candidate_fixture()
+        for value in ("true", "1", "@bool/wake"):
+            metadata = f'<meta-data android:name="ai.phone11.siprix.WAKE_CANDIDATE_ENABLED" android:value="{value}"/>'
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "native_candidate_wake_not_permitted"):
+                check.inspect_apk(apk, xml.replace("</application>", metadata + "</application>"), trial=True, standalone=True, native_candidate=True)
+        metadata = '<meta-data android:name="ai.phone11.siprix.WAKE_CANDIDATE_ENABLED" android:value="false"/>'
+        self.assertFalse(check.inspect_apk(apk, xml.replace("</application>", metadata + "</application>"), trial=True, standalone=True, native_candidate=True)["wake_source_candidate"])
+        for element in ('<service android:name="ai.phone11.siprix.Phone11IncomingCallService"/>',
+                        '<service android:name="vendor.GenericConnection" android:permission="android.permission.BIND_TELECOM_CONNECTION_SERVICE"/>',
+                        '<service android:name="vendor.GenericConnection" android:foregroundServiceType="microphone|phoneCall"/>',
+                        '<service android:name="vendor.GenericConnection"><intent-filter><action android:name="android.telecom.ConnectionService"/></intent-filter></service>'):
+            with self.subTest(element=element), self.assertRaisesRegex(ValueError, "(?:uncommissioned_service|telecom_service_not_permitted)"):
+                check.inspect_apk(apk, xml.replace("</application>", element + "</application>"), trial=True, standalone=True, native_candidate=True)
+        for permission in ("MANAGE_OWN_CALLS", "FOREGROUND_SERVICE_PHONE_CALL", "USE_FULL_SCREEN_INTENT"):
+            element = f'<uses-permission android:name="android.permission.{permission}"/>'
+            with self.subTest(permission=permission), self.assertRaisesRegex(ValueError, "native_candidate_wake_permission_not_permitted"):
+                check.inspect_apk(apk, xml.replace("<application ", element + "<application "), trial=True, standalone=True, native_candidate=True)
+
+    def test_native_candidate_preserves_pinned_sdk_bundle_and_arm_requirements(self):
+        for change, expected in (({"lib/x86_64/libother.so": b"unexpected"}, "non_arm_native_inventory"),
+                                 ({"assets/index.android.bundle": b"invalid bundle"}, "hermes_bundle_required"),
+                                 ({"lib/arm64-v8a/libsiprix.so": b"wrong SDK bytes"}, "native_sdk_checksum_mismatch"),
+                                 ({"classes.dex": synthetic_dex(PINNED_TRIAL_DEFINITIONS[:-1])}, "bridge_or_sdk_classes_missing")):
+            apk, xml = self.native_candidate_fixture()
+            self.rewrite_apk(apk, change)
+            with self.subTest(expected=expected), self.assertRaisesRegex(ValueError, expected):
+                check.inspect_apk(apk, xml, trial=True, standalone=True, native_candidate=True)
+
+    def test_native_candidate_cli_requires_independent_signature_and_exclusive_mode(self):
+        script = str(Path(__file__).resolve().parents[1] / "scripts/verify-phone11-android-apk.py")
+        common = [sys.executable, script, "--native-candidate", "--apk", "/absent.apk", "--apkanalyzer", "/absent-analyzer"]
+        for flags in ([], ["--expected-signer-sha256", "bad"], ["--expected-signer-sha256", "0" * 64]):
+            result = subprocess.run(common + flags, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(result.stdout, "")
+            self.assertIn("independent expected signer", result.stderr)
+        for flags in (["--trial"], ["--standalone-trial"], ["--wake-candidate"]):
+            result = subprocess.run(common + flags, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(result.stdout, "")
+            self.assertRegex(result.stderr, "not allowed with argument|unrecognized arguments")
+
     def test_standalone_byte_inspection_never_claims_a_verified_signature(self):
         apk, xml = self.standalone_fixture()
         receipt = check.inspect_apk(apk, xml, trial=True, standalone=True)

@@ -5,8 +5,9 @@ import { authorizeWorkspace } from '../chat/service';
 
 type Transaction = typeof withTransaction;
 export const chatNotificationsEnabled = () => process.env.PHONE11_CHAT_NOTIFICATIONS_ENABLED === '1';
-export interface ChatDeviceInput { tenantId:number; deviceId:string; token:string; bundleId:string; environment:'production'|'sandbox'; }
-export interface ChatDelivery { id:string; revision:string; token:string; bundleId:string; environment:'production'|'sandbox'; registeredAt:number; registeredVersion:string; expiresAt:number; }
+export const androidChatNotificationsEnabled = () => chatNotificationsEnabled()&&process.env.PHONE11_CHAT_ANDROID_NOTIFICATIONS_ENABLED === '1';
+export interface ChatDeviceInput { platform?:'ios'|'android'; tenantId:number; deviceId:string; token:string; bundleId:string; environment:'production'|'sandbox'; }
+export interface ChatDelivery { platform?:'ios'|'android'; id:string; revision:string; token:string; bundleId:string; environment:'production'|'sandbox'; registeredAt:number; registeredVersion:string; expiresAt:number; }
 const active = `JOIN phone11_auth_session a ON a.id=d.session_id AND a."expiresAt">clock_timestamp()
  JOIN phone11_auth_identity ai ON ai.auth_user_id=a."userId" AND ai.legacy_user_id=d.user_id AND ai.disabled_at IS NULL
  JOIN tenant_memberships tm ON tm.user_id=d.user_id AND tm.tenant_id=d.tenant_id AND tm.status='active'
@@ -46,8 +47,9 @@ export async function enqueueChatNotifications(db:PoolClient,messageId:string) {
   SELECT gen_random_uuid(),d.id,d.revision,msg.id FROM phone11_chat_messages msg
   JOIN phone11_chat_members m ON m.tenant_id=msg.tenant_id AND m.conversation_id=msg.conversation_id AND m.user_id<>msg.sender_id
   JOIN phone11_chat_notification_devices d ON d.user_id=m.user_id AND d.tenant_id=m.tenant_id ${active}
-  WHERE msg.id=$1 AND msg.sequence>m.last_read_sequence AND ${assigned} AND ${unmuted} AND ${allowed}
-  ON CONFLICT(device_id,message_id) DO NOTHING`,[messageId]);
+  WHERE (COALESCE(to_jsonb(d)->>'platform','ios')='ios' OR $2::boolean)
+  AND msg.id=$1 AND msg.sequence>m.last_read_sequence AND ${assigned} AND ${unmuted} AND ${allowed}
+  ON CONFLICT(device_id,message_id) DO NOTHING`,[messageId,androidChatNotificationsEnabled()]);
 }
 export function createChatNotificationRepository(transaction:Transaction=withTransaction) {
  const bounded:Transaction=fn=>transaction(async db=>{
@@ -63,8 +65,11 @@ export function createChatNotificationRepository(transaction:Transaction=withTra
       ON ai.auth_user_id=a."userId" AND ai.legacy_user_id=$2 AND ai.disabled_at IS NULL
       WHERE a.id=$1 AND a."expiresAt">clock_timestamp() FOR SHARE OF a,ai`,[sessionId,userId]);
     if(auth.rows.length!==1)throw new Error('Notification session unavailable');
-    const hash=createHash('sha256').update(input.token.toLowerCase()).digest('hex');
-    await db.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`chat-apns:${input.bundleId}:${input.environment}:${hash}`]);
+    const platform=input.platform??'ios';
+    if(platform==='android'&&!androidChatNotificationsEnabled())throw new Error('Chat notifications are not configured');
+    const token=platform==='ios'?input.token.toLowerCase():input.token;
+    const hash=createHash('sha256').update(token).digest('hex');
+    await db.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`chat-${platform==='ios'?'apns':'fcm'}:${input.bundleId}:${input.environment}:${hash}`]);
     await db.query('SELECT pg_advisory_xact_lock(731104,$1)',[userId]);
     // Retired/remapped identities are already ineligible for delivery. They must
     // not consume all device slots when the owner signs in through recovery.
@@ -77,15 +82,20 @@ export function createChatNotificationRepository(transaction:Transaction=withTra
     // Authenticated account switch removes previous owner/session bindings before
     // reusing the provider token; old outbox events cascade and cannot transfer.
     await db.query(`DELETE FROM phone11_chat_notification_devices WHERE bundle_id=$1 AND environment=$2 AND token_hash=$3
-      AND NOT(user_id=$4 AND tenant_id=$5 AND device_id=$6 AND session_id=$7)`,[input.bundleId,input.environment,hash,userId,input.tenantId,input.deviceId,sessionId]);
-    await db.query(`INSERT INTO phone11_chat_notification_devices(id,session_id,user_id,tenant_id,device_id,token,token_hash,bundle_id,environment,revision)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(user_id,tenant_id,device_id) DO UPDATE SET
-      session_id=EXCLUDED.session_id,token=EXCLUDED.token,token_hash=EXCLUDED.token_hash,bundle_id=EXCLUDED.bundle_id,environment=EXCLUDED.environment,
+      AND COALESCE(to_jsonb(phone11_chat_notification_devices)->>'platform','ios')=$8
+      AND NOT(user_id=$4 AND tenant_id=$5 AND device_id=$6 AND session_id=$7)`,[input.bundleId,input.environment,hash,userId,input.tenantId,input.deviceId,sessionId,platform]);
+    // Omitting platform on iOS preserves compatibility with the original registry.
+    // Android enrollment requires the separately commissioned additive migration.
+    const registered=await db.query(`INSERT INTO phone11_chat_notification_devices(id,session_id,user_id,tenant_id,device_id,token,token_hash,bundle_id,environment,revision${platform==='android'?',platform':''})
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10${platform==='android'?",'android'":''}) ON CONFLICT(user_id,tenant_id,device_id) DO UPDATE SET
+      session_id=EXCLUDED.session_id,token=EXCLUDED.token,token_hash=EXCLUDED.token_hash,bundle_id=EXCLUDED.bundle_id,environment=EXCLUDED.environment,${platform==='android'?"platform='android',":''}
       revision=CASE WHEN phone11_chat_notification_devices.session_id=EXCLUDED.session_id AND phone11_chat_notification_devices.token_hash=EXCLUDED.token_hash
+        AND COALESCE(to_jsonb(phone11_chat_notification_devices)->>'platform','ios')='${platform}'
         AND phone11_chat_notification_devices.bundle_id=EXCLUDED.bundle_id AND phone11_chat_notification_devices.environment=EXCLUDED.environment
-        THEN phone11_chat_notification_devices.revision ELSE EXCLUDED.revision END,registered_at=clock_timestamp() RETURNING id`,
-      [randomUUID(),sessionId,userId,input.tenantId,input.deviceId,input.token.toLowerCase(),hash,input.bundleId,input.environment,randomUUID()]);
-    return {registered:true as const};
+        THEN phone11_chat_notification_devices.revision ELSE EXCLUDED.revision END,registered_at=clock_timestamp()
+      WHERE COALESCE(to_jsonb(phone11_chat_notification_devices)->>'platform','ios')='${platform}' RETURNING id`,
+      [randomUUID(),sessionId,userId,input.tenantId,input.deviceId,token,hash,input.bundleId,input.environment,randomUUID()]);
+    return {registered:registered.rows.length===1};
    });
   },
   async unregister(userId:number,sessionId:string,deviceId:string) {
@@ -96,19 +106,19 @@ export function createChatNotificationRepository(transaction:Transaction=withTra
     const allowed=await notificationAllowed(db);
     // Lock and mark before network. A crash/uncertain response is intentionally
     // not replayed: attempted rows are never reclaimed by another worker.
-    const rows=await db.query(`SELECT o.id,d.revision,d.token,d.bundle_id,d.environment,d.registered_at,d.registered_at::text AS registered_version,o.expires_at
+    const rows=await db.query(`SELECT o.id,COALESCE(to_jsonb(d)->>'platform','ios') AS platform,d.revision,d.token,d.bundle_id,d.environment,d.registered_at,d.registered_at::text AS registered_version,o.expires_at
       FROM phone11_chat_notification_outbox o JOIN phone11_chat_notification_devices d ON d.id=o.device_id ${authorized}
-      WHERE o.state='pending' AND ${valid} AND ${unmuted} AND ${allowed} AND msg.sequence>m.last_read_sequence
-      ORDER BY o.created_at LIMIT 1 FOR UPDATE OF o SKIP LOCKED`);
+      WHERE o.state='pending' AND (COALESCE(to_jsonb(d)->>'platform','ios')='ios' OR $1::boolean) AND ${valid} AND ${unmuted} AND ${allowed} AND msg.sequence>m.last_read_sequence
+      ORDER BY o.created_at LIMIT 1 FOR UPDATE OF o SKIP LOCKED`,[androidChatNotificationsEnabled()]);
     const r=rows.rows[0];if(!r)return null;
     await db.query(`UPDATE phone11_chat_notification_outbox SET state='attempted',attempted_at=clock_timestamp() WHERE id=$1`,[r.id]);
-    return {id:r.id,revision:r.revision,token:r.token,bundleId:r.bundle_id,environment:r.environment,registeredAt:new Date(r.registered_at).getTime(),registeredVersion:r.registered_version,expiresAt:new Date(r.expires_at).getTime()};
+    return {platform:r.platform,id:r.id,revision:r.revision,token:r.token,bundleId:r.bundle_id,environment:r.environment,registeredAt:new Date(r.registered_at).getTime(),registeredVersion:r.registered_version,expiresAt:new Date(r.expires_at).getTime()};
    });
   },
   async current(delivery:ChatDelivery) {
    return bounded(async db=>{const allowed=await notificationAllowed(db);return (await db.query(`SELECT 1 FROM phone11_chat_notification_outbox o
      JOIN phone11_chat_notification_devices d ON d.id=o.device_id ${authorized}
-     WHERE o.id=$1 AND d.revision=$2 AND o.state='attempted' AND ${valid} AND ${unmuted} AND ${allowed} AND msg.sequence>m.last_read_sequence`,[delivery.id,delivery.revision])).rows.length===1;});
+     WHERE o.id=$1 AND d.revision=$2 AND o.state='attempted' AND (COALESCE(to_jsonb(d)->>'platform','ios')='ios' OR $3::boolean) AND ${valid} AND ${unmuted} AND ${allowed} AND msg.sequence>m.last_read_sequence`,[delivery.id,delivery.revision,androidChatNotificationsEnabled()])).rows.length===1;});
   },
   async finish(delivery:ChatDelivery,accepted:boolean) {
    await bounded(db=>db.query(`UPDATE phone11_chat_notification_outbox o SET state=$2 FROM phone11_chat_notification_devices d
@@ -123,7 +133,7 @@ export function createChatNotificationRepository(transaction:Transaction=withTra
    return bounded(async db=>{
     const r=await db.query(`SELECT msg.conversation_id,d.tenant_id FROM phone11_chat_notification_outbox o
       JOIN phone11_chat_notification_devices d ON d.id=o.device_id ${authorized}
-      WHERE o.id=$1 AND d.user_id=$2 AND d.session_id=$3 AND ${valid} AND o.state IN ('attempted','accepted')`,[eventId,userId,sessionId]);
+      WHERE o.id=$1 AND d.user_id=$2 AND d.session_id=$3 AND (COALESCE(to_jsonb(d)->>'platform','ios')='ios' OR $4::boolean) AND ${valid} AND o.state IN ('attempted','accepted')`,[eventId,userId,sessionId,androidChatNotificationsEnabled()]);
     return r.rows.length===1?{tenantId:Number(r.rows[0].tenant_id),conversationId:r.rows[0].conversation_id}:null;
    });
   },

@@ -6,7 +6,7 @@ import { addAuthChangeListener,getAuthSnapshot } from '../_core/auth';
 import { useChatStore } from '../chat/store';
 import { createChatNotificationCoordinator, type ChatNotificationEnableResult } from './coordinator';
 import { createEnrollmentRecovery } from './enrollment-recovery';
-import { chatNotificationClientEnabled,chatNotificationPermission,ordinaryApnsToken,parseOrdinaryApnsToken,registerChatNotificationToken,resolveChatNotification } from './client';
+import { chatNotificationClientEnabled,chatNotificationPermission,ordinaryChatToken,parseOrdinaryChatToken,registerChatNotificationToken,resolveChatNotification } from './client';
 import { enrollmentStatusForResult,installChatNotificationEnableAction,publishChatNotificationEnrollment,requestChatNotificationEnrollment } from './enrollment-status';
 let enable:()=>Promise<ChatNotificationEnableResult>=async()=>({status:"unavailable"});
 /** Invoke from an explicit notification-permission action, never on launch. */
@@ -22,7 +22,7 @@ export function ChatNotifications() {
   let observedToken:string|null=null,lookup:Promise<string>|null=null,stopped=false;
   const currentToken=()=>{
    if(observedToken)return Promise.resolve(observedToken);
-   if(!lookup)lookup=Promise.resolve().then(ordinaryApnsToken).then(value=>{
+   if(!lookup)lookup=Promise.resolve().then(ordinaryChatToken).then(value=>{
     if(!stopped)observedToken=observedToken??value;
     return observedToken??value;
    }).finally(()=>{lookup=null;});
@@ -58,7 +58,7 @@ export function ChatNotifications() {
   const offAuth=addAuthChangeListener(sync),offChat=useChatStore.subscribe(sync);
   const activity=AppState.addEventListener('change',sync);
   const token=Notifications.addPushTokenListener(value=>{
-   const next=parseOrdinaryApnsToken(value);
+   const next=parseOrdinaryChatToken(value);
    if(stopped||!next||next===observedToken)return;
    observedToken=next;
    // Expo emits this event during getDevicePushTokenAsync. Consume the value,

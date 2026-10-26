@@ -9,6 +9,8 @@ import {
 import { router } from "expo-router";
 
 import { ScreenContainer } from "@/components/screen-container";
+import { portalSignInRoute } from "@/constants/oauth";
+import { isAdminSessionUnauthorized } from "@/lib/admin/session-recovery";
 import { useAdminAuthState } from "./use-admin-auth-state";
 import { useColors } from "@/hooks/use-colors";
 import { usePbxAdminWorkspace } from "@/hooks/use-pbx-admin";
@@ -29,6 +31,12 @@ export function AdminWorkspaceBoundary({
     retry: retryAuth,
   } = useAdminAuthState();
   const workspace = usePbxAdminWorkspace();
+  const sessionExpired =
+    (workspace.membershipsQuery.isError &&
+      isAdminSessionUnauthorized(workspace.membershipsQuery.error)) ||
+    (workspace.admissionError &&
+      isAdminSessionUnauthorized(workspace.tenantQuery?.error));
+  const requiresSignIn = !authChecking && !authUnavailable && (!user || sessionExpired);
 
   let title = "";
   let detail = "";
@@ -43,6 +51,9 @@ export function AdminWorkspaceBoundary({
   } else if (!user) {
     title = "Sign in to manage Phone11";
     detail = "Open the admin portal after signing in.";
+  } else if (sessionExpired) {
+    title = "Sign in again to manage Phone11";
+    detail = "Your session has expired. Sign in again to confirm your workspace access.";
   } else if (
     workspace.membershipsQuery.isLoading ||
     workspace.admissionChecking
@@ -93,7 +104,16 @@ export function AdminWorkspaceBoundary({
         >
           {detail}
         </Text>
-        {!authChecking &&
+        {requiresSignIn ? (
+          <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel="Sign in"
+            onPress={() => router.replace(portalSignInRoute("/admin"))}
+            style={[styles.button, { borderColor: colors.primary }]}
+          >
+            <Text style={{ color: colors.primary }}>Sign in</Text>
+          </TouchableOpacity>
+        ) : !authChecking &&
         (authUnavailable ||
           (user &&
             (workspace.membershipsQuery.isError ||

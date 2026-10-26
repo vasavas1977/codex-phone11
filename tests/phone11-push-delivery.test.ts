@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({ owners: vi.fn(), list: vi.fn(), current: vi.fn(), markUsed: vi.fn(), removeInvalid: vi.fn(), send: vi.fn(), adc: vi.fn() }));
 vi.mock("../server/pbx/push-access", () => ({ assignedPushOwners: mocks.owners, requirePushOwner: vi.fn() }));
 vi.mock("../server/push/repository", () => ({ pushRepository: { list: mocks.list, isCurrent: mocks.current, markUsed: mocks.markUsed, removeInvalid: mocks.removeInvalid } }));
-vi.mock("../server/push/apns", () => ({ sendApnsPush: mocks.send }));
+vi.mock("../server/push/apns", async importOriginal => ({ ...await importOriginal<typeof import("../server/push/apns")>(), sendApnsPush: mocks.send }));
 vi.mock("google-auth-library", () => ({ GoogleAuth: class { async getClient() { return { getAccessToken: mocks.adc }; } } }));
 import { triggerPushForUser } from "../server/push-gateway";
 const owner = { userId: 1, tenantId: 10, extensionId: 1, sipUri: "sip:1001@test.invalid" };
@@ -69,14 +69,46 @@ describe("push gateway provider acceptance and registry lifecycle", () => {
     pending.reject(new Error("late cleanup error")); await vi.advanceTimersByTimeAsync(0);
   });
   it("does not make an FCM request after credential acquisition outlives the call", async () => {
-    vi.useFakeTimers(); vi.stubEnv("FCM_PROJECT_ID", "test-only-project");
+    vi.useFakeTimers(); vi.stubEnv("FCM_PROJECT_ID", "test-only-project"); vi.stubEnv("FCM_ANDROID_PACKAGE", "test.phone11");
     const fetchMock = vi.fn(); vi.stubGlobal("fetch", fetchMock);
     mocks.list.mockResolvedValue([{ ...token, platform: "android", tokenType: "fcm" }]);
-    const pending = deferred<any>(); mocks.adc.mockReturnValue(pending.promise);
-    const result = triggerPushForUser(call); await vi.advanceTimersByTimeAsync(5001);
+    const pending = deferred<any>(), credentialsStarted = deferred<void>();
+    mocks.adc.mockImplementation(() => { credentialsStarted.resolve(); return pending.promise; });
+    const result = triggerPushForUser(call);
+    // Wait for the lazy ADC import to reach the stalled credential request so
+    // fake time cannot expire the call while module loading is still in flight.
+    await credentialsStarted.promise;
+    await vi.advanceTimersByTimeAsync(5001);
     expect(await result).toEqual({ sent: 0, errors: ["Push delivery deadline elapsed"] });
     pending.resolve({ token: "fake-delayed-credential" }); await vi.advanceTimersByTimeAsync(0);
     expect(fetchMock).not.toHaveBeenCalled(); expect(mocks.markUsed).not.toHaveBeenCalled();
+  });
+
+  it("preserves ordinary FCM payload while rechecking revision after credentials",async()=>{
+    vi.stubEnv("FCM_PROJECT_ID","test-only-project");vi.stubEnv("FCM_ANDROID_PACKAGE","test.phone11");
+    const android={...token,platform:"android",tokenType:"fcm"};mocks.list.mockResolvedValue([android]);mocks.adc.mockResolvedValue({token:"fake-test-credential"});
+    const fetcher=vi.fn().mockResolvedValue(new Response("",{status:200}));vi.stubGlobal("fetch",fetcher);
+    expect(await triggerPushForUser(call)).toEqual({sent:1,errors:[]});
+    const body=JSON.parse(fetcher.mock.calls[0][1].body);
+    expect(body.message.data).toMatchObject({type:"voip_call",callId:call.callId,callerNumber:call.callerNumber});
+    expect(body.message.data).not.toHaveProperty("bindingId");expect(body.message.android).not.toHaveProperty("direct_boot_ok");
+    expect(mocks.current).toHaveBeenCalledTimes(2);
+  });
+  it("does not submit legacy FCM after a revision is revoked during credential acquisition",async()=>{
+    vi.stubEnv("FCM_PROJECT_ID","test-only-project");vi.stubEnv("FCM_ANDROID_PACKAGE","test.phone11");
+    mocks.list.mockResolvedValue([{...token,platform:"android",tokenType:"fcm"}]);mocks.adc.mockResolvedValue({token:"fake-test-credential"});
+    mocks.current.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    const fetcher=vi.fn();vi.stubGlobal("fetch",fetcher);
+    expect((await triggerPushForUser(call)).sent).toBe(0);expect(fetcher).not.toHaveBeenCalled();expect(mocks.markUsed).not.toHaveBeenCalled();
+  });
+  it.each([true,false])("FCM response only invalidates the sent revision for a typed invalid token (%s)",async invalid=>{
+    vi.stubEnv("FCM_PROJECT_ID","test-only-project");vi.stubEnv("FCM_ANDROID_PACKAGE","test.phone11");
+    const sent={...token,platform:"android",tokenType:"fcm"};mocks.list.mockResolvedValue([sent]);mocks.adc.mockResolvedValue({token:"fake-test-credential"});
+    const response=invalid?{error:{details:[{"@type":"type.googleapis.com/google.firebase.fcm.v1.FcmError",errorCode:"UNREGISTERED"}]}}:{error:{message:"UNREGISTERED private provider text"}};
+    vi.stubGlobal("fetch",vi.fn().mockImplementation(async()=>{mocks.list.mockResolvedValue([{...sent,revision:"replacement-revision"}]);return new Response(JSON.stringify(response),{status:404});}));
+    expect((await triggerPushForUser(call)).sent).toBe(0);
+    if(invalid)expect(mocks.removeInvalid).toHaveBeenCalledWith(sent);else expect(mocks.removeInvalid).not.toHaveBeenCalled();
+    expect(mocks.markUsed).not.toHaveBeenCalled();
   });
 
 });

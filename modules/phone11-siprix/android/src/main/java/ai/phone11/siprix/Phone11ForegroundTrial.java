@@ -6,7 +6,13 @@ import java.util.Map;
 public final class Phone11ForegroundTrial {
   private Phone11ForegroundTrial() {}
   public static void requireSource(boolean buildEnabled, String packageName, boolean manifestEnabled) {
-    if (!buildEnabled || !"ai.phone11.mobile.foregroundtrial".equals(packageName) || !manifestEnabled) {
+    requireSource(buildEnabled,packageName,manifestEnabled,false);
+  }
+  public static void requireSource(boolean buildEnabled,String packageName,boolean manifestEnabled,boolean candidate) {
+    requireSource(buildEnabled,packageName,manifestEnabled,candidate,false);
+  }
+  public static void requireSource(boolean buildEnabled,String packageName,boolean manifestEnabled,boolean candidate,boolean wake) {
+    if (!buildEnabled || (wake&&!candidate) || !(wake?"ai.phone11.mobile.staging":candidate?"ai.phone11.mobile.androidcandidate":"ai.phone11.mobile.foregroundtrial").equals(packageName) || !manifestEnabled) {
       throw new Phone11CallRuntime.Failure("E_ANDROID_SOURCE_GATE");
     }
   }
@@ -17,9 +23,11 @@ public final class Phone11ForegroundTrial {
     if (!granted) throw new Phone11CallRuntime.Failure("E_MICROPHONE_PERMISSION");
   }
   public static Map<String, Object> capabilities() {return capabilities(false);}
-  public static Map<String, Object> capabilities(boolean consultation) {
+  public static Map<String, Object> capabilities(boolean consultation) {return capabilities(consultation,false);}
+  public static Map<String, Object> capabilities(boolean consultation,boolean candidate) {return capabilities(consultation,candidate,false);}
+  public static Map<String, Object> capabilities(boolean consultation,boolean candidate,boolean wake) {
     return Phone11CallRuntime.map("foregroundAudioTrial", true, "sdkVersion", "1.1.0",
       "sdkBuild", "20260905_1222", "trialCallLimitSeconds", 60, "backgroundCalling", false,
-      "closedAppCalling", false, "wake", false, "transfer", false, "consultationSourceCandidate", consultation, "video", false);
+      "closedAppCalling", false, "wake", false, "wakeSourceCandidate", wake, "transfer", candidate, "nativeSourceCandidate", candidate, "blindTransferSourceCandidate", candidate, "consultationSourceCandidate", consultation, "video", false);
   }
 }

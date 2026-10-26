@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import { mkdtempSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { runInNewContext } from "node:vm";
 const require = createRequire(import.meta.url);
 const integration = require("../plugins/with-phone11-android-runtime.js");
 const trial = { PHONE11_ANDROID_FOREGROUND_TRIAL: "1", EXPO_PUBLIC_PHONE11_ANDROID_FOREGROUND_TRIAL: "1", EXPO_PUBLIC_SIP_ENGINE: "siprix" };
@@ -160,7 +161,42 @@ test("ordinary and trial autolinking stay explicit while trial excludes Android 
 test("candidate identity/runtime stay Android-specific and iOS license configuration remains native-only", () => {
   const source = readFileSync(new URL("../app.config.ts", import.meta.url), "utf8");
   assert.match(source, /package: androidTrial\.packageName \?\? env\.androidPackage/);
-  assert.match(source, /androidTrial\.enabled \? \{ runtimeVersion: "1\.0\.0-siprix-android-foreground-trial-1"/);
+  const typescript = require("typescript");
+  const compiled = typescript.transpileModule(source, { compilerOptions: {
+    module: typescript.ModuleKind.CommonJS, target: typescript.ScriptTarget.ES2022,
+  } }).outputText;
+  const evaluate = env => {
+    const module = { exports: {} };
+    const settings = {
+      "./plugins/with-phone11-android-runtime.js": { androidRuntimeBuildSettings: () => integration.androidRuntimeBuildSettings(env) },
+      "./plugins/android-candidate-settings": { androidCandidateSettings: () => require("../plugins/android-candidate-settings").androidCandidateSettings(env) },
+      "./plugins/with-phone11-voip-wake.js": { wakeBuildSettings: () => require("../plugins/with-phone11-voip-wake.js").wakeBuildSettings(env) },
+      "./plugins/with-phone11-android-screen.js": { androidScreenBuildSettings: () => require("../plugins/with-phone11-android-screen.js").androidScreenBuildSettings(env) },
+    };
+    runInNewContext(compiled, { module, exports: module.exports, process: { env }, require: id => {
+      if (id === "./scripts/load-env.js") return {};
+      if (id === "expo/config-plugins") return { withInfoPlist: config => config };
+      assert.ok(Object.hasOwn(settings, id), `Unexpected config import: ${id}`);
+      return settings[id];
+    } });
+    return module.exports.default;
+  };
+  for (const [flags, packageName, runtimeVersion] of [
+    [{}, "ai.phone11.mobile", undefined],
+    [trial, "ai.phone11.mobile.foregroundtrial", "1.0.0-siprix-android-foreground-trial-1"],
+    [{ ...trial, PHONE11_ANDROID_NATIVE_CANDIDATE: "1", EXPO_PUBLIC_PHONE11_ANDROID_NATIVE_CANDIDATE: "1" },
+      "ai.phone11.mobile.androidcandidate", "1.0.0-siprix-android-candidate-1"],
+  ]) {
+    const config = evaluate({ ...flags, EAS_BUILD_PLATFORM: "android" });
+    assert.equal(config.android.package, packageName);
+    assert.equal(config.android.runtimeVersion, runtimeVersion);
+    assert.equal(config.ios.bundleIdentifier, "ai.phone11.mobile");
+    assert.doesNotMatch(config.runtimeVersion, /android/);
+  }
+  const ios = evaluate({ EAS_BUILD_PLATFORM: "ios", EXPO_PUBLIC_SIP_ENGINE: "siprix" });
+  assert.equal(ios.ios.bundleIdentifier, "ai.phone11.mobile");
+  assert.equal(ios.android.runtimeVersion, undefined);
+  assert.equal(ios.runtimeVersion, "1.0.0-siprix-chat-media-2");
   assert.match(source, /bundleIdentifier: env\.iosBundleId/);
   assert.match(source, /sipSdkVersion: sipEngine === "siprix"\s*\? `1\.0\.40-/);
   assert.match(source, /nativeConfig\.modResults\.Phone11SiprixLicense = license/);

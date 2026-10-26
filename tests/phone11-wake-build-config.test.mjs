@@ -141,12 +141,14 @@ function syntheticConfig(env) {
     runInNewContext(readFileSync(join(root,filename),'utf8'),{module,exports:module.exports,process:{env:{...env}},require:id=>{
       if(id==='expo/config-plugins')return pluginApi;
       if(id==='../modules/phone11-siprix/android/sdk-lock.json')return sdkLock;
+      if(id==='./android-candidate-settings')return candidate;
       if(id==='node:fs')return new Proxy({}, {get:()=>()=>{throw new Error('Plugin file access forbidden in synthetic config test');}});
       if(id==='node:path'||id==='node:crypto')return require(id);
       throw new Error(`Unexpected plugin import: ${id}`);
     }});
     return module.exports;
   }
+  const candidate=plugin('plugins/android-candidate-settings.js');
   const android=plugin('plugins/with-phone11-android-runtime.js');
   const wake=plugin('plugins/with-phone11-voip-wake.js');
   const screen=plugin('plugins/with-phone11-android-screen.js');
@@ -155,6 +157,7 @@ function syntheticConfig(env) {
   runInNewContext(compiled,{module,exports:module.exports,process:{env:{...env}},require:id=>{
     if(id==='./scripts/load-env.js'){environmentLoadBlocked=true;return {};}
     if(id==='expo/config-plugins')return pluginApi;
+    if(id==='./plugins/android-candidate-settings')return candidate;
     if(id==='./plugins/with-phone11-android-runtime.js')return android;
     if(id==='./plugins/with-phone11-voip-wake.js')return wake;
     if(id==='./plugins/with-phone11-android-screen.js')return screen;

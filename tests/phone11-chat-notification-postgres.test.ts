@@ -31,9 +31,10 @@ describe.skipIf(!socket&&!connectionString)('ordinary notifications real isolate
   await pool.query(await readFile(new URL('../server/chat/media-migration.sql',import.meta.url),'utf8'));
   await pool.query(await readFile(new URL('../server/profile/migration.sql',import.meta.url),'utf8'));
   const sql=await readFile(new URL('../server/chat-notifications/migration.sql',import.meta.url),'utf8');await pool.query(sql);await pool.query(sql);
+  const androidSql=await readFile(new URL('../server/chat-notifications/migration-android.sql',import.meta.url),'utf8');await pool.query(androidSql);await pool.query(androidSql);
  });
  beforeEach(async()=>{
-  vi.stubEnv('PHONE11_CHAT_NOTIFICATIONS_ENABLED','1');
+  vi.stubEnv('PHONE11_CHAT_NOTIFICATIONS_ENABLED','1');vi.stubEnv('PHONE11_CHAT_ANDROID_NOTIFICATIONS_ENABLED','0');
   await pool.query(`TRUNCATE users,tenants,extensions,user_extensions,tenant_memberships,phone11_auth_session,phone11_auth_identity,phone11_chat_conversations CASCADE;
    INSERT INTO users VALUES(1,'sender'),(2,'recipient'),(3,'outsider');INSERT INTO tenants VALUES(10,'first','active'),(20,'other','active');
    INSERT INTO extensions VALUES(1,10,'active',NULL,'1001'),(2,10,'active',NULL,'1002'),(3,20,'active',NULL,'2001');
@@ -45,6 +46,32 @@ describe.skipIf(!socket&&!connectionString)('ordinary notifications real isolate
   conversation=(await chat.create(1,10,'direct','test',[2])).id;
  });
  afterAll(async()=>{vi.unstubAllEnvs();await pool.end();});
+ const android={...device,platform:'android' as const,token:'CaseSensitive_FCM:Token-'.repeat(4)};
+ it('Android source migration preserves iOS defaults, case-sensitive FCM tokens and scoped uniqueness',async()=>{
+  vi.stubEnv('PHONE11_CHAT_ANDROID_NOTIFICATIONS_ENABLED','1');
+  await repo.register(2,'s2',device);await repo.register(2,'s2',{...android,deviceId:randomUUID()});
+  const rows=(await pool.query('SELECT platform,token FROM phone11_chat_notification_devices ORDER BY platform')).rows;
+  expect(rows).toEqual([{platform:'android',token:android.token},{platform:'ios',token:device.token}]);
+  await expect(repo.register(2,'s2',{...android,deviceId:randomUUID(),environment:'sandbox'})).rejects.toThrow();
+ });
+ it('the same opaque token string is scoped independently by provider platform',async()=>{
+  vi.stubEnv('PHONE11_CHAT_ANDROID_NOTIFICATIONS_ENABLED','1');await repo.register(2,'s2',device);await repo.register(2,'s2',{...android,deviceId:randomUUID(),token:device.token});
+  expect((await pool.query('SELECT count(*) n FROM phone11_chat_notification_devices')).rows[0].n).toBe('2');
+ });
+ it('Android gate suppresses enqueue, claim and stale tap after being turned off',async()=>{
+  vi.stubEnv('PHONE11_CHAT_ANDROID_NOTIFICATIONS_ENABLED','1');await repo.register(2,'s2',android);await message();const claim=(await repo.claim())!;expect(claim.platform).toBe('android');expect(await repo.current(claim)).toBe(true);
+  expect(await chat.presence(1,10,[2])).toEqual([expect.objectContaining({source:'mobile',available:true})]);
+  vi.stubEnv('PHONE11_CHAT_ANDROID_NOTIFICATIONS_ENABLED','0');expect(await repo.current(claim)).toBe(false);
+  expect(await chat.presence(1,10,[2])).toEqual([expect.objectContaining({source:'none',available:false})]);expect(await repo.resolve(2,'s2',claim.id)).toBeNull();await message();expect(await count()).toBe(1);
+ });
+ it.each(["DELETE FROM phone11_auth_session WHERE id='s2'","UPDATE phone11_auth_identity SET disabled_at=NOW() WHERE legacy_user_id=2","UPDATE tenant_memberships SET status='inactive' WHERE user_id=2 AND tenant_id=10","DELETE FROM phone11_chat_members WHERE user_id=2"])( 'Android rechecks dispatch/tap authority after revocation: %s',async sql=>{
+  vi.stubEnv('PHONE11_CHAT_ANDROID_NOTIFICATIONS_ENABLED','1');await repo.register(2,'s2',android);await message();const claim=(await repo.claim())!;await pool.query(sql);expect(await repo.current(claim)).toBe(false);expect(await repo.resolve(2,'s2',claim.id)).toBeNull();
+ });
+ it('Android account transfer revokes old opaque events and delayed invalid-token cleanup preserves refreshed token',async()=>{
+  vi.stubEnv('PHONE11_CHAT_ANDROID_NOTIFICATIONS_ENABLED','1');await repo.register(2,'s2',android);await message();const claim=(await repo.claim())!;
+  await repo.register(2,'s2',android);await repo.removeInvalid(claim);expect((await pool.query('SELECT count(*) n FROM phone11_chat_notification_devices')).rows[0].n).toBe('1');
+  await repo.register(1,'s1',android);expect(await repo.resolve(2,'s2',claim.id)).toBeNull();expect(await count()).toBe(0);
+ });
  it('registers separate APNs devices and rejects foreign session/tenant',async()=>{
   await repo.register(2,'s2',device);await expect(repo.register(2,'s3',device)).rejects.toThrow();await expect(repo.register(2,'s2',{...device,tenantId:20})).rejects.toThrow();
   expect((await pool.query('SELECT count(*) n FROM phone11_chat_notification_devices')).rows[0].n).toBe('1');
@@ -218,6 +245,11 @@ describe.skipIf(!socket&&!connectionString)('ordinary notifications real isolate
    await pool.query(await readFile(new URL('../server/profile/migration.sql',import.meta.url),'utf8'));
   }
   expect((await pool.query('SELECT dnd_enabled FROM phone11_workspace_profile_status_settings WHERE tenant_id=10')).rows[0].dnd_enabled).toBe(false);
+ });
+ it('new source retains iOS enrollment/dispatch on the original registry before Android migration',async()=>{
+  await pool.query('ALTER TABLE phone11_chat_notification_devices DROP COLUMN platform CASCADE');
+  try{await repo.register(2,'s2',device);await message();const claim=(await repo.claim())!;expect(claim.platform).toBe('ios');expect(await repo.current(claim)).toBe(true);expect(await repo.resolve(2,'s2',claim.id)).toEqual({tenantId:10,conversationId:conversation});}
+  finally{await pool.query(await readFile(new URL('../server/chat-notifications/migration-android.sql',import.meta.url),'utf8'));}
  });
  it('bounded advisory lock contention fails instead of wedging enrollment',async()=>{
   const blocker=await pool.connect();try{await blocker.query('BEGIN');await blocker.query('SELECT pg_advisory_xact_lock(731104,2)');const started=Date.now();await expect(repo.register(2,'s2',device)).rejects.toThrow();expect(Date.now()-started).toBeLessThan(4000);}finally{await blocker.query('ROLLBACK');blocker.release();}

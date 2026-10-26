@@ -18,6 +18,9 @@ from zipfile import ZipFile
 
 PACKAGE = "ai.phone11.mobile"
 TRIAL_PACKAGE = PACKAGE + ".foregroundtrial"
+NATIVE_PACKAGE = PACKAGE + ".androidcandidate"
+NATIVE_GATE = "ai.phone11.siprix.NATIVE_CANDIDATE_ENABLED"
+WAKE_GATE = "ai.phone11.siprix.WAKE_CANDIDATE_ENABLED"
 GATE = "ai.phone11.siprix.FOREGROUND_SOURCE_ENABLED"
 ANDROID = "{http://schemas.android.com/apk/res/android}"
 ABIS = {"arm64-v8a", "armeabi-v7a"}
@@ -173,17 +176,19 @@ def manifest_component_name(package: str, name: str) -> str:
 
 
 def inspect_apk(apk: Path, manifest_xml: str, *, trial: bool, sdk_aar: Path | None = None,
-                standalone: bool = False) -> dict:
+                standalone: bool = False, native_candidate: bool = False) -> dict:
     return inspect_apk_snapshot(snapshot(apk, MAX_APK_BYTES, "apk"), manifest_xml,
-                                trial=trial, sdk_aar=sdk_aar, standalone=standalone)
+                                trial=trial, sdk_aar=sdk_aar, standalone=standalone, native_candidate=native_candidate)
 
 
 def inspect_apk_snapshot(apk_data: bytes, manifest_xml: str, *, trial: bool, sdk_aar: Path | None = None,
-                         standalone: bool = False) -> dict:
+                         standalone: bool = False, native_candidate: bool = False) -> dict:
+    if native_candidate and not (trial and standalone):
+        raise ValueError("native_candidate_standalone_required")
     if standalone and not trial:
         raise ValueError("standalone_foreground_trial_required")
     root = ET.fromstring(manifest_xml)
-    if root.tag != "manifest" or root.get("package") != (TRIAL_PACKAGE if trial else PACKAGE):
+    if root.tag != "manifest" or root.get("package") != (NATIVE_PACKAGE if native_candidate else TRIAL_PACKAGE if trial else PACKAGE):
         raise ValueError("unexpected_apk_identity")
     applications = root.findall("application")
     if len(applications) != 1:
@@ -217,6 +222,26 @@ def inspect_apk_snapshot(apk_data: bytes, manifest_xml: str, *, trial: bool, sdk
              if item.get(ANDROID + "name") == GATE]
     if (trial and gates != ["true"]) or (not trial and gates not in ([], ["false"])):
         raise ValueError("unexpected_apk_runtime_gate")
+    if native_candidate:
+        native_gates = [item.get(ANDROID + "value") for item in app.findall("meta-data")
+                        if item.get(ANDROID + "name") == NATIVE_GATE]
+        wake_gates = [item.get(ANDROID + "value") for item in app.findall("meta-data")
+                      if item.get(ANDROID + "name") == WAKE_GATE]
+        if native_gates != ["true"]:
+            raise ValueError("native_candidate_metadata_required")
+        if wake_gates not in ([], ["false"]):
+            raise ValueError("native_candidate_wake_not_permitted")
+        for service in app.findall("service"):
+            if (service.get(ANDROID + "permission") == "android.permission.BIND_TELECOM_CONNECTION_SERVICE"
+                    or "phoneCall" in (service.get(ANDROID + "foregroundServiceType") or "").split("|")
+                    or any(action.get(ANDROID + "name") == "android.telecom.ConnectionService"
+                           for intent in service.findall("intent-filter") for action in intent.findall("action"))):
+                raise ValueError("native_candidate_telecom_service_not_permitted")
+        if any(item.get(ANDROID + "name") in {
+                "android.permission.MANAGE_OWN_CALLS", "android.permission.FOREGROUND_SERVICE_PHONE_CALL",
+                "android.permission.USE_FULL_SCREEN_INTENT"}
+               for item in root.findall("uses-permission")):
+            raise ValueError("native_candidate_wake_permission_not_permitted")
     if trial:
         permissions = {item.get(ANDROID + "name") for item in root.findall("uses-permission")}
         if not {"android.permission.RECORD_AUDIO", "android.permission.INTERNET",
@@ -287,6 +312,10 @@ def inspect_apk_snapshot(apk_data: bytes, manifest_xml: str, *, trial: bool, sdk
                         "signature_verified": False, "embedded_bundle_sha256": bundle_sha,
                         "embedded_bundle_bytes": len(bundle), "embedded_bundle_format": "hermes",
                         "limits": "Unsigned byte inspection only; CLI signature verification and independent expected signer required. No installation, calling, wake or device acceptance."})
+    if native_candidate:
+        receipt.update({"schema": "phone11.android.native-candidate-inspection.v1",
+                        "native_source_candidate": True, "wake_source_candidate": False,
+                        "limits": "Unsigned native candidate byte inspection only; CLI signature verification and independent expected signer required. No background wake, provider or device acceptance."})
     return receipt
 
 
@@ -321,12 +350,15 @@ def main() -> None:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--trial", action="store_true", help="Existing debug foreground trial inspection")
     mode.add_argument("--standalone-trial", action="store_true", help="Release foreground trial plus signature verification")
+    mode.add_argument("--native-candidate", action="store_true", help="Release native candidate without wake; separate package, metadata and signature verification")
     parser.add_argument("--apksigner", help="Installed Android SDK apksigner; required for standalone trial")
     parser.add_argument("--expected-signer-sha256", help="Independent trusted signing receipt fingerprint, not read from this APK")
     parser.add_argument("--sdk-aar", type=Path, help="Pinned full SDK AAR; trial defaults to PHONE11_SIPRIX_ANDROID_AAR")
     args = parser.parse_args()
     if args.standalone_trial and (not args.apksigner or not re.fullmatch(r"[0-9a-fA-F]{64}", args.expected_signer_sha256 or "")):
         parser.error("standalone trial requires installed apksigner and independent expected signer SHA-256")
+    if args.native_candidate and (not args.apksigner or not re.fullmatch(r"[0-9a-fA-F]{64}", args.expected_signer_sha256 or "")):
+        parser.error("native candidate requires installed apksigner and independent expected signer SHA-256")
     # The analyzer and ZIP/DEX/hash gate must describe the same bounded bytes,
     # even if the caller's original path is replaced while the tool runs.
     apk_data = snapshot(args.apk, MAX_APK_BYTES, "apk")
@@ -338,15 +370,19 @@ def main() -> None:
                                 check=True, capture_output=True, text=True, timeout=60)
         if snapshot(tool_input, MAX_APK_BYTES, "apk") != apk_data:
             raise ValueError("apk_analyzer_snapshot_changed")
-        receipt = inspect_apk_snapshot(apk_data, result.stdout, trial=args.trial or args.standalone_trial,
-                                       sdk_aar=args.sdk_aar, standalone=args.standalone_trial)
-        if args.standalone_trial:
+        receipt = inspect_apk_snapshot(apk_data, result.stdout, trial=args.trial or args.standalone_trial or args.native_candidate,
+                                       sdk_aar=args.sdk_aar, standalone=args.standalone_trial or args.native_candidate,
+                                       native_candidate=args.native_candidate)
+        if args.standalone_trial or args.native_candidate:
             signer = verify_signature(args.apksigner, tool_input, args.expected_signer_sha256)
             if snapshot(tool_input, MAX_APK_BYTES, "apk") != apk_data:
                 raise ValueError("apk_signature_snapshot_changed")
             receipt.update({"schema": "phone11.android.standalone-packaging.v1", "signature_verified": True,
                             "signer_certificate_sha256": signer,
                             "limits": "Signature and standalone trial packaging only; authenticate exact source/profile/build receipt separately. No installation, calling, wake or device acceptance."})
+            if args.native_candidate:
+                receipt.update({"schema": "phone11.android.native-candidate-packaging.v1",
+                                "limits": "Signature and native candidate packaging only; verify exact source/profile/build separately. Wake disabled; no calling, provider or device acceptance."})
     print(json.dumps(receipt, sort_keys=True))
 
 

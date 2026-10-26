@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, afterEach, vi } from "vitest";
 import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { URL } from "node:url";
@@ -23,13 +23,15 @@ async function transaction<T>(fn: (client: PoolClient) => Promise<T>) {
   } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
 }
 const wake = createWakeRepository(transaction), push = createPushRepository(transaction);
+const platform = process.env.PHONE11_WAKE_TEST_PLATFORM === "android" ? "android" : "ios";
+const tokenType = platform === "android" ? "fcm" : "voip";
 const uri = "sip:1001@test.invalid";
 const token: PushToken = { sessionId: "session-1", owner: { userId: 1, tenantId: 10, extensionId: 1, sipUri: uri }, sipUri: uri,
-  token: "a".repeat(64), tokenType: "voip", platform: "ios", deviceId: "device-a", bundleId: "test.phone11", sandbox: false, registeredAt: 0 };
+  token: "a".repeat(64), tokenType, platform, deviceId: "device-a", bundleId: "test.phone11", sandbox: false, registeredAt: 0 };
 const reverseUri = "sip:1002@test.invalid";
 const reverseToken: PushToken = { sessionId: "session-2", owner: { userId: 2, tenantId: 10, extensionId: 2, sipUri: reverseUri }, sipUri: reverseUri,
-  token: "b".repeat(64), tokenType: "voip", platform: "ios", deviceId: "device-b", bundleId: "test.phone11", sandbox: false, registeredAt: 0 };
-async function enrolled() { await push.put(token); return wake.enroll("session-1", 1, "device-a", uri); }
+  token: "b".repeat(64), tokenType, platform, deviceId: "device-b", bundleId: "test.phone11", sandbox: false, registeredAt: 0 };
+async function enrolled() { await push.put(token); return wake.enroll("session-1", 1, "device-a", uri, platform); }
 async function offered() { const b = await enrolled(); const { call } = await wake.offer(uri, "sip-call-1"); return { b, call }; }
 async function afterExpiry(expiry: Date) {
   await pool.query("SELECT pg_sleep(GREATEST(0,EXTRACT(EPOCH FROM ($1::timestamptz-clock_timestamp())))+0.03)", [expiry]);
@@ -42,7 +44,7 @@ function delayedBefore(match: string, pause: (client: PoolClient) => Promise<voi
   } } as PoolClient)));
 }
 
-describe.skipIf(!connectionString)("Wake grants and calls in isolated real PostgreSQL", () => {
+describe.skipIf(!connectionString)(`Wake ${platform} grants and calls in isolated real PostgreSQL`, () => {
   beforeAll(async () => {
     await admin.query(`CREATE SCHEMA ${schema}`);
     await pool.query(`CREATE TABLE users (id INTEGER PRIMARY KEY);
@@ -60,6 +62,7 @@ describe.skipIf(!connectionString)("Wake grants and calls in isolated real Postg
     }
   });
   beforeEach(async () => {
+    vi.stubEnv("PHONE11_ANDROID_WAKE_ENABLED", platform === "android" ? "1" : "");
     await pool.query(`TRUNCATE phone11_wake_terminals, phone11_wake_calls, phone11_wake_bindings, phone11_push_devices, phone11_auth_identity, phone11_auth_session, subscriber, sip_accounts, user_extensions, tenant_memberships, extensions, users, tenants CASCADE;
       INSERT INTO users VALUES (1),(2),(3);
       INSERT INTO phone11_auth_identity VALUES ('auth-1',1,NULL),('auth-2',2,NULL),('auth-3',3,NULL);
@@ -71,8 +74,21 @@ describe.skipIf(!connectionString)("Wake grants and calls in isolated real Postg
       INSERT INTO sip_accounts VALUES (1,10,'1001','test.invalid','active',NULL,'TLS'),(2,10,'1002','test.invalid','active',NULL,'UDP'),(3,20,'2001','test.invalid','active',NULL,'UDP');
       INSERT INTO subscriber VALUES ('1001','test.invalid','synthetic-only-password'),('1002','test.invalid','other-synthetic-password'),('2001','test.invalid','third-synthetic-password');`);
   });
+  afterEach(()=>vi.unstubAllEnvs());
   afterAll(async () => { await pool.end(); await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`); await admin.end(); });
 
+  it("cannot enroll a registered token under another platform", async()=>{
+    await push.put(token);
+    await expect(wake.enroll("session-1",1,"device-a",uri,platform === "ios" ? "android" : "ios")).rejects.toMatchObject({status:platform === "ios" ? 503 : 403});
+  });
+  it.skipIf(platform !== "android")("turning Android wake off immediately invalidates enrollment, grant, and active call",async()=>{
+    const {b,call}=await offered();vi.stubEnv("PHONE11_ANDROID_WAKE_ENABLED","");
+    await expect(wake.enroll("session-1",1,"device-a",uri,"android")).rejects.toMatchObject({status:503});
+    await expect(wake.deviceCall(b.bindingId,b.grant,call.callUUID,"claim")).rejects.toMatchObject({status:403});
+    await expect(wake.deviceCall(b.bindingId,b.grant,call.callUUID,"ready")).rejects.toMatchObject({status:403});
+    expect(await wake.current(call.callUUID)).toBeNull();
+    await expect(wake.deliveryTarget(call.callUUID)).rejects.toMatchObject({status:410});
+  });
   it("applies both migrations twice and persists only the grant hash", async () => {
     const b = await enrolled();
     const { rows: [stored] } = await pool.query("SELECT * FROM phone11_wake_bindings");
@@ -86,14 +102,14 @@ describe.skipIf(!connectionString)("Wake grants and calls in isolated real Postg
     await push.put(token); await push.put(reverseToken);
     const pilots=[uri,reverseUri] as const;
     const [forward,reverse]=await Promise.all([
-      wake.enroll("session-1",1,"device-a",pilots),wake.enroll("session-2",2,"device-b",pilots),
+      wake.enroll("session-1",1,"device-a",pilots,platform),wake.enroll("session-2",2,"device-b",pilots,platform),
     ]);
     expect(forward.tenantId).toBe(10);expect(reverse.tenantId).toBe(10);
     expect((await wake.offer(uri,"forward-pilot")).call.bindingId).toBe(forward.bindingId);
     expect((await wake.offer(reverseUri,"reverse-pilot")).call.bindingId).toBe(reverse.bindingId);
     const unlisted:PushToken={...token,sessionId:"session-3",owner:{userId:3,tenantId:20,extensionId:3,sipUri:"sip:2001@test.invalid"},sipUri:"sip:2001@test.invalid",deviceId:"device-c",token:"c".repeat(64)};
     await push.put(unlisted);
-    await expect(wake.enroll("session-3",3,"device-c",pilots)).rejects.toMatchObject({status:403});
+    await expect(wake.enroll("session-3",3,"device-c",pilots,platform)).rejects.toMatchObject({status:403});
   });
   it("binds resolve and revoke to the exact session, not merely the same user", async () => {
     const b = await enrolled();
@@ -152,7 +168,7 @@ describe.skipIf(!connectionString)("Wake grants and calls in isolated real Postg
   });
   it("same-owner relogin invalidates old grant without letting old revoke remove the new binding", async () => {
     const old = await enrolled(); await push.put({ ...token, sessionId:"session-new" });
-    const fresh = await wake.enroll("session-new",1,"device-a",uri);
+    const fresh = await wake.enroll("session-new",1,"device-a",uri,platform);
     await wake.revoke(old.bindingId,"session-1",1);
     await expect(wake.resolve(old.bindingId,"session-1",1)).rejects.toMatchObject({ status:403 });
     expect(await wake.resolve(fresh.bindingId,"session-new",1)).toBeTruthy();
@@ -207,14 +223,14 @@ describe.skipIf(!connectionString)("Wake grants and calls in isolated real Postg
     expect((await wake.offer(uri,"next")).created).toBe(true);
   });
   it("reenrollment cannot cascade-delete a pending or connected call", async () => {
-    const {b,call}=await offered(); await expect(wake.enroll("session-1",1,"device-a",uri)).rejects.toMatchObject({status:409});
+    const {b,call}=await offered(); await expect(wake.enroll("session-1",1,"device-a",uri,platform)).rejects.toMatchObject({status:409});
     await wake.deviceCall(b.bindingId,b.grant,call.callUUID,"ready");
     await pool.query("UPDATE phone11_wake_calls SET expires_at=clock_timestamp()-INTERVAL '1 second'");
-    await expect(wake.enroll("session-1",1,"device-a",uri)).rejects.toMatchObject({status:409});
+    await expect(wake.enroll("session-1",1,"device-a",uri,platform)).rejects.toMatchObject({status:409});
     expect((await wake.current(call.callUUID))?.status).toBe("ready");
   });
   it("concurrent enrollment and offer do not deadlock or delete the accepted call", async () => {
-    await enrolled(); const results=await Promise.allSettled([wake.enroll("session-1",1,"device-a",uri),wake.offer(uri,"racing-call")]);
+    await enrolled(); const results=await Promise.allSettled([wake.enroll("session-1",1,"device-a",uri,platform),wake.offer(uri,"racing-call")]);
     const offeredResult=results[1]; expect(offeredResult.status).toBe("fulfilled");
     if(offeredResult.status==="fulfilled") expect((await wake.current((offeredResult.value as any).call.callUUID))?.status).toBe("pending");
     if(results[0].status==="rejected") expect(results[0].reason).toMatchObject({status:409});
@@ -229,7 +245,7 @@ describe.skipIf(!connectionString)("Wake grants and calls in isolated real Postg
   it("reclaims an expired binding for a newly registered device", async () => {
     const b=await enrolled(); await pool.query("UPDATE phone11_wake_bindings SET expires_at=clock_timestamp()-INTERVAL '1 second'");
     await push.put({...token,deviceId:"device-new",token:"b".repeat(64)});
-    const fresh=await wake.enroll("session-1",1,"device-new",uri);
+    const fresh=await wake.enroll("session-1",1,"device-new",uri,platform);
     expect(fresh.bindingId).not.toBe(b.bindingId);
     expect(fresh.deviceId).toBe("device-new");
   });
@@ -356,7 +372,7 @@ describe.skipIf(!connectionString)("Wake grants and calls in isolated real Postg
   it("does not issue an already expired grant after enrollment waits on locks", async () => {
     await push.put(token); const {rows:[r]}=await pool.query(`UPDATE phone11_auth_session SET "expiresAt"=clock_timestamp()+INTERVAL '150 milliseconds' WHERE id='session-1' RETURNING "expiresAt" AS expires_at`);
     let paused=false; const slow=delayedBefore("INSERT INTO phone11_wake_bindings",async()=>{paused=true;await afterExpiry(r.expires_at);});
-    await expect(slow.enroll("session-1",1,"device-a",uri)).rejects.toMatchObject({status:403}); expect(paused).toBe(true);
+    await expect(slow.enroll("session-1",1,"device-a",uri,platform)).rejects.toMatchObject({status:403}); expect(paused).toBe(true);
     expect((await pool.query("SELECT count(*)::int AS n FROM phone11_wake_bindings")).rows[0].n).toBe(0);
   });
   it("does not offer an already expired binding after waiting on locks", async () => {

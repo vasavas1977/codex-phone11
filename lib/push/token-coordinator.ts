@@ -3,7 +3,7 @@ export type PushBinding = {
   ownerUserId: number;
   token: string;
   deviceId: string;
-  platform: "ios";
+  platform: "ios" | "android";
   sipUri: string;
   bundleId: string;
   sandbox: boolean;

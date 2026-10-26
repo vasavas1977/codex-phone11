@@ -3,6 +3,7 @@ import { resolvePushSession } from "./push/session";
 import { z } from "zod";
 import { pushRepository } from "./push/repository";
 import { sendApnsPush } from "./push/apns";
+import { sendFcmMessage } from "./push/fcm";
 import { assignedPushOwners, requirePushOwner, type PushOwner } from "./pbx/push-access";
 
 // ─── Types ──────────────────────────────────────────────────────────
@@ -99,7 +100,7 @@ function withinCallDeadline<T>(deadlineAt: number, operation: () => Promise<T>):
   });
 }
 const deliveryUnavailable = "Push delivery unavailable or rejected by provider";
-function safeDeliveryError(error: unknown) { return error instanceof PushDeadlineError ? error.message : deliveryUnavailable; }
+function safeDeliveryError(error: unknown) { return error instanceof PushDeadlineError || (error as {kind?:unknown})?.kind === "timeout" ? "Push delivery deadline elapsed" : deliveryUnavailable; }
 
 /** A single five-second deadline includes lookup, provider work and revision-scoped cleanup. */
 export async function triggerPushForUser(
@@ -123,7 +124,7 @@ export async function triggerPushForUser(
         if (token.platform === "ios") {
           await bounded(() => sendApnsPush(token, payload, () => bounded(() => pushRepository.isCurrent(token)), deadlineAt));
         } else {
-          await bounded(() => sendFcmPush(token, payload, deadlineAt));
+          await bounded(() => sendFcmPush(token, payload, deadlineAt, () => bounded(() => pushRepository.isCurrent(token))));
         }
         sent++; // Retain observed provider acceptance even if its persistence later times out.
         await bounded(() => pushRepository.markUsed(token));
@@ -140,142 +141,13 @@ export async function triggerPushForUser(
   return { sent, errors };
 }
 
-// ─── FCM Push (Android) — FCM HTTP v1 API ──────────────────────────
-
-/**
- * FCM OAuth2 access token cache.
- * The token is valid for ~1 hour; we refresh 5 minutes before expiry.
- */
-let fcmAccessToken: string | null = null;
-let fcmTokenExpiry = 0;
-
-/**
- * Get a valid FCM OAuth2 access token using Google Application Default Credentials.
- *
- * Authentication methods (in priority order):
- *  1. GOOGLE_APPLICATION_CREDENTIALS env → path to service account JSON
- *  2. gcloud auth application-default login → user credentials
- *  3. GCE/Cloud Run metadata server → automatic on Google Cloud
- *
- * Install: npm install google-auth-library
- */
-async function getFcmAccessToken(deadlineAt: number): Promise<string> {
-  const now = Date.now();
-  if (fcmAccessToken && now < fcmTokenExpiry - 5 * 60 * 1000) {
-    return fcmAccessToken;
-  }
-
-  const { GoogleAuth } = await withinCallDeadline(deadlineAt, () => import("google-auth-library"));
-  const auth = new GoogleAuth({
-    scopes: ["https://www.googleapis.com/auth/firebase.messaging"],
-  });
-
-  const client = await withinCallDeadline(deadlineAt, () => auth.getClient());
-  const tokenResponse = await withinCallDeadline(deadlineAt, () => client.getAccessToken());
-
-  if (!tokenResponse.token) {
-    throw new Error("Failed to obtain FCM access token via ADC");
-  }
-
-  fcmAccessToken = tokenResponse.token;
-  // Default expiry: 1 hour
-  fcmTokenExpiry = now + 55 * 60 * 1000;
-
-  return fcmAccessToken;
-}
-
-/**
- * Send a high-priority FCM data message for incoming call.
- *
- * Uses the modern FCM HTTP v1 API (not the deprecated legacy API).
- * Authentication via Application Default Credentials (ADC).
- *
- * Setup options:
- *  1. Set GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
- *  2. Run: gcloud auth application-default login
- *  3. Deploy on Google Cloud (automatic)
- *
- * Uses data-only message (no notification field) so the app
- * handles display via Notifee full-screen notification.
- */
-async function sendFcmPush(token: PushToken, payload: PushPayload, deadlineAt: number): Promise<void> {
-  const projectId = process.env.FCM_PROJECT_ID;
-  if (!projectId) throw new Error("FCM push delivery is not configured");
-
-  // Check if ADC is available
-  let accessToken: string;
-  try {
-    accessToken = await withinCallDeadline(deadlineAt, () => getFcmAccessToken(deadlineAt));
-  } catch (adcError: any) {
-    if (adcError instanceof PushDeadlineError) throw adcError;
-    throw new Error("FCM push credentials are unavailable");
-  }
-
-  if (Date.now() >= deadlineAt) throw new Error("Push delivery deadline elapsed");
-
-  // FCM HTTP v1 API payload
-  const fcmPayload = {
-    message: {
-      token: token.token,
-      // Data-only message — app handles display via Notifee
-      data: {
-        type: "voip_call",
-        callId: payload.callId,
-        callerNumber: payload.callerNumber,
-        callerName: payload.callerName || payload.callerNumber,
-        hasVideo: String(payload.hasVideo || false),
-        timestamp: String(Date.now()),
-      },
-      android: {
-        priority: "HIGH" as const,
-        // TTL: 0s means don't store if device offline (call is time-sensitive)
-        ttl: "0s",
-        // Direct boot aware — deliver even before first unlock
-        direct_boot_ok: true,
-      },
-    },
-  };
-
-  try {
-    const response = await fetch(
-      `https://fcm.googleapis.com/v1/projects/${projectId}/messages:send`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${accessToken}`,
-        },
-        body: JSON.stringify(fcmPayload),
-        signal: AbortSignal.timeout(Math.max(1, deadlineAt - Date.now())),
-      }
-    );
-
-    if (!response.ok) {
-      const errorBody = await response.text().catch(() => "");
-
-      // Handle token refresh on 401
-      if (response.status === 401) {
-        fcmAccessToken = null;
-        fcmTokenExpiry = 0;
-      }
-
-      // Handle invalid token errors
-      if (errorBody.includes("UNREGISTERED")) {
-        throw Object.assign(
-          new Error("FCM token invalid"),
-          { invalidToken: true }
-        );
-      }
-
-      throw new Error("FCM provider rejected delivery");
-    }
-
-    // Success headers are provider acceptance; discard the body without delaying the call.
-    void response.body?.cancel().catch(() => {});
-  } catch (error: any) {
-    if (error.invalidToken) throw error;
-    throw new Error("FCM push delivery unavailable");
-  }
+/** Ordinary legacy call alerts retain their own payload. They never become an
+ * authenticated native wake: that path carries only the strict wake envelope. */
+async function sendFcmPush(token: PushToken, payload: PushPayload, deadlineAt: number, current: () => Promise<boolean>): Promise<void> {
+  await sendFcmMessage(token,{data:{
+    type:"voip_call",callId:payload.callId,callerNumber:payload.callerNumber,
+    callerName:payload.callerName || payload.callerNumber,hasVideo:String(payload.hasVideo || false),timestamp:String(Date.now()),
+  },android:{priority:"HIGH",ttl:"0s"}},current,deadlineAt);
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────

@@ -49,9 +49,10 @@ account addition. Vendor logging is disabled; raw callback response, caller disp
 name, SIP headers, message body and provider token are never forwarded. Returned
 remote URI omits parameters and rejects credential-bearing URI syntax.
 
-Video, warm/blind transfer, consultation, native wake adoption/history, FCM,
-background/locked/Doze/process-death ringing, OS call UI and recording playback
-route controls are unsupported. Optional transfer methods are absent,
+In the default foreground-trial profile, video, transfer, consultation, native
+wake adoption/history, FCM, background/locked/Doze/process-death ringing and OS
+call UI remain disabled. The separate 20 October source candidates are described
+below; their source prerequisites do not establish device acceptance. Default
 `warmTransferAvailable=false`, video capabilities are false, and
 `getCapabilities().registrationAvailable=false` reports
 `android_native_acceptance_required`. No extra service/receiver/provider is added.
@@ -181,3 +182,65 @@ Sources:
 - [Pinned official Java sample](https://github.com/siprix/SampleJava/tree/80d198ed6179b45ff8cd8dad9b8086976b4197a0)
 - [Official Android integration guidance](https://docs.siprix-voip.com/rst/integration.html)
 - [Official trial terms](https://www.siprix-voip.com/download/)
+
+## 20 October 2026 native and wake source candidates
+
+Two additional profiles extend the foreground source without changing the
+ordinary foreground-trial package. The native candidate uses
+`ai.phone11.mobile.androidcandidate` and requires paired
+`PHONE11_ANDROID_NATIVE_CANDIDATE=1` and
+`EXPO_PUBLIC_PHONE11_ANDROID_NATIVE_CANDIDATE=1` in addition to the existing
+paired foreground flags. Blind transfer reserves one UUID request per original
+call lifetime, accepts only phone-number/extension destinations, and reports the
+vendor result only from `onCallTransferred`. An immediate vendor error still
+consumes that attempt because the callback has no request identifier. The
+candidate-only `runNativeSdkSmoke` initializes the real adapter, reads the exact
+version, and destroys it without adding an account, registering, or making a
+call. It rejects an initialized, active, or quarantined runtime.
+
+The separately paired `PHONE11_ANDROID_WAKE_CANDIDATE=1` and
+`EXPO_PUBLIC_PHONE11_ANDROID_WAKE_CANDIDATE=1` profile uses the existing isolated
+`ai.phone11.mobile.staging` Firebase application. Build, package, manifest,
+Firebase configuration, and HTTPS origin gates must agree. It selects the real
+Firebase Messaging provider and declares its foreground/Telecom services; all
+other builds select a provider that cannot return a token. Its Firebase service
+extends Expo's service and preserves ordinary notification and token callbacks.
+The default manifest declares no wake service.
+
+One main-thread coordinator owns one Siprix runtime across React attachment and
+native services. React invalidation detaches while a native call is active.
+Unrelated pushes cannot replace or stop that call. An exact enrollment binding
+and a canonical account identity are required to reuse or adopt foreground SIP
+state. FCM contains only version, binding UUID, call UUID and setup expiry. An
+Android Keystore AES-GCM envelope in the no-backup directory stores only the
+incoming-wake grant and binding; SIP credentials remain transient. Claim,
+ready/status polling and End use the fixed build-time HTTPS origin, refuse
+redirects, enforce an operation deadline, and fence stale epochs. The incoming
+SIP leg must carry the exact `X-Phone11-Wake-ID` header before admission.
+
+The call service uses a self-managed Telecom account and generic private call
+notifications. Answer comes from the user's app, notification or system action;
+it requires microphone/notification permissions and a successful microphone
+foreground-service transition. SDK callbacks supply connection and termination.
+Cancellation, authorization rejection, setup expiry and logout close only the
+current native owner. End waits for a real termination callback before normal
+cleanup, with a bounded teardown fallback. Completed wake calls use separate
+encrypted no-backup storage and exact session checks for read/acknowledgement.
+Logout/revocation clears that history and fences late termination callbacks from
+recreating records for the revoked owner.
+
+`getForegroundCapabilities` continues to report background, closed-app, wake
+and video acceptance as false. Candidate fields identify the enabled source.
+`getCapabilities().registrationAvailable` additionally requires actual Firebase,
+microphone/notification permissions and self-managed account registration.
+These are source prerequisites, not FCM delivery, background microphone, audio,
+provider, licensed SDK or physical-device acceptance. Video remains unsupported.
+
+Validation of these changes includes isolated transfer/smoke/account-identity
+failure and generation tests, the existing Android call/consultation tests, and
+compilation against the actual pinned Siprix and Android APIs. Whole-module
+compilation against real React Native 0.81.5 declarations checks five valid
+foreground/consultation/native flag combinations with `-Xlint:all -Werror`.
+The explicit Firebase/Expo profile requires its own Gradle/package check and
+native/provider/device acceptance after configuration; do not infer those from
+the no-wake compiler gate.

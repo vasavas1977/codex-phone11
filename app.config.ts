@@ -6,6 +6,8 @@ import { withInfoPlist } from "expo/config-plugins";
 const { wakeBuildSettings } = require("./plugins/with-phone11-voip-wake.js");
 const { androidRuntimeBuildSettings } = require("./plugins/with-phone11-android-runtime.js");
 const androidTrial = androidRuntimeBuildSettings();
+const { androidCandidateSettings } = require("./plugins/android-candidate-settings");
+const androidCandidate = androidCandidateSettings();
 const { androidScreenBuildSettings } = require("./plugins/with-phone11-android-screen.js");
 const androidScreen = androidScreenBuildSettings();
 const wakeSettings = wakeBuildSettings();
@@ -101,7 +103,8 @@ const config: ExpoConfig = {
     edgeToEdgeEnabled: true,
     predictiveBackGestureEnabled: false,
     package: androidTrial.packageName ?? env.androidPackage,
-    ...(androidTrial.enabled ? { runtimeVersion: "1.0.0-siprix-android-foreground-trial-1" } : {}),
+    ...(androidTrial.enabled ? { runtimeVersion: androidCandidate.enabled ? "1.0.0-siprix-android-candidate-1" : "1.0.0-siprix-android-foreground-trial-1" } : {}),
+    ...(androidCandidate.googleServicesFile ? { googleServicesFile: androidCandidate.googleServicesFile } : {}),
     permissions: ["POST_NOTIFICATIONS", "RECORD_AUDIO", "CAMERA", "READ_PHONE_STATE"],
     blockedPermissions: ["android.permission.WRITE_CONTACTS"],
     intentFilters: [
@@ -124,6 +127,7 @@ const config: ExpoConfig = {
     favicon: "./assets/images/favicon.png",
   },
   plugins: [
+    ...(androidCandidate.chat || androidCandidate.wake ? [["expo-notifications", { defaultChannel: "phone11_team_chat" }] as [string, { defaultChannel: string }]] : []),
     "expo-router",
     ["expo-image-picker", { photosPermission: "Choose photos to share in your Phone11 conversation.", cameraPermission: "Take a photo to share in your Phone11 conversation.", microphonePermission: "Allow Phone11 to use your microphone for calls and voice messages." }],
     ["expo-contacts", { contactsPermission: "Phone11 uses your contacts to show names and let you call people. Your address book stays on this device." }],
@@ -182,6 +186,7 @@ const config: ExpoConfig = {
     reactCompiler: false,
   },
   extra: {
+    ...(androidCandidate.chat ? { phone11AndroidChatNotificationsEnabled: true, phone11FcmProjectId: androidCandidate.projectId } : {}),
     phone11ChatNotificationsEnabled: chatNotificationsEnabled,
     ...(wakeSettings.environment ? { phone11ApnsEnvironment: wakeSettings.environment } : {}),
     eas: {
@@ -189,6 +194,7 @@ const config: ExpoConfig = {
     },
     buildInfo: {
       sipEngine,
+      ...(androidCandidate.enabled ? { androidNativeCandidate: true, androidWakeSourceCandidate: androidCandidate.wake } : {}),
       ...(androidScreen.enabled ? { androidScreenTransactionSource: true } : {}),
       ...(androidTrial.enabled ? { androidSipSdkVersion: "1.1.0-20260905_1222-trial", androidForegroundTrial: true } : {}),
       sipSdkVersion: sipEngine === "siprix"
