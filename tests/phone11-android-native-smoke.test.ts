@@ -2,16 +2,17 @@ import { describe, expect, it, vi } from "vitest";
 import { checkAndroidNativeSdkSmoke } from "../lib/sip/android-native-smoke";
 
 const receipt = (changes: Record<string, unknown> = {}) => ({
-  sdkVersion: "1.1.0 from 20260905_1222", initialized: false, accounts: [], calls: [],
+  sdkVersion: "siprix 1.1.0 from 20260905_1222", initialized: false, accounts: [], calls: [],
   registrationAttempted: false, callAttempted: false, ...changes,
 });
 
 describe("Android native SDK smoke receipt", () => {
-  it.each(["1.1.0 from 20260905_1222", "Siprix:1.1.0 from 20260905_1222", "Siprix: 1.1.0 from 20260905_1222"])(
+  it.each(["siprix 1.1.0 from 20260905_1222", "1.1.0 from 20260905_1222", "Siprix:1.1.0 from 20260905_1222", "Siprix: 1.1.0 from 20260905_1222"])(
     "accepts the pinned released receipt with vendor version %s", async sdkVersion => {
       expect(await checkAndroidNativeSdkSmoke(async () => receipt({ sdkVersion }))).toEqual({ ok: true, sdkVersion });
     });
-  it.each(["1.1.1 from 20260905_1222", "1.1.0 from 20260906_1222", "Siprix: 1.1.0", "private-token\n1.1.0 from 20260905_1222", "x".repeat(81)])(
+  it.each(["siprix 1.1.1 from 20260905_1222", "siprix 1.1.0 from 20260906_1222", "siprix1.1.0 from 20260905_1222",
+    "1.1.1 from 20260905_1222", "1.1.0 from 20260906_1222", "Siprix: 1.1.0", "private-token\n1.1.0 from 20260905_1222", "x".repeat(81)])(
     "rejects unsupported or malformed version %# without displaying it", async sdkVersion => {
       const result = await checkAndroidNativeSdkSmoke(async () => receipt({ sdkVersion }));
       expect(result).toMatchObject({ ok: false, code: "E_NATIVE_SMOKE_RECEIPT" });

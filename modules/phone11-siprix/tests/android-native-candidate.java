@@ -11,7 +11,7 @@ final class AndroidNativeCandidateTest {
     Phone11CallRuntime.Listener listener;int account=7,call=11,invites,answers,ends,holds,mutes,dtmfs,destroys,rejectsVideo,holdState;
     String fail;boolean speaker,rejectAfterAnswerFailure,lastEndRejected;
     void command(String name){if(name.equals(fail))throw new Phone11CallRuntime.Failure("E_SIPRIX_-77");}
-    public String initialize(Phone11CallRuntime.Listener l){command("initialize");listener=l;return "1.1.0 from 20260905_1222";}
+    public String initialize(Phone11CallRuntime.Listener l){command("initialize");listener=l;return "siprix 1.1.0 from 20260905_1222";}
     public void destroy(){command("destroy");destroys++;}
     public int addAccount(Map<String,Object> c){command("add");return account;}
     public void register(int id,int expiry){command("register");} public void unregister(int id){command("unregister");} public void delete(int id){command("delete");}
@@ -38,7 +38,7 @@ final class AndroidNativeCandidateTest {
     void transfer(){r.transfer(lease,"11","+1020",REQUEST);}
   }
   public static void main(String[] args){
-    Fixture smoke=new Fixture(true);Map<String,Object> result=smoke.r.smoke(smoke.lease);check("1.1.0 from 20260905_1222".equals(result.get("sdkVersion")));check(Boolean.FALSE.equals(result.get("initialized")));check(smoke.e.adds==0&&smoke.e.registrations==0&&smoke.e.invites==0&&smoke.e.destroys==1);check(((List<?>)result.get("accounts")).isEmpty());smoke.r.initialize(smoke.lease);fail("E_SMOKE_STATE",()->smoke.r.smoke(smoke.lease));smoke.r.destroy(smoke.lease);
+    Fixture smoke=new Fixture(true);Map<String,Object> result=smoke.r.smoke(smoke.lease);check("siprix 1.1.0 from 20260905_1222".equals(result.get("sdkVersion")));check(Boolean.FALSE.equals(result.get("initialized")));check(smoke.e.adds==0&&smoke.e.registrations==0&&smoke.e.invites==0&&smoke.e.destroys==1);check(((List<?>)result.get("accounts")).isEmpty());smoke.r.initialize(smoke.lease);fail("E_SMOKE_STATE",()->smoke.r.smoke(smoke.lease));smoke.r.destroy(smoke.lease);
     Fixture failedSmoke=new Fixture(true);failedSmoke.e.fail="initialize";fail("E_SIPRIX_-77",()->failedSmoke.r.smoke(failedSmoke.lease));check(failedSmoke.e.destroys==1);check(Boolean.FALSE.equals(failedSmoke.r.snapshot(failedSmoke.lease).get("cleanupRequired")));check(failedSmoke.e.adds==0&&failedSmoke.e.registrations==0);
     failedSmoke.e.failCleanup=true;fail("E_CLEANUP",()->failedSmoke.r.smoke(failedSmoke.lease));check(Boolean.TRUE.equals(failedSmoke.r.snapshot(failedSmoke.lease).get("cleanupRequired")));fail("E_SMOKE_STATE",()->failedSmoke.r.smoke(failedSmoke.lease));
     Fixture missingNative=new Fixture(true);missingNative.e.linkageInitialize=true;fail("E_ANDROID_SDK_RUNTIME",()->missingNative.r.smoke(missingNative.lease));check(missingNative.e.destroys==1);check(Boolean.FALSE.equals(missingNative.r.snapshot(missingNative.lease).get("cleanupRequired")));missingNative.e.linkageDestroy=true;fail("E_ANDROID_SDK_RUNTIME",()->missingNative.r.smoke(missingNative.lease));check(Boolean.TRUE.equals(missingNative.r.snapshot(missingNative.lease).get("cleanupRequired")));

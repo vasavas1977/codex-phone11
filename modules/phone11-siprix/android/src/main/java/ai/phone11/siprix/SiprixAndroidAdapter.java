@@ -21,10 +21,11 @@ public final class SiprixAndroidAdapter implements Phone11CallRuntime.Engine {
   private static void ok(int code){if(code!=SiprixCore.kOK)throw new Phone11CallRuntime.Failure("E_SIPRIX_"+code);}
   private SiprixCore sdk(){if(core==null)throw new Phone11CallRuntime.Failure("E_NOT_INITIALIZED");return core;}
   private void microphone(){Phone11ForegroundTrial.requireMicrophone(context.checkSelfPermission(Manifest.permission.RECORD_AUDIO)==PackageManager.PERMISSION_GRANTED);}
+  static boolean acceptsSdkVersion(String version){return version!=null&&version.trim().matches("(?:Siprix: ?|siprix )?1\\.1\\.0 from 20260905_1222");}
   public String initialize(Phone11CallRuntime.Listener listener){
     if(core==null)core=new SiprixCore(context);
     String version=core.getVersion();
-    if(version==null||!version.trim().matches("(?:Siprix: ?)?1\\.1\\.0 from 20260905_1222"))throw new Phone11CallRuntime.Failure("E_SDK_VERSION");
+    if(!acceptsSdkVersion(version))throw new Phone11CallRuntime.Failure("E_SDK_VERSION");
     activeCallbacks=new Callbacks(listener);core.setModelListener(activeCallbacks);
     IniData config=new IniData();config.setLogLevelFile(IniData.LogLevel.NONE);config.setLogLevelIde(IniData.LogLevel.NONE);
     // Native build input only. Presence never proves licensed SDK behavior.

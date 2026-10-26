@@ -1,4 +1,4 @@
-const pinnedVersion = /^(?:Siprix: ?)?1\.1\.0 from 20260905_1222$/;
+const pinnedVersion = /^(?:Siprix: ?|siprix )?1\.1\.0 from 20260905_1222$/;
 
 const nativeFailures = {
   E_SMOKE_STATE: "The SDK must be idle and fully released before this isolated check can run.",
