@@ -140,7 +140,7 @@ jobs:
             tests/phone11-admin-auth-state.test.tsx \
             tests/phone11-admin-extension-actions.test.tsx \
             tests/phone11-registration-history.test.ts
-          node --test tests/phone11-admin-people-scroll.test.mjs tests/phone11-web-icon-hydration.test.mjs
+          node --test --test-concurrency=1 tests/phone11-admin-people-scroll.test.mjs tests/phone11-web-icon-hydration.test.mjs
       - name: Test phone readiness, actual call entry, controls, and directory
         run: |
           pnpm exec vitest run \

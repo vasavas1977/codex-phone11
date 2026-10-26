@@ -119,6 +119,20 @@ function configureManifest(manifest, enabled) {
   return manifest;
 }
 
+// Host manifest priority must exceed transitive CallKeep library declarations.
+function configureWakePermissions(manifest, foreground, wake) {
+  const names = ["MANAGE_OWN_CALLS", "FOREGROUND_SERVICE_PHONE_CALL", "USE_FULL_SCREEN_INTENT"]
+    .map(name => `android.permission.${name}`);
+  const strip = foreground && !wake;
+  manifest["uses-permission"] = (manifest["uses-permission"] ?? []).filter(item =>
+    !names.includes(item?.$?.["android:name"]) || (!strip && item?.$?.["tools:node"] !== "remove"));
+  if (strip) {
+    manifest.$["xmlns:tools"] = "http://schemas.android.com/tools";
+    manifest["uses-permission"].push(...names.map(name => ({ $: { "android:name": name, "tools:node": "remove" } })));
+  }
+  return manifest;
+}
+
 function withPhone11AndroidRuntime(config) {
   const settings = androidRuntimeBuildSettings();
   const candidate = require("./android-candidate-settings").androidCandidateSettings();
@@ -152,6 +166,7 @@ function withPhone11AndroidRuntime(config) {
   });
   return withAndroidManifest(config, native => {
     configureManifest(native.modResults.manifest, settings.enabled);
+    configureWakePermissions(native.modResults.manifest, settings.enabled, candidate.wake);
     const application = native.modResults.manifest.application[0];
     application["meta-data"] = application["meta-data"].filter(item => !["ai.phone11.siprix.NATIVE_CANDIDATE_ENABLED", "ai.phone11.siprix.WAKE_CANDIDATE_ENABLED"].includes(item?.$?.["android:name"]));
     if (settings.nativeCandidate) application["meta-data"].push({ $: {
@@ -166,4 +181,4 @@ function withPhone11AndroidRuntime(config) {
 
 module.exports = withPhone11AndroidRuntime;
 Object.assign(module.exports, { androidRuntimeBuildSettings, verifyRuntimeAar, configureSettingsGradle, configureAppGradle,
-  configureMainApplication, configureProperties, configureManifest, trialPackage });
+  configureMainApplication, configureProperties, configureManifest, configureWakePermissions, trialPackage });

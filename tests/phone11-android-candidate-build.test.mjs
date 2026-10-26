@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 const require = createRequire(import.meta.url);
 const { androidCandidateSettings, candidatePackage, wakePackage } = require("../plugins/android-candidate-settings");
-const { androidRuntimeBuildSettings } = require("../plugins/with-phone11-android-runtime");
+const { androidRuntimeBuildSettings, configureWakePermissions } = require("../plugins/with-phone11-android-runtime");
 const base = { PHONE11_ANDROID_NATIVE_CANDIDATE:"1", EXPO_PUBLIC_PHONE11_ANDROID_NATIVE_CANDIDATE:"1",
   PHONE11_ANDROID_FOREGROUND_TRIAL:"1", EXPO_PUBLIC_PHONE11_ANDROID_FOREGROUND_TRIAL:"1", EXPO_PUBLIC_SIP_ENGINE:"siprix" };
 
@@ -43,15 +43,20 @@ test("Firebase and wake configuration fail closed unless public project and pack
   } finally { rmSync(root, { recursive:true, force:true }); }
 });
 
-// The full CallKeep dependency contributes MANAGE_OWN_CALLS even without its
-// service. Audio-only manifests must explicitly remove inherited wake powers.
-test("foreground manifest removes inherited wake permissions while wake opts in separately", () => {
-  const base = readFileSync(new URL("../modules/phone11-siprix/android/src/main/AndroidManifest.xml", import.meta.url), "utf8");
+test("host manifest removes inherited wake authority and reverses markers for wake/ordinary builds", () => {
+  const names = ["MANAGE_OWN_CALLS", "FOREGROUND_SERVICE_PHONE_CALL", "USE_FULL_SCREEN_INTENT"];
+  const manifest = { $: {}, "uses-permission": [
+    { $: { "android:name": "android.permission.INTERNET" } },
+    { $: { "android:name": "android.permission.MANAGE_OWN_CALLS" } },
+  ] };
+  const once = structuredClone(configureWakePermissions(manifest, true, false));
+  assert.deepEqual(configureWakePermissions(manifest, true, false), once);
+  for (const name of names) assert.deepEqual(manifest["uses-permission"].filter(item => item.$["android:name"] === `android.permission.${name}`),
+    [{ $: { "android:name": `android.permission.${name}`, "tools:node": "remove" } }]);
+  for (const [foreground,wake] of [[true,true],[false,false]]) {
+    const restored = configureWakePermissions(structuredClone(manifest), foreground, wake);
+    assert.deepEqual(restored["uses-permission"], [{ $: { "android:name": "android.permission.INTERNET" } }]);
+  }
   const wake = readFileSync(new URL("../modules/phone11-siprix/android/src/wake/AndroidManifest.xml", import.meta.url), "utf8");
-  for (const name of ["MANAGE_OWN_CALLS", "FOREGROUND_SERVICE_PHONE_CALL", "USE_FULL_SCREEN_INTENT"]) {
-    assert.ok(base.includes(`android:name="android.permission.${name}" tools:node="remove"`));
-  }
-  for (const name of ["MANAGE_OWN_CALLS", "FOREGROUND_SERVICE_PHONE_CALL"]) {
-    assert.ok(wake.includes(`android:name="android.permission.${name}" />`));
-  }
+  for (const name of names.slice(0,2)) assert.ok(wake.includes(`android:name="android.permission.${name}" />`));
 });
