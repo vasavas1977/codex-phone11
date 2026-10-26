@@ -16,6 +16,7 @@ import {
   useSipDiagnosticsStore,
 } from "@/lib/sip/diagnostics-store";
 import { sipEngine } from "@/lib/sip/engine";
+import { checkAndroidNativeSdkSmoke } from "@/lib/sip/android-native-smoke";
 
 function levelColor(event: SipDiagnosticEvent, colors: ReturnType<typeof useColors>): string {
   if (event.level === "error") return colors.error;
@@ -214,16 +215,18 @@ export default function SipDiagnosticsScreen() {
     setNativeSmokeBusy(true);
     try {
       const module = NativeModules.Phone11Siprix;
-      if (typeof module?.runNativeSdkSmoke !== "function") throw new Error("Native check unavailable");
-      const result = await module.runNativeSdkSmoke();
-      if (result?.initialized !== false || result?.registrationAttempted !== false || result?.callAttempted !== false ||
-          !Array.isArray(result?.accounts) || result.accounts.length || !Array.isArray(result?.calls) || result.calls.length ||
-          typeof result?.sdkVersion !== "string" || !/^[\w.\- ]{1,80}$/.test(result.sdkVersion)) throw new Error("Native check did not finish cleanly");
-      addEvent({ level: "info", category: "engine", message: "Android native SDK check passed",
-        detail: `SDK ${result.sdkVersion} initialized and released. No registration or call attempted.` });
+      const result = await checkAndroidNativeSdkSmoke(typeof module?.runNativeSdkSmoke === "function"
+        ? () => module.runNativeSdkSmoke() : undefined);
+      if (result.ok) {
+        addEvent({ level: "info", category: "engine", message: "Android native SDK check passed",
+          detail: `SDK ${result.sdkVersion} initialized and released. No registration or call attempted.` });
+      } else {
+        addEvent({ level: "error", category: "engine", message: "Android native SDK check failed",
+          detail: `${result.detail} (${result.code})` });
+      }
     } catch {
       addEvent({ level: "error", category: "engine", message: "Android native SDK check failed",
-        detail: "The SDK must be idle and fully released before this isolated check can run." });
+        detail: "The native SDK check is unavailable. (E_NATIVE_SMOKE_UNAVAILABLE)" });
     } finally { setNativeSmokeBusy(false); }
   }
 
