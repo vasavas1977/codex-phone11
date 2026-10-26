@@ -19,6 +19,8 @@ const m = vi.hoisted(() => ({
   rows: [] as any[],
   cache: true,
   queryError: false,
+  queryFetching: false,
+  refetchExtensions: vi.fn(),
   alert: vi.fn(),
   mutate: vi.fn(),
   invalidate: vi.fn(),
@@ -135,6 +137,8 @@ vi.mock("../lib/trpc", () => ({
           useQuery: () => ({
             data: { data: m.rows, total: m.rows.length },
             isError: m.queryError,
+            isFetching: m.queryFetching,
+            refetch: m.refetchExtensions,
           }),
         },
         update: { useMutation: () => ({ mutateAsync: m.mutate }) },
@@ -203,11 +207,40 @@ beforeEach(() => {
   m.rows = [row()];
   m.cache = true;
   m.queryError = false;
+  m.queryFetching = false;
+  m.refetchExtensions.mockReset().mockResolvedValue(undefined);
   m.writes = 0;
   m.retired = false;
   m.retiredWrites = 0;
   m.mutate.mockReset().mockResolvedValue(undefined);
   m.invalidate.mockReset().mockResolvedValue(undefined);
+});
+
+it("retries a failed mailbox list without changing mailbox settings", () => {
+  m.queryError = true;
+  const failed = render();
+  expect(failed).toContain("Could not load extensions.");
+  expect(failed).not.toContain("Original member");
+  const retry = m.presses.get("Retry loading personal mailboxes");
+  expect(retry).toBeDefined();
+  expect(retry.disabled).toBe(false);
+  retry.onPress();
+  expect(m.refetchExtensions).toHaveBeenCalledTimes(1);
+  expect(m.mutate).not.toHaveBeenCalled();
+  expect(m.invalidate).not.toHaveBeenCalled();
+
+  m.queryError = false;
+  expect(render()).toContain("Original member");
+  expect(m.presses.has("Retry loading personal mailboxes")).toBe(false);
+});
+
+it("disables mailbox-list retry while its request is in flight", () => {
+  m.queryError = true;
+  m.queryFetching = true;
+  expect(render()).toContain("Retrying…");
+  const retry = m.presses.get("Retry loading personal mailboxes");
+  expect(retry.disabled).toBe(true);
+  expect(retry.accessibilityState).toEqual({ disabled: true, busy: true });
 });
 const boundaries = {
   workspace: () => {
