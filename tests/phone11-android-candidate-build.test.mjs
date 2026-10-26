@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 const require = createRequire(import.meta.url);
@@ -41,4 +41,17 @@ test("Firebase and wake configuration fail closed unless public project and pack
       client:[{client_info:{android_client_info:{package_name:"ai.phone11.mobile.foregroundtrial"}}}] }));
     assert.throws(() => androidCandidateSettings(env));
   } finally { rmSync(root, { recursive:true, force:true }); }
+});
+
+// The full CallKeep dependency contributes MANAGE_OWN_CALLS even without its
+// service. Audio-only manifests must explicitly remove inherited wake powers.
+test("foreground manifest removes inherited wake permissions while wake opts in separately", () => {
+  const base = readFileSync(new URL("../modules/phone11-siprix/android/src/main/AndroidManifest.xml", import.meta.url), "utf8");
+  const wake = readFileSync(new URL("../modules/phone11-siprix/android/src/wake/AndroidManifest.xml", import.meta.url), "utf8");
+  for (const name of ["MANAGE_OWN_CALLS", "FOREGROUND_SERVICE_PHONE_CALL", "USE_FULL_SCREEN_INTENT"]) {
+    assert.ok(base.includes(`android:name="android.permission.${name}" tools:node="remove"`));
+  }
+  for (const name of ["MANAGE_OWN_CALLS", "FOREGROUND_SERVICE_PHONE_CALL"]) {
+    assert.ok(wake.includes(`android:name="android.permission.${name}" />`));
+  }
 });
