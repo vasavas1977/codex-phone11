@@ -63,13 +63,14 @@ let admin: Pool | undefined;
 let db: Pool | undefined;
 const context = { user: { id: 9 }, req: { ip: "127.0.0.1", headers: {} }, res: {} } as any;
 const caller = () => pbxRouter.createCaller(context);
-const tables = ["tenant_settings", "tenant_memberships", "extensions", "sip_accounts", "subscriber", "user_extensions", "phone_numbers", "fraud_controls", "audit_logs"];
+const tables = ["tenant_settings", "tenant_memberships", "extensions", "sip_accounts", "subscriber", "user_extensions", "phone_numbers", "audit_logs"];
 async function snapshot() {
   return Object.fromEntries(await Promise.all(tables.map(async table => [table, (await db!.query(`SELECT to_jsonb(t) row FROM ${table} t ORDER BY to_jsonb(t)::text`)).rows.map(r => r.row)])));
 }
 // These mocks bound the fixture to transaction/audit behavior. Tenant resolution,
 // live authorization, capability readiness and credential generation/revocation
 // are synthetic; existing authorization/SIP lifecycle suites cover those paths.
+// Fraud uses a separate real restricted LOGIN and its native API suite instead.
 describe.skipIf(url === undefined)("core PBX business/audit atomicity on dedicated PostgreSQL", () => {
 beforeAll(async () => {
   schema = `core_atomic_${randomBytes(12).toString("hex")}`;
@@ -95,7 +96,6 @@ beforeAll(async () => {
     CREATE TABLE subscriber(id serial PRIMARY KEY,username text,domain text,password text,ha1 text,ha1b text,UNIQUE(username,domain));
     CREATE TABLE user_extensions(user_id integer,extension_id integer,is_primary boolean,UNIQUE(user_id,extension_id));
     CREATE TABLE phone_numbers(id serial PRIMARY KEY,tenant_id integer,number_e164 text,number_display text,country text,number_type text,provider text,status text,assigned_route_type text,assigned_route_id integer,deleted_at timestamptz,updated_at timestamptz);
-    CREATE TABLE fraud_controls(tenant_id integer,international_enabled boolean,updated_at timestamptz);
     CREATE TABLE audit_logs(tenant_id integer,actor_user_id integer,action text,resource_type text,resource_id text,old_value jsonb,new_value jsonb,ip_address inet,user_agent text,request_id text,session_id text);
   `);
 });
@@ -108,8 +108,7 @@ beforeEach(async () => {
     INSERT INTO extensions(id,tenant_id,user_id,extension_number,display_name,type,sip_username,sip_domain,sip_password,status) VALUES(41,7,33,'4101','Before','user','4101','sip.phone11.ai','PRIVATE_LEGACY','active');
     INSERT INTO sip_accounts(id,tenant_id,extension_id,user_id,sip_username,sip_domain,ha1,ha1b,status) VALUES(51,7,41,33,'4101','sip.phone11.ai','OLD_HA1','OLD_HA1B','active');
     INSERT INTO subscriber(username,domain,password,ha1,ha1b) VALUES('4101','sip.phone11.ai','PRIVATE_OLD_PASSWORD','OLD_HA1','OLD_HA1B');
-    INSERT INTO user_extensions VALUES(33,41,true); INSERT INTO phone_numbers(id,tenant_id,status,assigned_route_type,assigned_route_id) VALUES(41,7,'active','extension',41);
-    INSERT INTO fraud_controls VALUES(7,true,NOW());`);
+    INSERT INTO user_extensions VALUES(33,41,true); INSERT INTO phone_numbers(id,tenant_id,status,assigned_route_type,assigned_route_id) VALUES(41,7,'active','extension',41);`);
 });
 afterAll(async () => {
   // Every cleanup remains attempted if setup, an assertion, pool shutdown or
@@ -132,7 +131,6 @@ const cases = [
   ["extension.reset", "sip_accounts", () => caller().extensions.resetPassword({ extensionId: 41 })],
   ["DID.create", "phone_numbers", () => caller().phoneNumbers.create({ number: "+6621234567" })],
   ["DID.route", "phone_numbers", () => caller().phoneNumbers.assignRoute({ id: 41, assignedRouteType: null, assignedRouteId: null })],
-  ["fraud", "fraud_controls", () => caller().fraudControls.update({ internationalEnabled: false })],
 ] as const;
 it.each(cases)("%s business/audit rows are invisible before one commit and visible after", async (_name, table, invoke) => {
   const before = await snapshot(); const result = await invoke(); const after = await snapshot();
