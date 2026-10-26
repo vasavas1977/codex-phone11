@@ -18,7 +18,7 @@
     }
   },
   "nodeVersion": "22.23.3",
-  "packageSha256": "81bee923fadd88854c3704a0bbd9b2f0716afbdc815f293654568d0190a66f2a",
+  "packageSha256": "e2d844149759bb217c106e2fbe0d16a1087e1ef0be153f96de9c4b4afb40456f",
   "patches": {
     "patches/@livekit__react-native-webrtc@144.2.0.patch": "92c3fa85ac16bfad1e5b1e9143ee0c1b2e0cdc8e53ee72574a55b80ef614982a",
     "patches/braces@3.0.3.patch": "fa170df8214573c092f07f0c491233b9358269b848ac277a0939184b67cf16ab",
