@@ -30,6 +30,9 @@ LIBRARIES = {"libsiprix.so", "libsiprixMedia.so"}
 SDK_LOCK_PATH = Path(__file__).resolve().parents[1] / "modules/phone11-siprix/android/sdk-lock.json"
 EAS_PATH = Path(__file__).resolve().parents[1] / "eas.json"
 WAKE_PROFILE = "preview-android-wake-candidate"
+# Android ServiceInfo constants, including the compiled apkanalyzer representation.
+PHONE_CALL_SERVICE_TYPE = 4
+MICROPHONE_SERVICE_TYPE = 128
 WAKE_SERVICES = {"ai.phone11.siprix." + name for name in (
     "Phone11FirebaseMessagingService", "Phone11IncomingCallService", "Phone11ConnectionService")}
 WAKE_CLASSES = {("Lai/phone11/siprix/" + name + ";").encode("ascii") for name in (
@@ -188,6 +191,25 @@ def manifest_component_name(package: str, name: str) -> str:
     return name
 
 
+def foreground_service_type_mask(value: str) -> int | None:
+    if re.fullmatch(r"0[xX][0-9a-fA-F]+|[0-9]+", value):
+        return int(value, 16 if value.lower().startswith("0x") else 10)
+    symbols = value.split("|")
+    relevant = {"phoneCall": PHONE_CALL_SERVICE_TYPE, "microphone": MICROPHONE_SERVICE_TYPE}
+    if not all(symbol in relevant for symbol in symbols):
+        return None
+    mask = 0
+    for symbol in symbols:
+        mask |= relevant[symbol]
+    return mask
+
+
+def has_phone_call_service_type(service) -> bool:
+    value = service.get(ANDROID + "foregroundServiceType", "")
+    mask = foreground_service_type_mask(value)
+    return bool(mask & PHONE_CALL_SERVICE_TYPE) if mask is not None else "phoneCall" in value.split("|")
+
+
 def wake_profile() -> dict:
     """Independent current source expectations; not proof of a build's environment."""
     profiles = json.loads(EAS_PATH.read_text())["build"]
@@ -240,7 +262,8 @@ def wake_manifest(root, app) -> None:
             or "expo.modules.notifications.service.ExpoFirebaseMessagingService" in services):
         raise ValueError("wake_candidate_fcm_ingress_invalid")
     incoming = services["ai.phone11.siprix.Phone11IncomingCallService"]
-    if (set(incoming.get(ANDROID + "foregroundServiceType", "").split("|")) != {"phoneCall", "microphone"}
+    if (foreground_service_type_mask(incoming.get(ANDROID + "foregroundServiceType", ""))
+            != PHONE_CALL_SERVICE_TYPE | MICROPHONE_SERVICE_TYPE
             or incoming.get(ANDROID + "stopWithTask") != "false"):
         raise ValueError("wake_candidate_incoming_service_lifecycle")
     connection = services["ai.phone11.siprix.Phone11ConnectionService"]
@@ -251,7 +274,7 @@ def wake_manifest(root, app) -> None:
         if name in WAKE_SERVICES:
             continue
         if (service.get(ANDROID + "permission") == "android.permission.BIND_TELECOM_CONNECTION_SERVICE"
-                or "phoneCall" in service.get(ANDROID + "foregroundServiceType", "").split("|")
+                or has_phone_call_service_type(service)
                 or "android.telecom.ConnectionService" in actions(service)):
             raise ValueError("wake_candidate_unexpected_telecom_service")
     permissions = {item.get(ANDROID + "name"): item for item in root.findall("uses-permission")}
@@ -357,7 +380,7 @@ def inspect_apk_snapshot(apk_data: bytes, manifest_xml: str, *, trial: bool, sdk
             raise ValueError("native_candidate_wake_not_permitted")
         for service in app.findall("service"):
             if (service.get(ANDROID + "permission") == "android.permission.BIND_TELECOM_CONNECTION_SERVICE"
-                    or "phoneCall" in (service.get(ANDROID + "foregroundServiceType") or "").split("|")
+                    or has_phone_call_service_type(service)
                     or any(action.get(ANDROID + "name") == "android.telecom.ConnectionService"
                            for intent in service.findall("intent-filter") for action in intent.findall("action"))):
                 raise ValueError("native_candidate_telecom_service_not_permitted")

@@ -309,6 +309,22 @@ class PackagingChecks(unittest.TestCase):
             with self.subTest(extra=extra), self.assertRaisesRegex(ValueError, error):
                 self.inspect_wake(apk, xml.replace("</application>", extra + "</application>"))
 
+    def test_wake_real_analyzer_service_masks_require_exact_phone_call_and_microphone_bits(self):
+        apk, xml = self.wake_candidate_fixture()
+        for value in ("0x84", "0X84", "132", "microphone|phoneCall"):
+            with self.subTest(value=value):
+                receipt = self.inspect_wake(apk, xml.replace('foregroundServiceType="phoneCall|microphone"',
+                                                           f'foregroundServiceType="{value}"'))
+                self.assertTrue(receipt["wake_source_candidate"])
+        for value in ("0x4", "0x80", "0x0", "0x85", "0x184", "4", "128", "133", "0x84|0x1", "phoneCall|microphone|camera"):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "incoming_service_lifecycle"):
+                self.inspect_wake(apk, xml.replace('foregroundServiceType="phoneCall|microphone"',
+                                                  f'foregroundServiceType="{value}"'))
+        for value in ("0x4", "0x84", "0x85", "4", "132", "phoneCall|camera"):
+            extra = f'<service android:name="vendor.OtherConnection" android:foregroundServiceType="{value}"/>'
+            with self.subTest(extra=value), self.assertRaisesRegex(ValueError, "unexpected_telecom"):
+                self.inspect_wake(apk, xml.replace("</application>", extra + "</application>"))
+
     def test_wake_requires_each_manifest_permission_without_sdk_limit(self):
         apk, xml = self.wake_candidate_fixture()
         for permission in ("INTERNET", "ACCESS_NETWORK_STATE", "RECORD_AUDIO", "MODIFY_AUDIO_SETTINGS", "POST_NOTIFICATIONS",
@@ -480,6 +496,8 @@ class PackagingChecks(unittest.TestCase):
         for element in ('<service android:name="ai.phone11.siprix.Phone11IncomingCallService"/>',
                         '<service android:name="vendor.GenericConnection" android:permission="android.permission.BIND_TELECOM_CONNECTION_SERVICE"/>',
                         '<service android:name="vendor.GenericConnection" android:foregroundServiceType="microphone|phoneCall"/>',
+                        '<service android:name="vendor.GenericConnection" android:foregroundServiceType="0x84"/>',
+                        '<service android:name="vendor.GenericConnection" android:foregroundServiceType="4"/>',
                         '<service android:name="vendor.GenericConnection"><intent-filter><action android:name="android.telecom.ConnectionService"/></intent-filter></service>'):
             with self.subTest(element=element), self.assertRaisesRegex(ValueError, "(?:uncommissioned_service|telecom_service_not_permitted)"):
                 check.inspect_apk(apk, xml.replace("</application>", element + "</application>"), trial=True, standalone=True, native_candidate=True)
