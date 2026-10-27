@@ -12,9 +12,11 @@ public final class Phone11FirebaseMessagingService extends ExpoFirebaseMessaging
     if(!message.getData().containsKey("callUUID")&&!message.getData().containsKey("bindingId")){super.onMessageReceived(message);return;}
     if(!BuildConfig.WAKE_CANDIDATE_ENABLED||message.getPriority()!=RemoteMessage.PRIORITY_HIGH||message.getNotification()!=null)return;
     Map<String,String> data=message.getData();if(data.size()!=4||!"1".equals(data.get("v"))||!data.keySet().containsAll(java.util.Arrays.asList("v","callUUID","bindingId","expiresAt")))return;
+    String handoff=null;
     try{long expiry=Long.parseLong(data.get("expiresAt"));if(!Long.toString(expiry).equals(data.get("expiresAt")))return;
-      Intent intent=new Intent(this,Phone11IncomingCallService.class).setAction(Phone11IncomingCallService.PUSH).putExtra("callUUID",data.get("callUUID")).putExtra("bindingId",data.get("bindingId")).putExtra("expiresAt",expiry);
+      handoff=Phone11WakeCpuLock.get(this).acquire(data.get("callUUID"),data.get("bindingId"),expiry,System.currentTimeMillis());if(handoff==null)return;
+      Intent intent=new Intent(this,Phone11IncomingCallService.class).setAction(Phone11IncomingCallService.PUSH).putExtra("callUUID",data.get("callUUID")).putExtra("bindingId",data.get("bindingId")).putExtra("expiresAt",expiry).putExtra(Phone11WakeCpuLock.EXTRA_HANDOFF,handoff);
       if(Build.VERSION.SDK_INT>=26)startForegroundService(intent);else startService(intent);
-    }catch(RuntimeException failure){/* OS refusal never becomes a reported successful wake. */}
+    }catch(RuntimeException failure){Phone11WakeCpuLock.get(this).releaseHandoff(handoff);/* OS/permission refusal never becomes a reported successful wake. */}
   }
 }

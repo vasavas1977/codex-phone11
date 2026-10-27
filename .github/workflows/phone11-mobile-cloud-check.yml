@@ -79,6 +79,7 @@ jobs:
         run: |
           node --test tests/phone11-android-candidate-build.test.mjs \
             modules/phone11-siprix/tests/android-wake-state.test.mjs \
+            modules/phone11-siprix/tests/android-wake-cpu.test.mjs \
             modules/phone11-siprix/tests/android-wake-history.test.mjs
 
       - name: Require FCM, chat, wake and native-history importer regressions

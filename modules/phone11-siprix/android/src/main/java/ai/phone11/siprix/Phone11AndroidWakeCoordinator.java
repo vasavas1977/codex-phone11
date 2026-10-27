@@ -16,6 +16,7 @@ final class Phone11AndroidWakeCoordinator {
   static void tokenChanged(){new Handler(Looper.getMainLooper()).post(()->{if(signal!=null)signal.changed();});}
   final Handler main=new Handler(Looper.getMainLooper());final Phone11CallRuntime runtime;private final SiprixAndroidAdapter adapter;
   private final Context context;private final Phone11WakeHistory history;private final Phone11WakeStore store;private final Phone11WakeHttp http;private final Phone11AndroidWakeState state=new Phone11AndroidWakeState();
+  private Phone11WakeCpuState.Owner wakeCpuOwner;
   private long lease;private boolean bridgeAttached,adopted,answerRequested,serverReady,finishing,recordHistory,forceShutdown;private Phone11CallRuntime.Sink bridge;
   private String accountHash,foregroundBinding,callId;private JSONObject enrollment;private Phone11AndroidWakeState.Ticket active;private Phone11IncomingCallService service;
   private Phone11ConnectionService.Call connection;private Phone11IncomingCallService localService;private String localCallId;
@@ -35,7 +36,7 @@ final class Phone11AndroidWakeCoordinator {
   Map<String,Object> binding(){gate();JSONObject saved=store.read();return saved!=null&&Phone11WakeStore.binding(saved).expiresAt>now()?Phone11WakeStore.publicBinding(saved):null;}
   List<Map<String,Object>> completed(Map<String,Object> requested){gate();return history.read(requested,binding());}
   void ackCompleted(Map<String,Object> requested,List<String> ids){gate();history.ack(requested,binding(),ids);}
-  void revoke(){recordHistory=false;forceShutdown=true;RuntimeException cleanup=null;try{if(active!=null)finish(true);if(active==null&&lease!=0){try{runtime.destroy(lease);}finally{if(localCallId!=null)localEnded();}}}catch(RuntimeException failure){cleanup=failure;}finally{state.revoke();store.write(null);foregroundBinding=null;adopted=false;history.clear();}if(cleanup!=null)throw cleanup;}
+  void revoke(){recordHistory=false;forceShutdown=true;RuntimeException cleanup=null;try{if(active!=null)finish(true);if(active==null&&lease!=0){try{runtime.destroy(lease);}finally{if(localCallId!=null)localEnded();}}}catch(RuntimeException failure){cleanup=failure;}finally{releaseWakeCpu();state.revoke();store.write(null);foregroundBinding=null;adopted=false;history.clear();}if(cleanup!=null)throw cleanup;}
   void localAudioReady(){if(!BuildConfig.WAKE_CANDIDATE_ENABLED)return;gate();if(!permissions()||!Phone11ConnectionService.register(context))throw new Phone11CallRuntime.Failure("E_WAKE_UNAVAILABLE");}
   void startLocalAudio(){if(!BuildConfig.WAKE_CANDIDATE_ENABLED)return;localAudioReady();List<?> calls=(List<?>)runtime.snapshot(lease).get("calls");if(calls.isEmpty())throw new Phone11CallRuntime.Failure("E_CALL_STATE");localCallId=(String)((Map<?,?>)calls.get(0)).get("id");try{Intent intent=new Intent(context,Phone11IncomingCallService.class).setAction(Phone11IncomingCallService.LOCAL);if(Build.VERSION.SDK_INT>=26)context.startForegroundService(intent);else context.startService(intent);}catch(RuntimeException failure){String id=localCallId;localCallId=null;runtime.end(lease,id);throw new Phone11CallRuntime.Failure("E_ANDROID_SERVICE_START");}}
 
@@ -48,14 +49,17 @@ final class Phone11AndroidWakeCoordinator {
   Map<String,Object> snapshot(){Map<String,Object> result=runtime.snapshot(lease);if(active!=null&&!finishing&&enrollment!=null&&state.binding()!=null){Map<String,Object> wake=new LinkedHashMap<>(Phone11WakeStore.publicBinding(enrollment));wake.put("callUUID",active.callUUID);wake.put("expiresAt",active.expiresAt);wake.put("grantExpiresAt",state.binding().expiresAt);wake.put("v",1);result.put("nativeWake",wake);}return result;}
   private static String fingerprint(Map<String,Object> config){return Phone11AndroidAccountIdentity.fingerprint(config);}
 
-  void receive(Phone11IncomingCallService owner,String uuid,String binding,long expiry){
+  void receive(Phone11IncomingCallService owner,String uuid,String binding,long expiry,String handoff){
     // An unrelated delivery never owns or stops an existing service/call.
     if(active!=null){if(active.callUUID.equals(uuid)&&active.bindingId.equals(binding)&&state.isCurrent(active,now()))owner.show(uuid,binding,active.epoch,state.phase()==Phone11AndroidWakeState.Phase.ACTIVE);return;}
     if(localCallId!=null)return;
     try{gate();if(!available()||expiry<=now()||expiry-now()>30000)throw new Phone11CallRuntime.Failure("E_WAKE_UNAVAILABLE");JSONObject saved=store.read();if(saved==null)throw new Phone11CallRuntime.Failure("E_WAKE_OWNER");
       if(lease==0)lease=runtime.acquire();Map<String,Object> before=runtime.snapshot(lease);if(Boolean.TRUE.equals(before.get("cleanupRequired"))||!((List<?>)before.get("calls")).isEmpty()||(!((List<?>)before.get("accounts")).isEmpty()&&!Objects.equals(binding,foregroundBinding))){owner.done();return;}
       state.bind(Phone11WakeStore.binding(saved),now());Phone11AndroidWakeState.Ticket ticket=state.receive(binding,uuid,expiry,now());if(ticket==null)throw new Phone11CallRuntime.Failure("E_WAKE_OWNER");
-      active=ticket;enrollment=saved;service=owner;recordHistory=true;forceShutdown=false;callId=null;connection=null;adopted=answerRequested=serverReady=false;owner.show(uuid,binding,ticket.epoch,false);
+      active=ticket;enrollment=saved;service=owner;
+      wakeCpuOwner=Phone11WakeCpuLock.get(context).adopt(handoff,uuid,binding,ticket.epoch,ticket.expiresAt);
+      if(wakeCpuOwner==null)throw new Phone11CallRuntime.Failure("E_WAKE_CPU_HANDOFF");
+      recordHistory=true;forceShutdown=false;callId=null;connection=null;adopted=answerRequested=serverReady=false;owner.show(uuid,binding,ticket.epoch,false);
       final Phone11AndroidWakeState.Ticket captured=ticket;main.postDelayed(()->{if(active==captured&&state.phase()!=Phone11AndroidWakeState.Phase.ACTIVE)finish(true);},Math.max(1,expiry-now()));
       request("claim",captured,(response,revoked)->{
         if(revoked){revoke();return;}try{
@@ -86,19 +90,20 @@ final class Phone11AndroidWakeCoordinator {
     if(active!=null&&!finishing){String type=(String)event.get("type");Map<?,?> call=event.get("call") instanceof Map?(Map<?,?>)event.get("call"):null;Phone11AndroidWakeState.Ticket ticket=active;
       if("registration".equals(type)){Map<?,?> account=(Map<?,?>)event.get("account");if("registered".equals(account.get("registrationState"))&&state.ready(ticket,now()))request("ready",ticket,(value,revoked)->{if(revoked){revoke();return;}if(value==null||!"ready".equals(value.optString("status"))){finish(true);return;}serverReady=true;Phone11ConnectionService.incoming(context,ticket);accept();poll(ticket);});else if("failed".equals(account.get("registrationState")))finish(true);}
       else if("callIncoming".equals(type)){callId=(String)call.get("id");if(!state.ringing(ticket,now())){finish(true);return;}accept();}
-      else if("callConnected".equals(type)){if(!state.connected(ticket,now())){finish(true);return;}if(connection!=null)connection.setActive();if(service!=null)service.show(ticket.callUUID,ticket.bindingId,ticket.epoch,true);}
+      else if("callConnected".equals(type)){if(!state.connected(ticket,now())){finish(true);return;}releaseWakeCpu();if(connection!=null)connection.setActive();if(service!=null)service.show(ticket.callUUID,ticket.bindingId,ticket.epoch,true);}
       else if("callTerminated".equals(type))finish(true,true);else if("error".equals(type))finish(true);
     }
     if(active==null&&"callTerminated".equals(event.get("type"))&&localService!=null)main.post(()->{List<?> calls=(List<?>)runtime.snapshot(lease).get("calls");for(Object value:calls){Map<?,?> c=(Map<?,?>)value;if(!"terminated".equals(c.get("state"))){localCallId=(String)c.get("id");return;}}localEnded();});
     if(bridge!=null)bridge.event(event);
   }
   private void finish(boolean notify){finish(notify,false);}
-  private void finish(boolean notify,boolean terminated){if(active==null)return;if(finishing){if(terminated){final Phone11AndroidWakeState.Ticket ticket=active;main.post(()->finishNow(ticket,true));}return;}finishing=true;Phone11AndroidWakeState.Ticket ticket=active;JSONObject saved=enrollment;if(notify&&saved!=null)http.request("end",saved,ticket,()->true,(value,revoked)->{});state.end(ticket,now());adopted=answerRequested=serverReady=false;if(connection!=null){connection.ended();connection=null;}
+  private void finish(boolean notify,boolean terminated){if(active==null)return;if(finishing){if(terminated){final Phone11AndroidWakeState.Ticket ticket=active;main.post(()->finishNow(ticket,true));}return;}finishing=true;releaseWakeCpu();Phone11AndroidWakeState.Ticket ticket=active;JSONObject saved=enrollment;if(notify&&saved!=null)http.request("end",saved,ticket,()->true,(value,revoked)->{});state.end(ticket,now());adopted=answerRequested=serverReady=false;if(connection!=null){connection.ended();connection=null;}
     if(terminated){main.post(()->finishNow(ticket,true));return;}
     if(callId!=null){try{runtime.end(lease,callId);main.postDelayed(()->finishNow(ticket,false),5000);return;}catch(RuntimeException ignored){}}
     finishNow(ticket,false);
   }
   private void finishNow(Phone11AndroidWakeState.Ticket ticket,boolean terminated){if(active!=ticket)return;active=null;adapter.setWakeCorrelation(null,0);if(forceShutdown||!terminated||!bridgeAttached){try{runtime.destroy(lease);}catch(RuntimeException ignored){/* Retain quarantine for foreground cleanup. */}accountHash=foregroundBinding=null;}callId=null;enrollment=null;recordHistory=false;forceShutdown=false;if(service!=null){Phone11IncomingCallService value=service;service=null;value.done();}finishing=false;}
+  private void releaseWakeCpu(){Phone11WakeCpuLock.get(context).release(wakeCpuOwner);wakeCpuOwner=null;}
   void serviceDestroyed(Phone11IncomingCallService value){if(service==value)finish(true);if(localService==value){localService=null;if(localCallId!=null){try{runtime.end(lease,localCallId);}catch(RuntimeException failure){try{runtime.destroy(lease);}catch(RuntimeException ignored){}}localCallId=null;}}}
   @SuppressWarnings("unchecked") private static Map<String,Object> copyCall(Object value){return new LinkedHashMap<>((Map<String,Object>)value);}
   static Map<String,Object> jsonMap(JSONObject value)throws Exception{Map<String,Object> result=new LinkedHashMap<>();Iterator<String> keys=value.keys();while(keys.hasNext()){String key=keys.next();Object item=value.get(key);if(item==JSONObject.NULL)throw new Exception();result.put(key,item);}return result;}
