@@ -1,17 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 const m=vi.hoisted(()=>({
- user:{id:1}, account:{id:"account",ownerUserId:1,tenantId:1,username:"3001",domain:"invalid.example",enabled:true},
+ os:"ios", available:true, user:{id:1}, account:{id:"account",ownerUserId:1,tenantId:1,username:"3001",domain:"invalid.example",enabled:true},
  binding:{bindingId:"binding",ownerUserId:1,tenantId:1,deviceId:"device",sessionBinding:"session",expiresAt:2000000000000},
  native:vi.fn(), resolve:vi.fn(), bearer:vi.fn(), stop:vi.fn(), register:vi.fn(), enroll:vi.fn(), save:vi.fn(), bindOwner:vi.fn(),
  deps:null as any, callbacks:[] as Array<(token:string)=>void>, queued:[] as any[], start:vi.fn(), secureGet:vi.fn(),
 }));
-vi.mock("react-native",()=>({Platform:{OS:"ios"}}));
+vi.mock("react-native",()=>({Platform:{get OS(){return m.os;}}}));
 vi.mock("expo-secure-store",()=>({WHEN_UNLOCKED_THIS_DEVICE_ONLY:"unchanged",getItemAsync:m.secureGet,setItemAsync:vi.fn()}));
-vi.mock("expo-constants",()=>({default:{expoConfig:{ios:{bundleIdentifier:"test.bundle"},extra:{phone11ApnsEnvironment:"sandbox"}}}}));
+vi.mock("expo-constants",()=>({default:{expoConfig:{ios:{bundleIdentifier:"test.bundle"},android:{package:"test.bundle.android"},extra:{phone11ApnsEnvironment:"sandbox"}}}}));
 vi.mock("../lib/_core/auth",()=>({getAuthSnapshot:()=>({user:m.user}),getSessionToken:m.bearer}));
 vi.mock("../lib/sip/account-store",()=>({useSipAccountStore:{getState:()=>({account:m.account})}}));
 vi.mock("../lib/push/native-voip",()=>({getNativeWakeBinding:m.native,stopNativeVoip:m.stop,saveNativeWakeEnrollment:m.save,
- getVoipCapabilities:async()=>({registrationAvailable:true}), startNativeVoip:m.start,createVoipDeviceId:async()=>"device"}));
+ getVoipCapabilities:async()=>({registrationAvailable:m.available}), startNativeVoip:m.start,createVoipDeviceId:async()=>"device"}));
 vi.mock("../lib/sip/siprix-engine",()=>({siprixEngine:{bindWakeOwner:m.bindOwner}}));
 vi.mock("../lib/push/token-coordinator",()=>({VoipTokenCoordinator:class {
  constructor(deps:unknown){m.deps=deps;}
@@ -19,8 +19,9 @@ vi.mock("../lib/push/token-coordinator",()=>({VoipTokenCoordinator:class {
  beforeLogout(){return Promise.resolve();}
 }}));
 vi.mock("@trpc/client",()=>({createTRPCProxyClient:()=>({push:{resolveWakeBinding:{query:m.resolve},register:{mutate:m.register},enrollWake:{mutate:m.enroll}}}),httpBatchLink:()=>({})}));
-beforeEach(()=>{vi.resetModules();vi.clearAllMocks();m.user={id:1};m.account={id:"account",ownerUserId:1,tenantId:1,username:"3001",domain:"invalid.example",enabled:true};m.callbacks=[];m.queued=[];m.secureGet.mockResolvedValue("device");m.start.mockImplementation(async callback=>{m.callbacks.push(callback);return vi.fn();});m.save.mockResolvedValue(undefined);m.register.mockResolvedValue(undefined);m.enroll.mockResolvedValue({...m.binding,grant:"fake-test-grant"});m.bindOwner.mockResolvedValue(undefined);m.native.mockResolvedValue({...m.binding});m.resolve.mockResolvedValue({...m.binding});m.bearer.mockResolvedValue("synthetic-bearer");});
-describe("authenticated cold wake adoption",()=>{
+beforeEach(()=>{vi.resetModules();vi.clearAllMocks();m.available=true;m.user={id:1};m.account={id:"account",ownerUserId:1,tenantId:1,username:"3001",domain:"invalid.example",enabled:true};m.callbacks=[];m.queued=[];m.secureGet.mockResolvedValue("device");m.start.mockImplementation(async callback=>{m.callbacks.push(callback);return vi.fn();});m.save.mockResolvedValue(undefined);m.register.mockResolvedValue(undefined);m.enroll.mockResolvedValue({...m.binding,grant:"fake-test-grant"});m.bindOwner.mockResolvedValue(undefined);m.native.mockResolvedValue({...m.binding});m.resolve.mockResolvedValue({...m.binding});m.bearer.mockResolvedValue("synthetic-bearer");});
+describe.each(["ios","android"])("authenticated %s cold wake adoption",platform=>{
+ beforeEach(()=>{m.os=platform;});
  it("returns only exact fresh session-bound identity",async()=>{
   const {getWakeAdoptionBinding}=await import("../lib/push/client");
   expect(await getWakeAdoptionBinding()).toEqual(m.binding);
@@ -56,8 +57,9 @@ describe("authenticated cold wake adoption",()=>{
 });
 
 
-describe("wake enrollment exact-session isolation",()=>{
- const push={ownerUserId:1,deviceId:"device",token:"fake-test-token",sipUri:"sip:3001@invalid.example",bundleId:"test.bundle",platform:"ios",sandbox:true};
+describe.each(["ios","android"])("%s wake enrollment exact-session isolation",platform=>{
+ beforeEach(()=>{m.os=platform;});
+ const push={ownerUserId:1,deviceId:"device",token:"fake-test-token",sipUri:"sip:3001@invalid.example",bundleId:"test.bundle",platform,sandbox:platform==="ios"};
  async function deps(){await import("../lib/push/client");return m.deps;}
  it("retains an authenticated existing grant without rotation",async()=>{
   await (await deps()).register(push,new AbortController().signal);
@@ -89,4 +91,15 @@ describe("wake enrollment exact-session isolation",()=>{
   const {registerPhoneVoipPush}=await import("../lib/push/client");await registerPhoneVoipPush();
   m.user={id:1};m.callbacks[0]("fake-test-token");expect(m.queued).toHaveLength(0);
  });
+ it("enrolls the exact platform with its provider token type",async()=>{
+  const work=await deps();m.native.mockResolvedValue(null);
+  await work.register(push,new AbortController().signal);
+  expect(m.register).toHaveBeenCalledWith(expect.objectContaining({platform,tokenType:platform==="ios"?"voip":"fcm"}));
+  expect(m.enroll).toHaveBeenCalledWith({deviceId:"device",platform});
+ });
+ it("does no token or account work without a commissioned native capability",async()=>{
+  m.available=false;const {registerPhoneVoipPush}=await import("../lib/push/client");await registerPhoneVoipPush();
+  expect(m.start).not.toHaveBeenCalled();expect(m.register).not.toHaveBeenCalled();expect(m.secureGet).not.toHaveBeenCalled();
+ });
+
 });

@@ -1,4 +1,4 @@
-import { chatNotificationsEnabled, enqueueChatNotifications } from "../chat-notifications/repository";
+import { chatNotificationsEnabled, androidChatNotificationsEnabled, enqueueChatNotifications } from "../chat-notifications/repository";
 import { randomUUID } from "node:crypto";
 import { TRPCError } from "@trpc/server";
 import type { PoolClient } from "pg";
@@ -838,6 +838,7 @@ export function createChatService(transaction = withTransaction, typing: ChatTyp
             JOIN phone11_auth_identity auth_identity ON auth_identity.auth_user_id = auth_session."userId"
               AND auth_identity.legacy_user_id = d.user_id AND auth_identity.disabled_at IS NULL
             WHERE d.tenant_id = e.tenant_id AND d.user_id = ue.user_id
+              AND (COALESCE(to_jsonb(d)->>'platform','ios')='ios' OR ${androidChatNotificationsEnabled()?'TRUE':'FALSE'})
               AND d.registered_at > clock_timestamp() - interval '7 days'
               AND EXISTS (SELECT 1 FROM user_extensions mobile_assignment JOIN extensions mobile_extension ON mobile_extension.id = mobile_assignment.extension_id
                 WHERE mobile_assignment.user_id = d.user_id AND mobile_extension.tenant_id = d.tenant_id

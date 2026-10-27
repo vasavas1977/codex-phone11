@@ -101,6 +101,8 @@ export type SiprixSnapshot = Snapshot;
 /** Channel: Phone11SiprixEvent via new NativeEventEmitter(Phone11Siprix). */
 export interface CompletedWakeCall { id: string; ownerUserId: number; tenantId: number; number: string; direction: "inbound"; startedAt: number; answeredAt?: number; endedAt: number; updatedAt: number; }
 export interface Phone11SiprixModule {
+  /** Isolated Android source candidate only; no registration or call is attempted. */
+  runNativeSdkSmoke?(): Promise<{ sdkVersion: string; initialized: false; accounts: unknown[]; calls: unknown[]; registrationAttempted: false; callAttempted: false }>;
   readCompletedWakeCalls(binding: WakeBinding): Promise<CompletedWakeCall[]>;
   ackCompletedWakeCalls(binding: WakeBinding, ids: string[]): Promise<void>;
   bindForegroundWakeContext(binding: WakeBinding, sip: AccountConfig): Promise<void>;

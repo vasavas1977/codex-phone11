@@ -7,6 +7,15 @@ def expectedSha = '3173ee8bae7aa37d3be3b44f7533d43b4e4d8625110d1d2bd8d79367973c9
 def expectedApiSha = '4929fc4b157bb65b9739a8d872079975d369501c9b55ece7b4506a9c5ac6a1b0'
 def sdkApiJar = layout.buildDirectory.file('phone11-siprix-api/classes.jar')
 def sourceEnabled = findProperty('phone11AndroidForegroundSourceEnabled') == 'true'
+def wakeCandidate = findProperty('phone11AndroidWakeCandidateEnabled') == 'true'
+def wakeOrigin = findProperty('phone11AndroidWakeOrigin') ?: System.getenv('EXPO_PUBLIC_API_BASE_URL') ?: ''
+if (wakeCandidate) {
+  try {
+    def origin = new URI(wakeOrigin)
+    if (origin.scheme != 'https' || !origin.host || origin.userInfo || origin.query || origin.fragment || !(origin.path in ['', '/'])) throw new IllegalArgumentException()
+  } catch (Exception ignored) { throw new GradleException('Android wake origin must be a fixed HTTPS origin') }
+}
+def nativeCandidate = findProperty('phone11AndroidNativeCandidateEnabled') == 'true'
 def consultationEnabled = findProperty('phone11AndroidConsultationSourceEnabled') == 'true'
 // Private generated native input only; never a Gradle property/BuildConfig field.
 // Re-run on every compile so removing the environment value removes stale input.
@@ -31,14 +40,21 @@ def generateNativeLicense = tasks.register('generatePhone11SiprixNativeLicense')
   }
 }
 if (consultationEnabled && !sourceEnabled) throw new GradleException('Android consultation source requires the explicit foreground source gate')
+if (nativeCandidate && !sourceEnabled) throw new GradleException('Android native candidate requires the explicit foreground source gate')
+if (wakeCandidate && !nativeCandidate) throw new GradleException('Android wake requires native candidate')
 android {
   namespace 'ai.phone11.siprix'
   compileSdkVersion rootProject.ext.compileSdkVersion
   defaultConfig { minSdkVersion 24 }
   buildFeatures { buildConfig true }
   sourceSets.main.java.srcDir(nativeLicenseDir)
+  sourceSets.main.java.srcDir(wakeCandidate ? 'src/wake/java' : 'src/noWake/java')
+  if (wakeCandidate) sourceSets.main.manifest.srcFile('src/wake/AndroidManifest.xml')
   defaultConfig {
     buildConfigField 'boolean', 'FOREGROUND_SOURCE_ENABLED', sourceEnabled.toString()
+    buildConfigField 'boolean', 'WAKE_CANDIDATE_ENABLED', wakeCandidate.toString()
+    buildConfigField 'String', 'WAKE_ORIGIN', groovy.json.JsonOutput.toJson(wakeOrigin)
+    buildConfigField 'boolean', 'NATIVE_CANDIDATE_ENABLED', nativeCandidate.toString()
     buildConfigField 'boolean', 'CONSULTATION_SOURCE_ENABLED', consultationEnabled.toString()
   }
   compileOptions {
@@ -90,5 +106,9 @@ gradle.projectsEvaluated {
 tasks.matching { it.name.startsWith('compile') && it.name.endsWith('JavaWithJavac') }.configureEach { dependsOn stageSdkApi, generateNativeLicense }
 dependencies {
   implementation 'com.facebook.react:react-android'
+  if (wakeCandidate) {
+    implementation 'com.google.firebase:firebase-messaging:25.0.1'
+    implementation project(':expo-notifications')
+  }
   compileOnly files(sdkApiJar).builtBy(stageSdkApi)
 }

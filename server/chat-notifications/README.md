@@ -88,3 +88,48 @@ no uncertain replay. Real PostgreSQL tests exercise atomicity, concurrent retrie
 and claims, session/assignment/membership revocation, stale APNs410 cleanup,
 provider-tuple changes, missing schema/provider handling and bounded lock waits.
 The pre-existing VoIP transport tests must also continue to pass.
+
+## Android source candidate
+
+The separate Android candidate app uses `phone11AndroidChatNotificationsEnabled`
+plus its validated public `phone11FcmProjectId` and Android package. The iOS gate
+and APNs configuration are unchanged. Android creates `phone11_team_chat` before
+checking/requesting notification permission, obtains Expo's native FCM token,
+and preserves its case. Only an explicit enable action requests permission. The
+same identity coordinator handles foreground/background token events, cold taps,
+logout, replacement accounts/workspaces, duplicate responses and stale events.
+
+Server Android enrollment, enqueue, dispatch and tap resolution additionally
+require `PHONE11_CHAT_ANDROID_NOTIFICATIONS_ENABLED=1` together with the existing
+`PHONE11_CHAT_NOTIFICATIONS_ENABLED=1`. `FCM_PROJECT_ID` and `FCM_ANDROID_PACKAGE`
+must match the candidate. The shared `server/push/fcm.ts` HTTP v1 adapter uses
+Google Application Default Credentials and the Firebase messaging OAuth scope.
+No credentials are stored in the app or this directory. A generic notification
+and opaque event ID target the Team Chat channel with an offline TTL capped by
+the event expiry. Only a typed FCM `UNREGISTERED`/404 invalidates the exact token
+revision/registration timestamp; configuration, authentication, payload,
+throttling, transport and timeout failures do not delete or retry it.
+
+`migration-android.sql` is a separately approved source-only additive migration;
+never apply it as part of a source check. It defaults existing rows to `ios`,
+retains iOS token checks and adds platform-scoped provider-token uniqueness.
+The new server still supports the original iOS registry before this migration.
+The old source remains compatible with iOS rows after the migration, but an
+operational rollback to an older dispatcher requires Android delivery disabled
+and Android registry/outbox rows revoked first: an older dispatcher cannot
+interpret FCM rows. Removing the column requires that same explicit cleanup and
+restoring the original token/unique constraints, under a separately authorized
+backup/rollback procedure. Disabling gates is the preferred source rollback.
+
+Source validation does not commission a Firebase project, apply a migration,
+configure ADC, enroll a real phone or prove foreground/background/cold-start
+notification delivery. Physical acceptance must include Android 13+ permission
+denial/regrant, channel settings, token rotation, locked/background/terminated
+recipient delivery/taps, account/workspace revocation, stale expiry and iOS
+regression on separately commissioned provider/device infrastructure.
+
+API references checked for this candidate: [Expo native tokens and FCM](https://docs.expo.dev/push-notifications/sending-notifications-custom/),
+[Expo Android channel/permission requirements](https://docs.expo.dev/versions/v54.0.0/sdk/notifications/),
+and [FCM HTTP v1 errors](https://firebase.google.com/docs/cloud-messaging/error-codes).
+The installed Expo Notifications 0.32.15 native serializer also preserves direct
+FCM data on both received messages and notification-intent extras.

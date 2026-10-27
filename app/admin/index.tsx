@@ -25,6 +25,7 @@ import { portalSignInRoute } from "@/constants/oauth";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useAdminAuthState } from "@/components/admin/use-admin-auth-state";
 import { useColors } from "@/hooks/use-colors";
+import { isAdminSessionUnauthorized } from "@/lib/admin/session-recovery";
 import {
   type PbxManagementCapabilities,
   usePbxAdminCapabilities,
@@ -57,6 +58,12 @@ export default function AdminDashboard() {
   } = useAdminAuthState();
   const workspace = usePbxAdminWorkspace();
   const tenantQuery = useTenant(Boolean(user));
+  const sessionExpired =
+    (workspace.membershipsQuery.isError &&
+      isAdminSessionUnauthorized(workspace.membershipsQuery.error)) ||
+    (workspace.admissionError &&
+      isAdminSessionUnauthorized(workspace.tenantQuery?.error)) ||
+    (tenantQuery.isError && isAdminSessionUnauthorized(tenantQuery.error));
   const canManage = ["owner", "admin"].includes(
     String(tenantQuery.data?.userRole || ""),
   );
@@ -230,6 +237,17 @@ export default function AdminDashboard() {
       <AdminAccessState
         title="Sign in to use workspace administration"
         detail="Workspace administration is available after you sign in with an owner or administrator account."
+        actionLabel="Sign in"
+        onAction={() => router.replace(portalSignInRoute("/admin"))}
+      />
+    );
+  }
+
+  if (sessionExpired) {
+    return (
+      <AdminAccessState
+        title="Sign in again to manage Phone11"
+        detail="Your session has expired. Sign in again to confirm your workspace access."
         actionLabel="Sign in"
         onAction={() => router.replace(portalSignInRoute("/admin"))}
       />

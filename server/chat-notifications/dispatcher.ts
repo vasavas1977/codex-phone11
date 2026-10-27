@@ -1,15 +1,18 @@
 import { chatNotificationRepository, chatNotificationsEnabled } from './repository';
 import { sendApnsAlert, PushProviderError } from '../push/apns';
+import { sendFcmChatAlert } from './fcm';
 import { clearTimeout, setTimeout } from 'node:timers';
 type ChatNotificationDispatcherRepository=Pick<typeof chatNotificationRepository,'claim'|'current'|'finish'|'removeInvalid'|'prune'>;
-export function createChatNotificationDispatcher(repository:ChatNotificationDispatcherRepository=chatNotificationRepository,send=sendApnsAlert,enabled=chatNotificationsEnabled) {
+export function createChatNotificationDispatcher(repository:ChatNotificationDispatcherRepository=chatNotificationRepository,send=sendApnsAlert,enabled=chatNotificationsEnabled,sendAndroid=sendFcmChatAlert) {
  return async function dispatchOne() {
   if(!enabled())return false;
   const item=await repository.claim();if(!item)return false;
   let accepted=false;
   try {
    if(!enabled()||!await repository.current(item))return true;
-   await send({platform:'ios',tokenType:'apns',token:item.token,bundleId:item.bundleId,sandbox:item.environment==='sandbox'},
+   if(item.platform==='android')await sendAndroid({platform:'android',tokenType:'fcm',token:item.token,bundleId:item.bundleId,sandbox:false},
+    {eventId:item.id,expiresAt:item.expiresAt},async()=>enabled()&&await repository.current(item));
+   else await send({platform:'ios',tokenType:'apns',token:item.token,bundleId:item.bundleId,sandbox:item.environment==='sandbox'},
     {eventId:item.id,expiresAt:item.expiresAt},async()=>enabled()&&await repository.current(item));
    accepted=true;
   } catch(error) {
@@ -25,6 +28,7 @@ export function createChatNotificationDispatcher(repository:ChatNotificationDisp
 export function startChatNotificationDispatcher(options:{
  repository?:ChatNotificationDispatcherRepository;
  send?:typeof sendApnsAlert;
+ sendAndroid?:typeof sendFcmChatAlert;
  enabled?:()=>boolean;
  initialDelayMs?:number;
  intervalMs?:number;
@@ -33,7 +37,7 @@ export function startChatNotificationDispatcher(options:{
  const enabled=options.enabled??chatNotificationsEnabled;
  if(!enabled())return async()=>{};
  let stopped=false,timer:NodeJS.Timeout|undefined,activeTick:Promise<void>|undefined,stopPromise:Promise<void>|undefined;
- const dispatch=createChatNotificationDispatcher(repository,options.send??sendApnsAlert,enabled);
+ const dispatch=createChatNotificationDispatcher(repository,options.send??sendApnsAlert,enabled,options.sendAndroid??sendFcmChatAlert);
  const tick=async()=>{
   if(stopped||activeTick)return;
   const current=(async()=>{

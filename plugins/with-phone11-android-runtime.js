@@ -8,6 +8,7 @@ const projectName = "phone11-siprix-android-runtime";
 const metadataName = "ai.phone11.siprix.FOREGROUND_SOURCE_ENABLED";
 
 function androidRuntimeBuildSettings(source = process.env) {
+  const candidate = require("./android-candidate-settings").androidCandidateSettings(source);
   const gate = source.PHONE11_ANDROID_FOREGROUND_TRIAL ?? "0";
   const publicGate = source.EXPO_PUBLIC_PHONE11_ANDROID_FOREGROUND_TRIAL ?? "0";
   if (!["0", "1"].includes(gate) || !["0", "1"].includes(publicGate) || gate !== publicGate) {
@@ -18,7 +19,8 @@ function androidRuntimeBuildSettings(source = process.env) {
       || source.PHONE11_CHAT_NOTIFICATIONS_COMMISSIONED === "1")) {
     throw new Error("Android foreground trial requires an isolated Android Siprix trial build without store or wake commissioning");
   }
-  return { enabled: gate === "1", packageName: gate === "1" ? trialPackage : undefined };
+  return { enabled: gate === "1", packageName: gate === "1" ? (candidate.enabled ? candidate.packageName : trialPackage) : undefined,
+    ...(candidate.enabled ? { nativeCandidate: true } : {}) };
 }
 
 function verifyRuntimeAar(filename) {
@@ -117,10 +119,25 @@ function configureManifest(manifest, enabled) {
   return manifest;
 }
 
+// Host manifest priority must exceed transitive CallKeep library declarations.
+function configureWakePermissions(manifest, foreground, wake) {
+  const names = ["MANAGE_OWN_CALLS", "FOREGROUND_SERVICE_PHONE_CALL", "USE_FULL_SCREEN_INTENT"]
+    .map(name => `android.permission.${name}`);
+  const strip = foreground && !wake;
+  manifest["uses-permission"] = (manifest["uses-permission"] ?? []).filter(item =>
+    !names.includes(item?.$?.["android:name"]) || (!strip && item?.$?.["tools:node"] !== "remove"));
+  if (strip) {
+    manifest.$["xmlns:tools"] = "http://schemas.android.com/tools";
+    manifest["uses-permission"].push(...names.map(name => ({ $: { "android:name": name, "tools:node": "remove" } })));
+  }
+  return manifest;
+}
+
 function withPhone11AndroidRuntime(config) {
   const settings = androidRuntimeBuildSettings();
+  const candidate = require("./android-candidate-settings").androidCandidateSettings();
   if (settings.enabled) {
-    if (config.android?.package !== trialPackage || config.newArchEnabled !== false) {
+    if (config.android?.package !== settings.packageName || config.newArchEnabled !== false) {
       throw new Error("Android foreground trial requires the separate trial package and legacy React Native bridge");
     }
     verifyRuntimeAar(process.env.PHONE11_SIPRIX_ANDROID_AAR);
@@ -138,10 +155,30 @@ function withPhone11AndroidRuntime(config) {
     if (native.modResults.language !== "kt") throw new Error("Android foreground trial requires Kotlin MainApplication");
     native.modResults.contents = configureMainApplication(native.modResults.contents, settings.enabled); return native;
   });
-  config = withGradleProperties(config, native => { native.modResults = configureProperties(native.modResults, settings.enabled); return native; });
-  return withAndroidManifest(config, native => { configureManifest(native.modResults.manifest, settings.enabled); return native; });
+  config = withGradleProperties(config, native => {
+    native.modResults = configureProperties(native.modResults, settings.enabled)
+      .filter(item => item.type !== "property" || !["phone11AndroidNativeCandidateEnabled", "phone11AndroidWakeCandidateEnabled", "phone11AndroidWakeOrigin"].includes(item.key));
+    if (settings.nativeCandidate) native.modResults.push({ type: "property", key: "phone11AndroidNativeCandidateEnabled", value: "true" });
+    if (candidate.wake) native.modResults.push(
+      { type: "property", key: "phone11AndroidWakeCandidateEnabled", value: "true" },
+      { type: "property", key: "phone11AndroidWakeOrigin", value: candidate.wakeOrigin });
+    return native;
+  });
+  return withAndroidManifest(config, native => {
+    configureManifest(native.modResults.manifest, settings.enabled);
+    configureWakePermissions(native.modResults.manifest, settings.enabled, candidate.wake);
+    const application = native.modResults.manifest.application[0];
+    application["meta-data"] = application["meta-data"].filter(item => !["ai.phone11.siprix.NATIVE_CANDIDATE_ENABLED", "ai.phone11.siprix.WAKE_CANDIDATE_ENABLED"].includes(item?.$?.["android:name"]));
+    if (settings.nativeCandidate) application["meta-data"].push({ $: {
+      "android:name": "ai.phone11.siprix.NATIVE_CANDIDATE_ENABLED", "android:value": "true", "tools:replace": "android:value",
+    } });
+    if (candidate.wake) application["meta-data"].push({ $: {
+      "android:name": "ai.phone11.siprix.WAKE_CANDIDATE_ENABLED", "android:value": "true", "tools:replace": "android:value",
+    } });
+    return native;
+  });
 }
 
 module.exports = withPhone11AndroidRuntime;
 Object.assign(module.exports, { androidRuntimeBuildSettings, verifyRuntimeAar, configureSettingsGradle, configureAppGradle,
-  configureMainApplication, configureProperties, configureManifest, trialPackage });
+  configureMainApplication, configureProperties, configureManifest, configureWakePermissions, trialPackage });

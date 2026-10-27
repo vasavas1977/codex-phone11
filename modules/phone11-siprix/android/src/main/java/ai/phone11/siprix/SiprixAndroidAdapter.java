@@ -12,16 +12,20 @@ import java.util.*;
 public final class SiprixAndroidAdapter implements Phone11CallRuntime.Engine {
   private final Context context; private final Handler main=new Handler(Looper.getMainLooper());
   private final boolean consultationEnabled;
+  private String wakeUUID;private long wakeExpiresAt;
+  public void setWakeCorrelation(String uuid,long expiresAt){wakeUUID=uuid;wakeExpiresAt=expiresAt;}
+  public boolean allowIncoming(int call){return wakeUUID==null||(System.currentTimeMillis()<wakeExpiresAt&&wakeUUID.equals(sdk().callGetSipHeader(call,"X-Phone11-Wake-ID")));}
   private SiprixCore core; private Callbacks activeCallbacks;
   public SiprixAndroidAdapter(Context context){this(context,false);}
   public SiprixAndroidAdapter(Context context,boolean consultationEnabled){this.context=context.getApplicationContext();this.consultationEnabled=consultationEnabled;}
   private static void ok(int code){if(code!=SiprixCore.kOK)throw new Phone11CallRuntime.Failure("E_SIPRIX_"+code);}
   private SiprixCore sdk(){if(core==null)throw new Phone11CallRuntime.Failure("E_NOT_INITIALIZED");return core;}
   private void microphone(){Phone11ForegroundTrial.requireMicrophone(context.checkSelfPermission(Manifest.permission.RECORD_AUDIO)==PackageManager.PERMISSION_GRANTED);}
+  static boolean acceptsSdkVersion(String version){return version!=null&&version.trim().matches("(?:Siprix: ?|siprix )?1\\.1\\.0 from 20260905_1222");}
   public String initialize(Phone11CallRuntime.Listener listener){
     if(core==null)core=new SiprixCore(context);
     String version=core.getVersion();
-    if(version==null||!version.trim().matches("(?:Siprix: ?)?1\\.1\\.0 from 20260905_1222"))throw new Phone11CallRuntime.Failure("E_SDK_VERSION");
+    if(!acceptsSdkVersion(version))throw new Phone11CallRuntime.Failure("E_SDK_VERSION");
     activeCallbacks=new Callbacks(listener);core.setModelListener(activeCallbacks);
     IniData config=new IniData();config.setLogLevelFile(IniData.LogLevel.NONE);config.setLogLevelIde(IniData.LogLevel.NONE);
     // Native build input only. Presence never proves licensed SDK behavior.
@@ -66,6 +70,7 @@ public final class SiprixAndroidAdapter implements Phone11CallRuntime.Engine {
   public int holdState(int id){SiprixCore.IdOutArg out=new SiprixCore.IdOutArg();ok(sdk().callGetHoldState(id,out));return out.value;}
   public void toggleHold(int id){ok(sdk().callHold(id));}
   public void switchCall(int id){ok(sdk().mixerSwitchToCall(id));}
+  public void transferBlind(int original,String destination){ok(sdk().callTransferBlind(original,destination));}
   public void transferAttended(int original,int consult){ok(sdk().callTransferAttended(original,consult));}
   public void dtmf(int id,String digits){ok(sdk().callSendDtmf(id,digits));}
   public boolean speaker(){return sdk().dvcGetSelAudioDevice()==SiprixCore.AudioDevice.SpeakerPhone;}

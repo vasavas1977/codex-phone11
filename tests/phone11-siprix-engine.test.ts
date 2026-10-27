@@ -196,6 +196,28 @@ describe("Siprix native adapter", () => {
     runtime.modules.Phone11Siprix = { ...bridge, getForegroundCapabilities: async () => value };
     await ready(); expect(engine.supportsWarmTransfer()).toBe(false);
   });
+  it("hides candidate blind transfer methods in the original foreground trial", async () => {
+    const value = foregroundTrial();
+    runtime.modules.Phone11Siprix = { ...bridge, getForegroundCapabilities: async () => value };
+    await ready(); expect(engine.supportsBlindTransfer()).toBe(false);
+  });
+  it("admits blind transfer only for a matching native candidate", async () => {
+    const value = { ...foregroundTrial(), transfer: true, nativeSourceCandidate: true, blindTransferSourceCandidate: true };
+    vi.stubEnv("EXPO_PUBLIC_PHONE11_ANDROID_NATIVE_CANDIDATE", "1");
+    runtime.modules.Phone11Siprix = { ...bridge, getForegroundCapabilities: async () => value };
+    await ready(); expect(engine.supportsBlindTransfer()).toBe(true);
+  });
+  it.each(["public-only", "native-only", "missing-method", "wake-only", "unknown-native"])("rejects unmatched Android native candidate %s", async condition => {
+    const value: Record<string, unknown> = { ...foregroundTrial(), transfer: true, nativeSourceCandidate: true, blindTransferSourceCandidate: true };
+    vi.stubEnv("EXPO_PUBLIC_PHONE11_ANDROID_NATIVE_CANDIDATE", condition === "native-only" ? "0" : "1");
+    if (condition === "public-only") value.blindTransferSourceCandidate = false;
+    if (condition === "unknown-native") value.nativeSourceCandidate = "true";
+    if (condition === "wake-only") value.wakeSourceCandidate = true;
+    runtime.modules.Phone11Siprix = { ...bridge, ...(condition === "missing-method" ? { transferCall: undefined } : {}),
+      getForegroundCapabilities: async () => value };
+    await expect(engine.initialize()).rejects.toThrow("Android foreground trial capability");
+    expect(bridge.initialize).not.toHaveBeenCalled();
+  });
   it("admits the separately gated Android consultation through the shared single OS-call contract", async () => {
     const value = { ...foregroundTrial(), consultationSourceCandidate: true };
     vi.stubEnv("EXPO_PUBLIC_PHONE11_ANDROID_CONSULTATION_SOURCE", "1");
@@ -1004,7 +1026,20 @@ describe("validated native wake adoption", () => {
 
 });
 
-describe("native-only completed call reconciliation", () => {
+describe.each(["ios", "android"])("%s native-only completed call reconciliation", platform => {
+  beforeEach(() => {
+    runtime.platform.OS = platform;
+    if (platform !== "android") return;
+    vi.stubEnv("EXPO_PUBLIC_SIP_ENGINE", "siprix");
+    vi.stubEnv("EXPO_PUBLIC_PHONE11_ANDROID_FOREGROUND_TRIAL", "1");
+    vi.stubEnv("EXPO_PUBLIC_PHONE11_ANDROID_NATIVE_CANDIDATE", "1");
+    vi.stubEnv("EXPO_PUBLIC_PHONE11_ANDROID_WAKE_CANDIDATE", "1");
+    runtime.modules.Phone11Siprix = { ...bridge, getForegroundCapabilities: async () => ({
+      foregroundAudioTrial: true, sdkVersion: "1.1.0", sdkBuild: "20260905_1222", trialCallLimitSeconds: 60,
+      backgroundCalling: false, closedAppCalling: false, wake: false, transfer: true, video: false,
+      nativeSourceCandidate: true, blindTransferSourceCandidate: true, wakeSourceCandidate: true,
+    }) };
+  });
   const binding = { bindingId: "binding", ownerUserId: 17, tenantId: 2, deviceId: "device", sessionBinding: "session", expiresAt: Date.now()+600000 };
   const row = { id: "native-wake:11111111-1111-4111-8111-111111111111", ownerUserId: 17, tenantId: 2, number: "2002", direction: "inbound" as const, startedAt: 1000, answeredAt: 2000, endedAt: 5000, updatedAt: 5000 };
   it("imports a completed cold call from an empty runtime and acks only after disk persistence", async () => {

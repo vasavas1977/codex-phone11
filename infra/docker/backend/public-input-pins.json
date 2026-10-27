@@ -5,7 +5,7 @@
     "esbuild": "sha512-bbPBYYrtZbkt6Os6FiTLCTFxvq4tt3JKall1vRwshA3fdVztsLAatFaZobhkBC8/BrPetoa0oksYoKXoG4ryJg=="
   },
   "esbuildVersion": "0.25.12",
-  "lockSha256": "8054011e2b1b4973b9f90bfd17859bdd437a4fe079958d02bd22ed8c72acc750",
+  "lockSha256": "1f332aecd2746888c2e47d96604130bd827baf0081b877e527d204e30a9aff28",
   "nodeImage": "docker.io/library/node@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402",
   "nodePlatforms": {
     "amd64": {
@@ -18,12 +18,13 @@
     }
   },
   "nodeVersion": "22.23.3",
-  "packageSha256": "5eb762a5ee003d44e621f24fc9bc990e7611b5931d0f4631e1f93f642036e8a5",
+  "packageSha256": "e2d844149759bb217c106e2fbe0d16a1087e1ef0be153f96de9c4b4afb40456f",
   "patches": {
     "patches/@livekit__react-native-webrtc@144.2.0.patch": "92c3fa85ac16bfad1e5b1e9143ee0c1b2e0cdc8e53ee72574a55b80ef614982a",
     "patches/braces@3.0.3.patch": "fa170df8214573c092f07f0c491233b9358269b848ac277a0939184b67cf16ab",
     "patches/livekit-client@2.22.3.patch": "a1d21ffc70ae0b4d360dcfb23f1535415bb9bbfbea1ce188e02abae8d7345cc6",
-    "patches/react-native-pjsip@2.7.4.patch": "f0c2f7c758d0fbc698401893fa61d8ef4ddc0ee2a2c2da94df9ee7a0ee6a8a83"
+    "patches/react-native-pjsip@2.7.4.patch": "f0c2f7c758d0fbc698401893fa61d8ef4ddc0ee2a2c2da94df9ee7a0ee6a8a83",
+    "patches/expo-audio@1.1.0.patch": "fa0100dd8df3f266fcff9e6ae65bf8e81fc2aff6750a5dd8fa108e782989d53e"
   },
   "pnpmCorepackSpec": "pnpm@9.12.0+sha512.4abf725084d7bcbafbd728bfc7bee61f2f791f977fd87542b3579dcb23504d170d46337945e4c66485cd12d588a0c0e570ed9c477e7ccdd8507cf05f3f92eaca",
   "pnpmVersion": "9.12.0",

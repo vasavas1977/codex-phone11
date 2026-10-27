@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Platform, Share, StyleSheet, Text, TouchableOpacity, ScrollView, View } from "react-native";
+import { NativeModules, Platform, Share, StyleSheet, Text, TouchableOpacity, ScrollView, View } from "react-native";
 import Constants from "expo-constants";
 import * as Haptics from "expo-haptics";
 import { router } from "expo-router";
@@ -16,6 +16,7 @@ import {
   useSipDiagnosticsStore,
 } from "@/lib/sip/diagnostics-store";
 import { sipEngine } from "@/lib/sip/engine";
+import { checkAndroidNativeSdkSmoke } from "@/lib/sip/android-native-smoke";
 
 function levelColor(event: SipDiagnosticEvent, colors: ReturnType<typeof useColors>): string {
   if (event.level === "error") return colors.error;
@@ -88,6 +89,8 @@ export default function SipDiagnosticsScreen() {
   const colors = useColors();
   const didRequestInit = useRef(false);
   const [registrationTestBusy, setRegistrationTestBusy] = useState(false);
+  const [nativeSmokeBusy, setNativeSmokeBusy] = useState(false);
+  const nativeCandidate = Platform.OS === "android" && process.env.EXPO_PUBLIC_PHONE11_ANDROID_NATIVE_CANDIDATE === "1";
   const events = useSipDiagnosticsStore((s) => s.events);
   const addEvent = useSipDiagnosticsStore((s) => s.addEvent);
   const clearEvents = useSipDiagnosticsStore((s) => s.clearEvents);
@@ -207,6 +210,26 @@ export default function SipDiagnosticsScreen() {
     }
   }
 
+  async function runNativeSmoke(): Promise<void> {
+    if (!nativeCandidate || nativeSmokeBusy) return;
+    setNativeSmokeBusy(true);
+    try {
+      const module = NativeModules.Phone11Siprix;
+      const result = await checkAndroidNativeSdkSmoke(typeof module?.runNativeSdkSmoke === "function"
+        ? () => module.runNativeSdkSmoke() : undefined);
+      if (result.ok) {
+        addEvent({ level: "info", category: "engine", message: "Android native SDK check passed",
+          detail: `SDK ${result.sdkVersion} initialized and released. No registration or call attempted.` });
+      } else {
+        addEvent({ level: "error", category: "engine", message: "Android native SDK check failed",
+          detail: `${result.detail} (${result.code})` });
+      }
+    } catch {
+      addEvent({ level: "error", category: "engine", message: "Android native SDK check failed",
+        detail: "The native SDK check is unavailable. (E_NATIVE_SMOKE_UNAVAILABLE)" });
+    } finally { setNativeSmokeBusy(false); }
+  }
+
   return (
     <ScreenContainer>
       <ScrollView showsVerticalScrollIndicator={false}>
@@ -240,6 +263,15 @@ export default function SipDiagnosticsScreen() {
         </View>
 
         <View style={styles.actions}>
+          {nativeCandidate && (
+            <TouchableOpacity testID="android-native-sdk-smoke" disabled={nativeSmokeBusy || !!account?.enabled}
+              onPress={runNativeSmoke} style={[styles.shareButton, { backgroundColor: colors.surface, borderColor: colors.border,
+                opacity: nativeSmokeBusy || account?.enabled ? 0.55 : 1 }]}>
+              <Text style={[styles.shareButtonText, { color: colors.foreground }]}>
+                {nativeSmokeBusy ? "Checking native SDK..." : "Check Android native SDK"}
+              </Text>
+            </TouchableOpacity>
+          )}
           <TouchableOpacity
             style={[styles.provisionButton, { backgroundColor: colors.primary }]}
             onPress={() => router.push("/settings/sip")}

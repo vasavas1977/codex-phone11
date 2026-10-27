@@ -119,7 +119,8 @@ test('actual isolated Expo config matches all 13 guarded fields; nonpilot behavi
   const scratch = mkdtempSync(join(tmpdir(), 'phone11-ios-config-'));
   const files = ['app.config.ts', 'package.json', 'eas.json', 'scripts/load-env.js',
     'plugins/with-phone11-voip-wake.js', 'plugins/with-phone11-android-runtime.js',
-    'plugins/with-phone11-android-screen.js', 'modules/phone11-siprix/android/sdk-lock.json'];
+    'plugins/with-phone11-android-screen.js', 'plugins/android-candidate-settings.js',
+    'modules/phone11-siprix/android/sdk-lock.json'];
   try {
     for (const file of files) {
       const destination = join(scratch, file);

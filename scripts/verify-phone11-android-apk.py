@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Inspect debug or standalone trial APK bytes; never install, sign or activate calling."""
+"""Inspect debug, foreground, native or wake APK candidates; never install, sign or activate calling."""
 import argparse
 import hashlib
 import hmac
@@ -14,15 +14,34 @@ import subprocess
 import tempfile
 import xml.etree.ElementTree as ET
 import zlib
+from urllib.parse import urlsplit
 from zipfile import ZipFile
 
 PACKAGE = "ai.phone11.mobile"
 TRIAL_PACKAGE = PACKAGE + ".foregroundtrial"
+NATIVE_PACKAGE = PACKAGE + ".androidcandidate"
+WAKE_PACKAGE = PACKAGE + ".staging"
+NATIVE_GATE = "ai.phone11.siprix.NATIVE_CANDIDATE_ENABLED"
+WAKE_GATE = "ai.phone11.siprix.WAKE_CANDIDATE_ENABLED"
 GATE = "ai.phone11.siprix.FOREGROUND_SOURCE_ENABLED"
 ANDROID = "{http://schemas.android.com/apk/res/android}"
 ABIS = {"arm64-v8a", "armeabi-v7a"}
 LIBRARIES = {"libsiprix.so", "libsiprixMedia.so"}
 SDK_LOCK_PATH = Path(__file__).resolve().parents[1] / "modules/phone11-siprix/android/sdk-lock.json"
+EAS_PATH = Path(__file__).resolve().parents[1] / "eas.json"
+WAKE_PROFILE = "preview-android-wake-candidate"
+# Android ServiceInfo constants, including the compiled apkanalyzer representation.
+PHONE_CALL_SERVICE_TYPE = 4
+MICROPHONE_SERVICE_TYPE = 128
+WAKE_SERVICES = {"ai.phone11.siprix." + name for name in (
+    "Phone11FirebaseMessagingService", "Phone11IncomingCallService", "Phone11ConnectionService")}
+WAKE_CLASSES = {("Lai/phone11/siprix/" + name + ";").encode("ascii") for name in (
+    "Phone11FirebaseMessagingService", "Phone11IncomingCallService", "Phone11ConnectionService",
+    "Phone11WakeProvider", "Phone11AndroidWakeCoordinator", "Phone11AndroidWakeState", "Phone11WakeHttp")} | {
+        b"Lcom/google/firebase/FirebaseApp;", b"Lcom/google/firebase/messaging/FirebaseMessaging;"}
+WAKE_PERMISSIONS = {"android.permission." + name for name in (
+    "INTERNET", "ACCESS_NETWORK_STATE", "RECORD_AUDIO", "MODIFY_AUDIO_SETTINGS", "POST_NOTIFICATIONS",
+    "FOREGROUND_SERVICE", "FOREGROUND_SERVICE_PHONE_CALL", "FOREGROUND_SERVICE_MICROPHONE", "MANAGE_OWN_CALLS", "WAKE_LOCK")}
 MAX_AAR_BYTES = 64 * 1024 * 1024
 MAX_APK_BYTES = 512 * 1024 * 1024
 MAX_NATIVE_BYTES = 32 * 1024 * 1024
@@ -172,18 +191,151 @@ def manifest_component_name(package: str, name: str) -> str:
     return name
 
 
+def foreground_service_type_mask(value: str) -> int | None:
+    if re.fullmatch(r"0[xX][0-9a-fA-F]+|[0-9]+", value):
+        return int(value, 16 if value.lower().startswith("0x") else 10)
+    symbols = value.split("|")
+    relevant = {"phoneCall": PHONE_CALL_SERVICE_TYPE, "microphone": MICROPHONE_SERVICE_TYPE}
+    if not all(symbol in relevant for symbol in symbols):
+        return None
+    mask = 0
+    for symbol in symbols:
+        mask |= relevant[symbol]
+    return mask
+
+
+def has_phone_call_service_type(service) -> bool:
+    value = service.get(ANDROID + "foregroundServiceType", "")
+    mask = foreground_service_type_mask(value)
+    return bool(mask & PHONE_CALL_SERVICE_TYPE) if mask is not None else "phoneCall" in value.split("|")
+
+
+def wake_profile() -> dict:
+    """Independent current source expectations; not proof of a build's environment."""
+    profiles = json.loads(EAS_PATH.read_text())["build"]
+    seen = set()
+    def inherited(name):
+        if name in seen or name not in profiles:
+            raise ValueError("wake_candidate_profile_inheritance_invalid")
+        seen.add(name)
+        profile = profiles[name]
+        return {**(inherited(profile["extends"]) if "extends" in profile else {}), **profile.get("env", {})}
+    flags = inherited(WAKE_PROFILE)
+    required = {name: "1" for name in (
+        "PHONE11_ANDROID_FOREGROUND_TRIAL", "EXPO_PUBLIC_PHONE11_ANDROID_FOREGROUND_TRIAL",
+        "PHONE11_ANDROID_NATIVE_CANDIDATE", "EXPO_PUBLIC_PHONE11_ANDROID_NATIVE_CANDIDATE",
+        "PHONE11_ANDROID_WAKE_CANDIDATE", "EXPO_PUBLIC_PHONE11_ANDROID_WAKE_CANDIDATE",
+        "PHONE11_ANDROID_CHAT_NOTIFICATIONS")}
+    required.update({name: "0" for name in (
+        "PHONE11_APP_STORE_BUILD", "PHONE11_VOIP_WAKE_COMMISSIONED", "PHONE11_CHAT_NOTIFICATIONS_COMMISSIONED",
+        "PHONE11_ANDROID_SCREEN_TRANSACTION", "EXPO_PUBLIC_PHONE11_ANDROID_SCREEN_TRANSACTION")})
+    required["EXPO_PUBLIC_SIP_ENGINE"] = "siprix"
+    origin = flags.get("EXPO_PUBLIC_API_BASE_URL", "")
+    parsed = urlsplit(origin)
+    if (any(flags.get(name) != value for name, value in required.items()) or parsed.scheme != "https"
+            or not parsed.hostname or parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment
+            or origin != parsed.geturl()):
+        raise ValueError("wake_candidate_source_profile_invalid")
+    return {"profile": WAKE_PROFILE, "origin": origin,
+            "flags_sha256": hashlib.sha256(json.dumps(flags, sort_keys=True).encode()).hexdigest()}
+
+
+def wake_manifest(root, app) -> None:
+    if app.get(ANDROID + "enabled") not in (None, "true"):
+        raise ValueError("wake_candidate_application_disabled")
+    services = {manifest_component_name(WAKE_PACKAGE, item.get(ANDROID + "name", "")): item
+                for item in app.findall("service")}
+    if len(services) != len(app.findall("service")):
+        raise ValueError("wake_candidate_duplicate_service")
+    for name in WAKE_SERVICES:
+        service = services.get(name)
+        if service is None or service.get(ANDROID + "enabled") not in (None, "true"):
+            raise ValueError("wake_candidate_service_missing_or_disabled")
+        expected_exported = "true" if name.endswith("Phone11ConnectionService") else "false"
+        if service.get(ANDROID + "exported") != expected_exported:
+            raise ValueError("wake_candidate_service_export_boundary")
+    def actions(service):
+        return [action.get(ANDROID + "name") for intent in service.findall("intent-filter")
+                for action in intent.findall("action")]
+    fcm = services["ai.phone11.siprix.Phone11FirebaseMessagingService"]
+    if (actions(fcm) != ["com.google.firebase.MESSAGING_EVENT"]
+            or "expo.modules.notifications.service.ExpoFirebaseMessagingService" in services):
+        raise ValueError("wake_candidate_fcm_ingress_invalid")
+    incoming = services["ai.phone11.siprix.Phone11IncomingCallService"]
+    if (foreground_service_type_mask(incoming.get(ANDROID + "foregroundServiceType", ""))
+            != PHONE_CALL_SERVICE_TYPE | MICROPHONE_SERVICE_TYPE
+            or incoming.get(ANDROID + "stopWithTask") != "false"):
+        raise ValueError("wake_candidate_incoming_service_lifecycle")
+    connection = services["ai.phone11.siprix.Phone11ConnectionService"]
+    if (connection.get(ANDROID + "permission") != "android.permission.BIND_TELECOM_CONNECTION_SERVICE"
+            or actions(connection) != ["android.telecom.ConnectionService"]):
+        raise ValueError("wake_candidate_telecom_service_boundary")
+    for name, service in services.items():
+        if name in WAKE_SERVICES:
+            continue
+        if (service.get(ANDROID + "permission") == "android.permission.BIND_TELECOM_CONNECTION_SERVICE"
+                or has_phone_call_service_type(service)
+                or "android.telecom.ConnectionService" in actions(service)):
+            raise ValueError("wake_candidate_unexpected_telecom_service")
+    permissions = {item.get(ANDROID + "name"): item for item in root.findall("uses-permission")}
+    if (not WAKE_PERMISSIONS <= permissions.keys()
+            or any(permissions[name].get(ANDROID + "maxSdkVersion") is not None for name in WAKE_PERMISSIONS)):
+        raise ValueError("wake_candidate_permissions_missing_or_limited")
+
+
+def firebase_expectations(path: Path | None, project_id: str | None) -> tuple[dict, str]:
+    if path is None or not path.is_absolute() or not re.fullmatch(r"[a-z][a-z0-9-]{4,28}[a-z0-9]", project_id or ""):
+        raise ValueError("wake_candidate_matching_firebase_input_required")
+    data = snapshot(path, 1024 * 1024, "google_services")
+    try:
+        config = json.loads(data)
+        project = config["project_info"]
+        clients = [client for client in config["client"]
+                   if client["client_info"]["android_client_info"]["package_name"] == WAKE_PACKAGE]
+        if len(clients) != 1 or project["project_id"] != project_id:
+            raise ValueError()
+        sender = str(project["project_number"])
+        app_id = clients[0]["client_info"]["mobilesdk_app_id"]
+        key = clients[0]["api_key"][0]["current_key"]
+        if (not re.fullmatch(r"[0-9]+", sender) or not isinstance(app_id, str)
+                or not re.fullmatch(r"1:" + sender + r":android:[0-9a-f]+", app_id)
+                or not isinstance(key, str) or not key):
+            raise ValueError()
+    except (KeyError, IndexError, TypeError, ValueError):
+        # Never include Google configuration contents or API key diagnostics.
+        raise ValueError("wake_candidate_firebase_configuration_mismatch") from None
+    return {"project_id": project_id, "gcm_defaultSenderId": sender, "google_app_id": app_id,
+            "google_api_key": key}, hashlib.sha256(data).hexdigest()
+
+
+def verify_firebase_resources(apkanalyzer: str, apk: Path, expected: dict) -> None:
+    for name, value in expected.items():
+        try:
+            result = subprocess.run([apkanalyzer, "resources", "value", "--config", "default", "--type", "string",
+                                     "--name", name, str(apk)], check=True, capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.SubprocessError):
+            raise ValueError("wake_candidate_firebase_resource_unavailable") from None
+        if not hmac.compare_digest(result.stdout.strip(), value):
+            raise ValueError("wake_candidate_firebase_resource_mismatch")
+
+
 def inspect_apk(apk: Path, manifest_xml: str, *, trial: bool, sdk_aar: Path | None = None,
-                standalone: bool = False) -> dict:
+                standalone: bool = False, native_candidate: bool = False, wake_candidate: bool = False) -> dict:
     return inspect_apk_snapshot(snapshot(apk, MAX_APK_BYTES, "apk"), manifest_xml,
-                                trial=trial, sdk_aar=sdk_aar, standalone=standalone)
+                                trial=trial, sdk_aar=sdk_aar, standalone=standalone, native_candidate=native_candidate,
+                                wake_candidate=wake_candidate)
 
 
 def inspect_apk_snapshot(apk_data: bytes, manifest_xml: str, *, trial: bool, sdk_aar: Path | None = None,
-                         standalone: bool = False) -> dict:
+                         standalone: bool = False, native_candidate: bool = False, wake_candidate: bool = False) -> dict:
+    if wake_candidate and (native_candidate or not (trial and standalone)):
+        raise ValueError("wake_candidate_separate_standalone_mode_required")
+    if native_candidate and not (trial and standalone):
+        raise ValueError("native_candidate_standalone_required")
     if standalone and not trial:
         raise ValueError("standalone_foreground_trial_required")
     root = ET.fromstring(manifest_xml)
-    if root.tag != "manifest" or root.get("package") != (TRIAL_PACKAGE if trial else PACKAGE):
+    if root.tag != "manifest" or root.get("package") != (WAKE_PACKAGE if wake_candidate else NATIVE_PACKAGE if native_candidate else TRIAL_PACKAGE if trial else PACKAGE):
         raise ValueError("unexpected_apk_identity")
     applications = root.findall("application")
     if len(applications) != 1:
@@ -195,10 +347,10 @@ def inspect_apk_snapshot(apk_data: bytes, manifest_xml: str, *, trial: bool, sdk
         # Screen capture and Phone11-owned wake/push services are separate,
         # default-off capabilities. Generic Expo notification services do not
         # establish Phone11 wake/chat commissioning and are not rejected here.
-        component_names = [manifest_component_name(root.get("package"), item.get(ANDROID + "name", ""))
+        component_names = [(tag, manifest_component_name(root.get("package"), item.get(ANDROID + "name", "")))
                            for tag in ("service", "receiver") for item in app.findall(tag)]
-        if any(name.startswith("ai.phone11.") or "Phone11ScreenProjectionService" in name
-               for name in component_names):
+        if any((name.startswith("ai.phone11.") and not (wake_candidate and tag == "service" and name in WAKE_SERVICES))
+               or "Phone11ScreenProjectionService" in name for tag, name in component_names):
             raise ValueError("standalone_uncommissioned_service")
         if any(item.get(ANDROID + "name") == "android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION"
                for item in root.findall("uses-permission")):
@@ -217,6 +369,33 @@ def inspect_apk_snapshot(apk_data: bytes, manifest_xml: str, *, trial: bool, sdk
              if item.get(ANDROID + "name") == GATE]
     if (trial and gates != ["true"]) or (not trial and gates not in ([], ["false"])):
         raise ValueError("unexpected_apk_runtime_gate")
+    if native_candidate:
+        native_gates = [item.get(ANDROID + "value") for item in app.findall("meta-data")
+                        if item.get(ANDROID + "name") == NATIVE_GATE]
+        wake_gates = [item.get(ANDROID + "value") for item in app.findall("meta-data")
+                      if item.get(ANDROID + "name") == WAKE_GATE]
+        if native_gates != ["true"]:
+            raise ValueError("native_candidate_metadata_required")
+        if wake_gates not in ([], ["false"]):
+            raise ValueError("native_candidate_wake_not_permitted")
+        for service in app.findall("service"):
+            if (service.get(ANDROID + "permission") == "android.permission.BIND_TELECOM_CONNECTION_SERVICE"
+                    or has_phone_call_service_type(service)
+                    or any(action.get(ANDROID + "name") == "android.telecom.ConnectionService"
+                           for intent in service.findall("intent-filter") for action in intent.findall("action"))):
+                raise ValueError("native_candidate_telecom_service_not_permitted")
+        if any(item.get(ANDROID + "name") in {
+                "android.permission.MANAGE_OWN_CALLS", "android.permission.FOREGROUND_SERVICE_PHONE_CALL",
+                "android.permission.USE_FULL_SCREEN_INTENT"}
+               for item in root.findall("uses-permission")):
+            raise ValueError("native_candidate_wake_permission_not_permitted")
+    if wake_candidate:
+        profile = wake_profile()
+        for name in (NATIVE_GATE, WAKE_GATE):
+            if [item.get(ANDROID + "value") for item in app.findall("meta-data")
+                    if item.get(ANDROID + "name") == name] != ["true"]:
+                raise ValueError("wake_candidate_literal_metadata_required")
+        wake_manifest(root, app)
     if trial:
         permissions = {item.get(ANDROID + "name") for item in root.findall("uses-permission")}
         if not {"android.permission.RECORD_AUDIO", "android.permission.INTERNET",
@@ -256,6 +435,11 @@ def inspect_apk_snapshot(apk_data: bytes, manifest_xml: str, *, trial: bool, sdk
             raise ValueError("apk_dex_size_limit")
         # Actual DEX definitions establish packaging, not runtime execution.
         definitions = set().union(*(defined_classes(archive.read(name)) for name in dex_names))
+        if wake_candidate:
+            if not WAKE_CLASSES <= definitions:
+                raise ValueError("wake_candidate_class_definitions_missing")
+            if not any(profile["origin"].encode("ascii") in archive.read(name) for name in dex_names):
+                raise ValueError("wake_candidate_current_native_origin_string_missing")
         if standalone and any(name.startswith(b"Lexpo/modules/updates/") for name in definitions):
             raise ValueError("standalone_ota_updates_runtime_present")
         if trial:
@@ -287,6 +471,16 @@ def inspect_apk_snapshot(apk_data: bytes, manifest_xml: str, *, trial: bool, sdk
                         "signature_verified": False, "embedded_bundle_sha256": bundle_sha,
                         "embedded_bundle_bytes": len(bundle), "embedded_bundle_format": "hermes",
                         "limits": "Unsigned byte inspection only; CLI signature verification and independent expected signer required. No installation, calling, wake or device acceptance."})
+    if native_candidate:
+        receipt.update({"schema": "phone11.android.native-candidate-inspection.v1",
+                        "native_source_candidate": True, "wake_source_candidate": False,
+                        "limits": "Unsigned native candidate byte inspection only; CLI signature verification and independent expected signer required. No background wake, provider or device acceptance."})
+    if wake_candidate:
+        receipt.update({"schema": "phone11.android.wake-candidate-inspection.v1",
+                        "native_source_candidate": True, "wake_source_candidate": True,
+                        "source_profile": profile, "firebase_resources_verified": False,
+                        "origin_evidence": "Current source profile origin string present in DEX; native/JS flag semantics and effective runtime origin require exact build provenance and runtime validation.",
+                        "limits": "Unsigned wake candidate byte inspection only; CLI signature and matching Firebase resources required. No installation, runtime wake, provider or physical-device acceptance."})
     return receipt
 
 
@@ -321,12 +515,25 @@ def main() -> None:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--trial", action="store_true", help="Existing debug foreground trial inspection")
     mode.add_argument("--standalone-trial", action="store_true", help="Release foreground trial plus signature verification")
-    parser.add_argument("--apksigner", help="Installed Android SDK apksigner; required for standalone trial")
+    mode.add_argument("--native-candidate", action="store_true", help="Release native candidate without wake; separate package, metadata and signature verification")
+    mode.add_argument("--wake-candidate", action="store_true", help="Release staging wake candidate; exact services, current source origin, Firebase resources and signature verification")
+    parser.add_argument("--apksigner", help="Installed Android SDK apksigner; required for all standalone candidate modes")
     parser.add_argument("--expected-signer-sha256", help="Independent trusted signing receipt fingerprint, not read from this APK")
     parser.add_argument("--sdk-aar", type=Path, help="Pinned full SDK AAR; trial defaults to PHONE11_SIPRIX_ANDROID_AAR")
+    parser.add_argument("--google-services-file", type=Path, help="Matching private Google services input; wake defaults to PHONE11_ANDROID_GOOGLE_SERVICES_FILE")
+    parser.add_argument("--expected-fcm-project-id", help="Independent expected Firebase project; wake defaults to PHONE11_ANDROID_FCM_PROJECT_ID")
     args = parser.parse_args()
     if args.standalone_trial and (not args.apksigner or not re.fullmatch(r"[0-9a-fA-F]{64}", args.expected_signer_sha256 or "")):
         parser.error("standalone trial requires installed apksigner and independent expected signer SHA-256")
+    if args.native_candidate and (not args.apksigner or not re.fullmatch(r"[0-9a-fA-F]{64}", args.expected_signer_sha256 or "")):
+        parser.error("native candidate requires installed apksigner and independent expected signer SHA-256")
+    if args.wake_candidate and (not args.apksigner or not re.fullmatch(r"[0-9a-fA-F]{64}", args.expected_signer_sha256 or "")):
+        parser.error("wake candidate requires installed apksigner and independent expected signer SHA-256")
+    if args.wake_candidate:
+        google_path = args.google_services_file or (Path(os.environ["PHONE11_ANDROID_GOOGLE_SERVICES_FILE"])
+                         if os.environ.get("PHONE11_ANDROID_GOOGLE_SERVICES_FILE") else None)
+        expected_firebase, google_sha = firebase_expectations(google_path, args.expected_fcm_project_id
+                                                               or os.environ.get("PHONE11_ANDROID_FCM_PROJECT_ID"))
     # The analyzer and ZIP/DEX/hash gate must describe the same bounded bytes,
     # even if the caller's original path is replaced while the tool runs.
     apk_data = snapshot(args.apk, MAX_APK_BYTES, "apk")
@@ -338,15 +545,26 @@ def main() -> None:
                                 check=True, capture_output=True, text=True, timeout=60)
         if snapshot(tool_input, MAX_APK_BYTES, "apk") != apk_data:
             raise ValueError("apk_analyzer_snapshot_changed")
-        receipt = inspect_apk_snapshot(apk_data, result.stdout, trial=args.trial or args.standalone_trial,
-                                       sdk_aar=args.sdk_aar, standalone=args.standalone_trial)
-        if args.standalone_trial:
+        receipt = inspect_apk_snapshot(apk_data, result.stdout, trial=args.trial or args.standalone_trial or args.native_candidate or args.wake_candidate,
+                                       sdk_aar=args.sdk_aar, standalone=args.standalone_trial or args.native_candidate or args.wake_candidate,
+                                       native_candidate=args.native_candidate, wake_candidate=args.wake_candidate)
+        if args.wake_candidate:
+            verify_firebase_resources(args.apkanalyzer, tool_input, expected_firebase)
+        if args.standalone_trial or args.native_candidate or args.wake_candidate:
             signer = verify_signature(args.apksigner, tool_input, args.expected_signer_sha256)
             if snapshot(tool_input, MAX_APK_BYTES, "apk") != apk_data:
                 raise ValueError("apk_signature_snapshot_changed")
             receipt.update({"schema": "phone11.android.standalone-packaging.v1", "signature_verified": True,
                             "signer_certificate_sha256": signer,
                             "limits": "Signature and standalone trial packaging only; authenticate exact source/profile/build receipt separately. No installation, calling, wake or device acceptance."})
+            if args.native_candidate:
+                receipt.update({"schema": "phone11.android.native-candidate-packaging.v1",
+                                "limits": "Signature and native candidate packaging only; verify exact source/profile/build separately. Wake disabled; no calling, provider or device acceptance."})
+            if args.wake_candidate:
+                receipt.update({"schema": "phone11.android.wake-candidate-packaging.v1",
+                                "firebase_resources_verified": True, "google_services_sha256": google_sha,
+                                "firebase_project_id": expected_firebase["project_id"],
+                                "limits": "Signature, staging wake package and matching Firebase resources only; verify exact source/profile/build provenance separately. Native/JS flags are checked in current source profile, not proven as compiled semantics. No installation, runtime wake, provider or physical-device acceptance."})
     print(json.dumps(receipt, sort_keys=True))
 
 

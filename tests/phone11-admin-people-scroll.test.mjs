@@ -36,7 +36,7 @@ const plugin={name:'synthetic-api-boundaries',setup(builder){
  builder.onLoad({filter:/\.(ts|tsx)$/},async args=>{const key=path.relative(root,args.path).replaceAll(path.sep,'/');if(key in shims)return {contents:shims[key],loader:'ts'};return undefined;});
 }};
 for(const [width,height] of [[700,384],[1280,900]]){
- test(`People invitations and rows share a reachable scroll area at ${width}x${height}`,{skip:!browser&&'Set PHONE11_HYDRATION_BROWSER to an existing Chromium executable.',timeout:30000},async()=>{
+ test(`People invitations and rows share a reachable scroll area at ${width}x${height}`,{skip:!browser&&'Set PHONE11_HYDRATION_BROWSER to an existing Chromium executable.',timeout:75000},async context=>{
   const temporary=await mkdtemp(path.join(os.tmpdir(),'phone11-people-scroll-'));
   try{
    const source=`import React from 'react';import {createRoot} from 'react-dom/client';import {SafeAreaProvider} from 'react-native-safe-area-context';import {AdminShell} from '@/components/admin/admin-shell';import AdminUsers from ${JSON.stringify(path.join(root,'app/admin/users.tsx'))};
@@ -53,8 +53,13 @@ const wait=ms=>new Promise(done=>setTimeout(done,ms));const button=label=>docume
  document.getElementById('result').textContent=JSON.stringify({pass:true,scrollHeight:scroll.clientHeight,allRowsReachable:true,invitationFormReachable:true,editorOpenedAndClosed:true,filtersWorking:true,mutations:window.__mutations});})().catch(e=>document.getElementById('result').textContent=JSON.stringify({error:e.message}));`;
    const output=await build({absWorkingDir:root,stdin:{contents:source,resolveDir:root,sourcefile:'people-layout.tsx',loader:'tsx'},bundle:true,write:false,platform:'browser',format:'iife',jsx:'automatic',loader:{'.js':'jsx','.ttf':'dataurl','.png':'dataurl'},resolveExtensions:['.web.tsx','.web.ts','.web.jsx','.web.js','.tsx','.ts','.jsx','.js','.json'],alias:{'react-native':'react-native-web','@':root},define:{global:'globalThis',__DEV__:'true','process.env.NODE_ENV':'"development"','process.env.EXPO_OS':'"web"'},plugins:[plugin],logLevel:'silent'});
    const file=path.join(temporary,'people.html');await writeFile(file,`<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; font-src data:; connect-src 'none'; img-src data:"><style>html,body,#root{height:100%;margin:0;overflow:hidden}#root{display:flex}#result{display:none}</style></head><body><div id="root"></div><pre id="result">PENDING</pre><script>window.process={env:{}};window.addEventListener("error",event=>document.getElementById("result").textContent=JSON.stringify({error:event.message}));${output.outputFiles[0].text.replaceAll('</script','<\\/script')}</script></body></html>`);
-   const {stdout}=await promisify(execFile)(browser,['--headless','--no-sandbox','--disable-gpu','--disable-background-networking','--host-resolver-rules=MAP * ~NOTFOUND',`--window-size=${width},${height}`,`--user-data-dir=${path.join(temporary,'profile')}`,'--dump-dom','--virtual-time-budget=2500',pathToFileURL(file).href],{timeout:20000,maxBuffer:12*1024*1024});
-   const match=stdout.match(/<pre id="result">([\s\S]*?)<\/pre>/);assert.ok(match);const result=JSON.parse(match[1].replaceAll('&quot;','"').replaceAll('&lt;','<').replaceAll('&gt;','>').replaceAll('&amp;','&'));assert.equal(result.error,undefined);assert.equal(result.pass,true);assert.equal(result.mutations,0);
+   // Cold Chromium startup competes with other browser suites; keep its wall-clock
+   // allowance separate from the unchanged 2.5-second virtual interaction budget.
+   const browserStarted=Date.now();
+   const {stdout,stderr}=await promisify(execFile)(browser,['--headless','--no-sandbox','--disable-gpu','--disable-background-networking','--host-resolver-rules=MAP * ~NOTFOUND',`--window-size=${width},${height}`,`--user-data-dir=${path.join(temporary,'profile')}`,'--dump-dom','--virtual-time-budget=2500',pathToFileURL(file).href],{timeout:45000,signal:context.signal,maxBuffer:12*1024*1024});
+   const match=stdout.match(/<pre id="result">([\s\S]*?)<\/pre>/);
+   assert.ok(match,`isolated browser must report People scroll result at ${width}x${height}; elapsed=${Date.now()-browserStarted}ms; stdout=${Buffer.byteLength(stdout)} bytes; stderr tail=${JSON.stringify(stderr.slice(-1200))}`);
+   const result=JSON.parse(match[1].replaceAll('&quot;','"').replaceAll('&lt;','<').replaceAll('&gt;','>').replaceAll('&amp;','&'));assert.equal(result.error,undefined);assert.equal(result.pass,true);assert.equal(result.mutations,0);
   }finally{await rm(temporary,{recursive:true,force:true})}
  });
 }

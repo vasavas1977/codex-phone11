@@ -2,9 +2,10 @@ import { z } from "zod";
 import { wakeRepository, WakeError, type WakeCall } from "./wake-repository";
 import { pushRepository } from "./repository";
 import { sendApnsPush } from "./apns";
+import { sendFcmMessage } from "./fcm";
 
 export const wakeIdentitySchema=z.object({bindingId:z.string().uuid()}).strict();
-export const wakeEnrollSchema=z.object({deviceId:z.string().min(1).max(512),platform:z.literal("ios")}).strict();
+export const wakeEnrollSchema=z.object({deviceId:z.string().min(1).max(512),platform:z.enum(["ios","android"])}).strict();
 export const wakeDeviceCallSchema=z.object({bindingId:z.string().uuid(),callUUID:z.string().uuid()}).strict();
 export const wakeOfferSchema=z.object({sipUri:z.string().regex(/^sip:[A-Za-z0-9_.+-]{1,128}@[A-Za-z0-9.-]{1,253}$/),
   sipCallId:z.string().min(1).max(512).regex(/^[\x21-\x7e]+$/)}).strict();
@@ -34,15 +35,23 @@ async function notify(call: WakeCall, deadline:number, signal:AbortSignal) {
   if(candidates.length!==1) throw new WakeError(410);
   const token=candidates[0];
   try {
-    await sendApnsPush(token,{callId:call.callUUID,callerNumber:"",wake:{v:1,callUUID:call.callUUID,bindingId:call.bindingId,expiresAt:call.expiresAt}},async()=>{
-    check();
-    const current=await wakeRepository.current(call.callUUID);
-    check();
-    if(!current || current.status!=="pending")return false;
-    const valid=await pushRepository.isCurrent(token);
-    check();
-    return valid;
-    },Math.min(call.expiresAt,deadline));
+    const beforeAttempt=async()=>{
+      check();
+      const current=await wakeRepository.current(call.callUUID);
+      check();
+      if(!current || current.status!=="pending")return false;
+      const valid=await pushRepository.isCurrent(token);
+      check();
+      return valid;
+    };
+    const expiresAt=Math.min(call.expiresAt,deadline);
+    if(token.platform==="android") {
+      if(process.env.PHONE11_ANDROID_WAKE_ENABLED!=="1" || token.tokenType!=="fcm") throw new WakeError(503);
+      await sendFcmMessage(token,{data:{v:"1",callUUID:call.callUUID,bindingId:call.bindingId,expiresAt:String(call.expiresAt)},
+        android:{priority:"HIGH",ttl:"0s"}},beforeAttempt,expiresAt);
+    } else {
+      await sendApnsPush(token,{callId:call.callUUID,callerNumber:"",wake:{v:1,callUUID:call.callUUID,bindingId:call.bindingId,expiresAt:call.expiresAt}},beforeAttempt,expiresAt);
+    }
     check();
     await pushRepository.markUsed(token);
   } catch(error) {
@@ -84,6 +93,10 @@ export function createWakeService(deps: {
   });
   return {
     enroll(sessionId:string,userId:number,input:z.infer<typeof wakeEnrollSchema>) {
+      if(input.platform === "android") {
+        if(process.env.PHONE11_ANDROID_WAKE_ENABLED!=="1") throw new WakeError(503,"Background incoming calls are not enabled");
+        return repository.enroll(sessionId,userId,input.deviceId,pilots(),"android");
+      }
       return repository.enroll(sessionId,userId,input.deviceId,pilots());
     },
     resolve(sessionId:string,userId:number,bindingId:string) {pilots();return repository.resolve(bindingId,sessionId,userId);},

@@ -24,11 +24,20 @@ function unsupported(feature: string): Error {
 }
 
 type AndroidTrialBridge = Phone11SiprixModule & { getForegroundCapabilities?: () => Promise<Record<string, unknown>> };
-async function requireAndroidForegroundTrial(bridge: AndroidTrialBridge): Promise<boolean> {
+async function requireAndroidForegroundTrial(bridge: AndroidTrialBridge): Promise<{ consultation: boolean; blindTransfer: boolean; wake: boolean }> {
   const capabilities = await bridge.getForegroundCapabilities?.();
+  const nativeCandidate = process.env.EXPO_PUBLIC_PHONE11_ANDROID_NATIVE_CANDIDATE === "1";
+  const wakeCandidate = process.env.EXPO_PUBLIC_PHONE11_ANDROID_WAKE_CANDIDATE === "1";
   if (!capabilities || capabilities.foregroundAudioTrial !== true || capabilities.sdkVersion !== "1.1.0"
       || capabilities.sdkBuild !== "20260905_1222" || capabilities.trialCallLimitSeconds !== 60
-      || ["backgroundCalling", "closedAppCalling", "wake", "transfer", "video"].some(key => capabilities[key] !== false)) {
+      || ["backgroundCalling", "closedAppCalling", "video"].some(key => capabilities[key] !== false)
+      || capabilities.transfer !== nativeCandidate || capabilities.wake !== false
+      || (nativeCandidate ? capabilities.nativeSourceCandidate !== true || capabilities.blindTransferSourceCandidate !== true
+        || typeof bridge.transferCall !== "function" || typeof bridge.createTransferRequestId !== "function"
+        : (capabilities.nativeSourceCandidate !== undefined && capabilities.nativeSourceCandidate !== false) ||
+          (capabilities.blindTransferSourceCandidate !== undefined && capabilities.blindTransferSourceCandidate !== false))
+      || (wakeCandidate ? !nativeCandidate || capabilities.wakeSourceCandidate !== true :
+        capabilities.wakeSourceCandidate !== undefined && capabilities.wakeSourceCandidate !== false)) {
     throw new Error("Android foreground Siprix trial native/build capability is unavailable");
   }
   const requested = process.env.EXPO_PUBLIC_PHONE11_ANDROID_CONSULTATION_SOURCE === "1";
@@ -38,7 +47,7 @@ async function requireAndroidForegroundTrial(bridge: AndroidTrialBridge): Promis
     : capabilities.consultationSourceCandidate !== undefined && capabilities.consultationSourceCandidate !== false) {
     throw new Error("Android consultation source capability does not match this build");
   }
-  return requested && consultation;
+  return { consultation: requested && consultation, blindTransfer: nativeCandidate, wake: wakeCandidate };
 }
 
 function nativeCall(call: SiprixCall) {
@@ -103,6 +112,8 @@ export class SiprixEngine {
   private audioActive = false;
   private warmTransferAvailable = false;
   private androidConsultationAllowed = false;
+  private androidBlindTransferAllowed = false;
+  private androidWakeAllowed = false;
   private consultationContinuations = new Set<string>();
   private deferredCallKitEnds = new Map<string, { originalId: string; requestId: string; accountId: string; historyId: string }>();
   private transferAttempts = new Set<string>();
@@ -180,7 +191,12 @@ export class SiprixEngine {
       }
       if (Platform.OS === "android") {
         const owner = getAuthSnapshot().user;
-        try { this.androidConsultationAllowed = await requireAndroidForegroundTrial(bridge); }
+        try {
+          const admitted = await requireAndroidForegroundTrial(bridge);
+          this.androidConsultationAllowed = admitted.consultation;
+          this.androidBlindTransferAllowed = admitted.blindTransfer;
+          this.androidWakeAllowed = admitted.wake;
+        }
         catch (error) {
           if (revision !== this.revision || owner !== getAuthSnapshot().user || !sameAccount(account, useSipAccountStore.getState().account)) return;
           const failure = this.failure("Android foreground trial capability", error);
@@ -254,9 +270,8 @@ export class SiprixEngine {
         if (!this.current(session)) { await this.cleanup(); return; }
         this.applySnapshot(await bridge.getSnapshot(), session);
         if (!this.current(session)) { await this.cleanup(); return; }
-        // The Android candidate owns foreground trial calls only. It has no
-        // enrolled wake owner or native completed-wake history to reconcile.
-        if (Platform.OS === "android") return;
+        // Only the matched wake candidate can restore an Android wake owner.
+        if (Platform.OS === "android" && !this.androidWakeAllowed) return;
         // Native recreation clears its warm-wake owner, while secure enrollment
         // survives. Resolve that enrollment against the current server session.
         // Bind directly: bindWakeOwner serializes on this same lifecycle queue.
@@ -368,7 +383,7 @@ export class SiprixEngine {
   }
 
   private async reconcileCompletedCalls(session: Session, verified?: WakeBinding): Promise<void> {
-    if (Platform.OS !== "ios") return;
+    if (Platform.OS !== "ios" && !(Platform.OS === "android" && this.androidWakeAllowed)) return;
     const bridge = this.bridge;
     if (!bridge?.readCompletedWakeCalls || !bridge.ackCompletedWakeCalls) return;
     try {
@@ -704,7 +719,7 @@ export class SiprixEngine {
   }
 
   supportsBlindTransfer(): boolean {
-    return this.current() && typeof this.bridge?.transferCall === "function" && typeof this.bridge?.createTransferRequestId === "function";
+    return this.current() && (Platform.OS !== "android" || this.androidBlindTransferAllowed) && typeof this.bridge?.transferCall === "function" && typeof this.bridge?.createTransferRequestId === "function";
   }
 
   hasAttemptedBlindTransfer(callId: string): boolean {
@@ -803,6 +818,8 @@ export class SiprixEngine {
     this.transferAttempts.clear();
     this.warmTransferAvailable = false;
     this.androidConsultationAllowed = false;
+    this.androidBlindTransferAllowed = false;
+    this.androidWakeAllowed = false;
     this.consultationContinuations.clear();
     this.terminated.clear();
     this.connected.clear();

@@ -2,6 +2,7 @@
 import importlib.util
 import os
 from pathlib import Path
+import re
 import stat
 import subprocess
 import tempfile
@@ -135,7 +136,14 @@ class NativeLicenseInputTest(unittest.TestCase):
         self.assertIn('Android store distribution is not commissioned', config)
         gradle = (ROOT / "modules/phone11-siprix/android/build.gradle").read_text()
         self.assertIn('dependsOn stageSdkApi, generateNativeLicense', gradle)
-        self.assertNotIn("buildConfigField 'String'", gradle)
+        # The fixed public wake origin is configuration, while license inputs
+        # must remain in the private generated native source. Keep String fields
+        # allowlisted by both name and expression, rather than allowing secrets
+        # through any new BuildConfig field.
+        string_fields = re.findall(r'''(?m)^\s*buildConfigField\s+['"]String['"]\s*,\s*['"]([^'"]+)['"]\s*,\s*(.+)$''', gradle)
+        self.assertEqual(string_fields, [("WAKE_ORIGIN", "groovy.json.JsonOutput.toJson(wakeOrigin)")])
+        self.assertNotIn("PHONE11_SIPRIX_LICENSE", gradle)
+        self.assertNotRegex(gradle, r"(?i)buildConfigField[^\n]*(?:license|secret|password|credential)")
         cmake = (ROOT / "desktop/native/CMakeLists.txt").read_text()
         self.assertIn('add_dependencies(phone11_siprix_helper phone11_native_license_input)', cmake)
         self.assertNotIn('$ENV{PHONE11_SIPRIX_LICENSE}', cmake)

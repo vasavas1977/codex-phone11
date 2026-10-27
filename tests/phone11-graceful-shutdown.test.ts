@@ -40,6 +40,73 @@ afterEach(() => {
 });
 
 describe("Phone11 graceful shutdown", () => {
+  it("closes database resources only after HTTP and producer drains settle", async () => {
+    const http = deferred();
+    const producers = deferred();
+    const resources = deferred();
+    const events: string[] = [];
+    const server = {
+      close(callback: (error?: Error) => void) {
+        void http.promise.then(() => { events.push("http"); callback(); });
+      },
+    };
+    const background: Phone11BackgroundLifecycle = {
+      start() {},
+      async stop() { events.push("stopping"); await producers.promise; events.push("stopped"); },
+    };
+    const closeResources = vi.fn(async () => {
+      events.push("resources");
+      await resources.promise;
+    });
+    const shutdown = createPhone11Shutdown(server, background, 2_000, closeResources);
+    const result = shutdown();
+    expect(shutdown()).toBe(result);
+    expect(events).toEqual([]);
+    http.resolve();
+    await flushMicrotasks();
+    expect(events).toEqual(["http", "stopping"]);
+    producers.resolve();
+    await flushMicrotasks();
+    expect(events).toEqual(["http", "stopping", "stopped", "resources"]);
+    let finished = false;
+    void result.then(() => { finished = true; });
+    await flushMicrotasks();
+    expect(finished).toBe(false);
+    resources.resolve();
+    await result;
+    expect(closeResources).toHaveBeenCalledOnce();
+  });
+
+  it("attempts resource cleanup after producer failure and reports failure", async () => {
+    const failure = new Error("producer stop failed");
+    const closeResources = vi.fn(async () => undefined);
+    const server = { close: (callback: () => void) => callback(), closeAllConnections: vi.fn() };
+    const background: Phone11BackgroundLifecycle = { start() {}, async stop() { throw failure; } };
+    const shutdown = createPhone11Shutdown(server, background, 2_000, closeResources);
+    await expect(shutdown()).rejects.toBe(failure);
+    expect(closeResources).toHaveBeenCalledOnce();
+    expect(server.closeAllConnections).toHaveBeenCalledOnce();
+  });
+
+  it("keeps resource cleanup inside the shared shutdown deadline", async () => {
+    vi.useFakeTimers();
+    const resources = deferred();
+    const closeResources = vi.fn(() => resources.promise);
+    const server = { close: (callback: () => void) => callback(), closeAllConnections: vi.fn() };
+    const background: Phone11BackgroundLifecycle = { start() {}, async stop() {} };
+    const shutdown = createPhone11Shutdown(server, background, 25, closeResources);
+    const result = shutdown();
+    const rejection = expect(result).rejects.toBeInstanceOf(Phone11ShutdownTimeoutError);
+    await flushMicrotasks();
+    expect(closeResources).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(25);
+    await rejection;
+    resources.resolve();
+    await flushMicrotasks();
+    expect(shutdown()).toBe(result);
+    expect(closeResources).toHaveBeenCalledOnce();
+  });
+
   it("keeps the default drain open for the bounded 26-second Connect11 admission path", async () => {
     vi.useFakeTimers();
     const server = {

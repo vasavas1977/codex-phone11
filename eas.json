@@ -113,6 +113,28 @@
       "env": {
         "PHONE11_CHAT_NOTIFICATIONS_COMMISSIONED": "1"
       }
+    },
+    "preview-android-native-candidate": {
+      "extends": "preview-android-siprix-foreground-trial",
+      "channel": "android-native-candidate",
+      "autoIncrement": false,
+      "env": {
+        "PHONE11_ANDROID_NATIVE_CANDIDATE": "1",
+        "EXPO_PUBLIC_PHONE11_ANDROID_NATIVE_CANDIDATE": "1",
+        "PHONE11_ANDROID_WAKE_CANDIDATE": "0",
+        "EXPO_PUBLIC_PHONE11_ANDROID_WAKE_CANDIDATE": "0",
+        "PHONE11_ANDROID_CHAT_NOTIFICATIONS": "0"
+      }
+    },
+    "preview-android-wake-candidate": {
+      "extends": "preview-android-native-candidate",
+      "channel": "android-wake-candidate",
+      "env": {
+        "PHONE11_ANDROID_WAKE_CANDIDATE": "1",
+        "EXPO_PUBLIC_PHONE11_ANDROID_WAKE_CANDIDATE": "1",
+        "PHONE11_ANDROID_CHAT_NOTIFICATIONS": "1",
+        "EXPO_PUBLIC_API_BASE_URL": "https://phone11-android-staging-api-413228367517.asia-southeast1.run.app"
+      }
     }
   },
   "submit": {

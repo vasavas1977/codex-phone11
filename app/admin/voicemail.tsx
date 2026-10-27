@@ -406,9 +406,25 @@ function AdminVoicemailContent() {
         {extensions.isLoading ? (
           <ActivityIndicator color={colors.primary} />
         ) : extensions.isError ? (
-          <Text accessibilityRole="alert" style={{ color: colors.muted }}>
-            Could not load extensions.
-          </Text>
+          <View>
+            <Text accessibilityRole="alert" style={{ color: colors.muted }}>
+              Could not load extensions.
+            </Text>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Retry loading personal mailboxes"
+              accessibilityState={{
+                disabled: extensions.isFetching,
+                busy: extensions.isFetching,
+              }}
+              disabled={extensions.isFetching}
+              onPress={() => void extensions.refetch()}
+            >
+              <Text style={[styles.action, { color: colors.primary }]}>
+                {extensions.isFetching ? "Retrying…" : "Retry"}
+              </Text>
+            </Pressable>
+          </View>
         ) : personalRows.length === 0 ? (
           <Text style={{ color: colors.muted }}>
             No personal extensions on this page.

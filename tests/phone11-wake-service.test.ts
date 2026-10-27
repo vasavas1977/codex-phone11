@@ -1,5 +1,7 @@
 import {afterEach,describe,expect,it,vi} from "vitest";
 const apns=vi.hoisted(()=>({send:vi.fn(async()=>{})}));
+const fcm=vi.hoisted(()=>({send:vi.fn(async()=>{})}));
+vi.mock("../server/push/fcm",()=>({sendFcmMessage:fcm.send}));
 vi.mock("../server/push/apns",()=>({sendApnsPush:apns.send}));
 import {createWakeService,wakePilot,wakePilots} from "../server/push/wake-service";
 import {wakeRepository,WakeError,type WakeCall} from "../server/push/wake-repository";
@@ -25,7 +27,7 @@ function providerHarness() {
  const service=createWakeService({repository:h.repository as unknown as typeof wakeRepository,pilot:()=>input.sipUri});
  return {...h,service,token,list,current,mark,remove};
 }
-afterEach(()=>{vi.useRealTimers();vi.restoreAllMocks();vi.unstubAllEnvs();apns.send.mockReset();apns.send.mockResolvedValue();});
+afterEach(()=>{vi.useRealTimers();vi.restoreAllMocks();vi.unstubAllEnvs();apns.send.mockReset();apns.send.mockResolvedValue();fcm.send.mockReset();fcm.send.mockResolvedValue();});
 describe("wake service ownership and bounded call setup",()=>{
  it("stays unavailable without explicit enablement and keeps the single-pilot configuration compatible",()=>{
   vi.stubEnv("PHONE11_WAKE_ENABLED","");vi.stubEnv("PHONE11_WAKE_PILOT_SIP_URI",input.sipUri);expect(()=>wakePilot()).toThrow(WakeError);
@@ -55,6 +57,40 @@ describe("wake service ownership and bounded call setup",()=>{
   expect(h.repository.enroll).toHaveBeenCalledWith("session-current",7,"device",[input.sipUri]);
   expect(h.repository.resolve).toHaveBeenCalledWith(call.bindingId,"session-current",7);
   expect(h.repository.revoke).toHaveBeenCalledWith(call.bindingId,"session-current",7);
+ });
+ it("requires separate default-off Android enrollment enablement",async()=>{
+  const h=harness();vi.stubEnv("PHONE11_ANDROID_WAKE_ENABLED","");
+  expect(()=>h.service.enroll("session",7,{deviceId:"device",platform:"android"})).toThrow(WakeError);
+  expect(h.repository.enroll).not.toHaveBeenCalled();
+  vi.stubEnv("PHONE11_ANDROID_WAKE_ENABLED","1");
+  await h.service.enroll("session",7,{deviceId:"device",platform:"android"});
+  expect(h.repository.enroll).toHaveBeenCalledWith("session",7,"device",[input.sipUri],"android");
+ });
+ it("dispatches Android wake correlation only with current authenticated state",async()=>{
+  vi.useFakeTimers();vi.setSystemTime(0);vi.stubEnv("PHONE11_ANDROID_WAKE_ENABLED","1");
+  const h=providerHarness();Object.assign(h.token,{platform:"android",tokenType:"fcm"});
+  fcm.send.mockImplementation(async(...args:any[])=>{
+   expect(args[0]).toBe(h.token);expect(args[3]).toBe(5000);expect(await args[2]()).toBe(true);
+   expect(args[1]).toEqual({data:{v:"1",callUUID:call.callUUID,bindingId:call.bindingId,expiresAt:String(call.expiresAt)},android:{priority:"HIGH",ttl:"0s"}});
+  });
+  await h.service.offer(input);expect(fcm.send).toHaveBeenCalledOnce();expect(apns.send).not.toHaveBeenCalled();expect(h.mark).toHaveBeenCalledWith(h.token);
+ });
+ it("disabled Android delivery cannot fall back to APNs",async()=>{
+  vi.stubEnv("PHONE11_ANDROID_WAKE_ENABLED","");const h=providerHarness();Object.assign(h.token,{platform:"android",tokenType:"fcm"});
+  await expect(h.service.offer(input)).rejects.toMatchObject({status:503});
+  expect(fcm.send).not.toHaveBeenCalled();expect(apns.send).not.toHaveBeenCalled();expect(h.mark).not.toHaveBeenCalled();
+  expect(h.repository.transitionTrusted).toHaveBeenCalledWith(input.sipUri,input.sipCallId,"cancelled");
+ });
+ it.each(["cancelled","expired",null])("Android pre-submit state %s blocks a stale call",async status=>{
+  vi.useFakeTimers();vi.setSystemTime(0);vi.stubEnv("PHONE11_ANDROID_WAKE_ENABLED","1");const h=providerHarness();Object.assign(h.token,{platform:"android",tokenType:"fcm"});
+  vi.spyOn(wakeRepository,"current").mockResolvedValue(status ? {...call,status} as never : null);
+  fcm.send.mockImplementation(async(...args:any[])=>{expect(await args[2]()).toBe(false);throw new Error("not current");});
+  await expect(h.service.offer(input)).rejects.toMatchObject({status:503});expect(h.mark).not.toHaveBeenCalled();
+ });
+ it("Android provider rejection cancels setup and removes only explicit invalid-token revision",async()=>{
+  vi.useFakeTimers();vi.setSystemTime(0);vi.stubEnv("PHONE11_ANDROID_WAKE_ENABLED","1");const h=providerHarness();Object.assign(h.token,{platform:"android",tokenType:"fcm"});
+  fcm.send.mockRejectedValue({invalidToken:true});await expect(h.service.offer(input)).rejects.toMatchObject({status:503});
+  expect(h.remove).toHaveBeenCalledWith(h.token);expect(h.mark).not.toHaveBeenCalled();expect(h.repository.transitionTrusted).toHaveBeenCalledWith(input.sipUri,input.sipCallId,"cancelled");
  });
  it("returns readiness only after actual pending state becomes ready",async()=>{
   vi.useFakeTimers();vi.setSystemTime(0);const h=harness();h.repository.current.mockResolvedValueOnce(call as never);

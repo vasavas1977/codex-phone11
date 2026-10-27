@@ -14,6 +14,10 @@ on:
       - "components/**"
       - "hooks/**"
       - "lib/**"
+      - "server/chat-notifications/**"
+      - "server/push/**"
+      - "server/push-gateway.ts"
+      - "server/chat/service.ts"
       - "modules/phone11-siprix/**"
       - "patches/**"
       - "plugins/**"
@@ -56,6 +60,12 @@ jobs:
         with:
           node-version: "22"
 
+      - name: Setup Java for Android source contracts
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
       - name: Enable pnpm
         run: |
           corepack enable
@@ -64,6 +74,29 @@ jobs:
 
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Require Android candidate configuration and native wake/history contracts
+        run: |
+          node --test tests/phone11-android-candidate-build.test.mjs \
+            modules/phone11-siprix/tests/android-wake-state.test.mjs \
+            modules/phone11-siprix/tests/android-wake-cpu.test.mjs \
+            modules/phone11-siprix/tests/android-wake-history.test.mjs
+
+      - name: Require FCM, chat, wake and native-history importer regressions
+        # Synthetic transport/storage only; never loads provider credentials,
+        # applies migrations, builds a package or contacts a physical handset.
+        run: |
+          pnpm exec vitest run \
+            tests/phone11-push-fcm.test.ts \
+            tests/phone11-chat-notification-android-client.test.ts \
+            tests/phone11-chat-notification-fcm.test.ts \
+            tests/phone11-chat-notification-component.test.ts \
+            tests/phone11-chat-notification-server.test.ts \
+            tests/phone11-chat-notification-apns.test.ts \
+            tests/phone11-wake-client.test.ts \
+            tests/phone11-wake-service.test.ts \
+            tests/phone11-call-history.test.ts \
+            modules/phone11-siprix/tests/android-wake-history-importer.test.ts
 
       - name: Run tests
         # The platform-independent Android lifecycle tests invoke the real JDK.

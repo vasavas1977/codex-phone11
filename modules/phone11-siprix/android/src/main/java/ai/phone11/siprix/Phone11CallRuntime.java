@@ -12,6 +12,8 @@ public final class Phone11CallRuntime {
     void mute(int id,boolean value); void rejectVideo(int id); int holdState(int id); void toggleHold(int id); void dtmf(int id,String digits);
     boolean speaker(); void speaker(boolean value);
     default void switchCall(int id){throw new Failure("E_UNSUPPORTED");}
+    default boolean allowIncoming(int call){return true;}
+    default void transferBlind(int original,String destination){throw new Failure("E_UNSUPPORTED");}
     default void transferAttended(int original,int consult){throw new Failure("E_UNSUPPORTED");}
   }
   public interface Listener {
@@ -27,15 +29,19 @@ public final class Phone11CallRuntime {
     public Failure(String code){super(code);this.code=code;}
   }
   private final Engine engine; private final Sink sink;
-  private final Phone11ConsultationRuntime consultation;
+  private final Phone11ConsultationRuntime consultation; private final boolean nativeCandidate;
+  private boolean blindTransferAttempted=false,blindTransferAccepted=false; private Integer blindTransferResult;
   private long nextLease=0,owner=0,generation=0,sequence=0;
   private boolean initialized=false,quarantined=false,accountRetired=false,trial=false,wantsRegistration=false;
   private String sdkVersion; private Map<String,Object> account; private Map<String,Object> call;
   private final Set<Integer> retiredCalls=new HashSet<>();
   private boolean answerPending=false,endPending=false,holdPending=false,requestedLocalHold=false;
-  public Phone11CallRuntime(Engine engine,Sink sink){this(engine,sink,false,null);}
+  public Phone11CallRuntime(Engine engine,Sink sink){this(engine,sink,false,null,false);}
   public Phone11CallRuntime(Engine engine,Sink sink,boolean consultationEnabled,Phone11ConsultationRuntime.Scheduler scheduler){
-    this.engine=engine;this.sink=sink;
+    this(engine,sink,consultationEnabled,scheduler,false);
+  }
+  public Phone11CallRuntime(Engine engine,Sink sink,boolean consultationEnabled,Phone11ConsultationRuntime.Scheduler scheduler,boolean nativeCandidate){
+    this.engine=engine;this.sink=sink;this.nativeCandidate=nativeCandidate;
     if(consultationEnabled&&scheduler==null)throw new Failure("E_INVALID_ARGUMENT");
     consultation=consultationEnabled?new Phone11ConsultationRuntime(engine,new Phone11ConsultationRuntime.Host(){
       public boolean current(Map<String,Object> original){return initialized&&!quarantined&&!endPending&&owner!=0&&call==original&&account!=null&&account.get("id").equals(original.get("accountId"))&&!"terminated".equals(original.get("state"));}
@@ -48,7 +54,27 @@ public final class Phone11CallRuntime {
     },scheduler):null;
   }
   private void consultationGate(long lease){ready(lease);if(consultation==null)throw new Failure("E_UNSUPPORTED");}
-  public String createTransferRequestId(long lease){consultationGate(lease);return UUID.randomUUID().toString();}
+  public String createTransferRequestId(long lease){ready(lease);if(consultation==null&&!nativeCandidate)throw new Failure("E_UNSUPPORTED");return UUID.randomUUID().toString();}
+  public void transfer(long lease,String id,String destination,String request){
+    int n=call(lease,id);if(!nativeCandidate)throw new Failure("E_UNSUPPORTED");connectedControl();
+    if(consultation!=null&&consultation.busy())throw new Failure("E_CONSULTATION_ACTIVE");
+    if(!"connected".equals(call.get("state"))||holdPending||!Integer.valueOf(0).equals(call.get("holdState"))||engine.holdState(n)!=0)throw new Failure("E_CALL_STATE");
+    if(Boolean.TRUE.equals(call.get("transferAttempted")))throw new Failure("E_TRANSFER_ATTEMPTED");
+    if(destination==null||!destination.matches("[+]?[0-9*#]{1,32}")||request==null||!request.matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"))throw new Failure("E_INVALID_ARGUMENT");
+    blindTransferAttempted=true;blindTransferAccepted=false;blindTransferResult=null;call.put("transferAttempted",true);call.put("transferRequestId",request);call.put("transferPending",true);call.remove("transferStatusCode");
+    try{engine.transferBlind(n,destination);blindTransferAccepted=true;emit("callTransferred","call",copy(call));blindTransferProgress();}
+    catch(RuntimeException failure){blindTransferResult=null;call.put("transferPending",false);emit("callTransferred","call",copy(call));throw failure;}
+  }
+  private void blindTransferProgress(){
+    if(call==null||!blindTransferAccepted||blindTransferResult==null||!Boolean.TRUE.equals(call.get("transferPending")))return;
+    call.put("transferPending",false);call.put("transferStatusCode",blindTransferResult);blindTransferResult=null;emit("callTransferred","call",copy(call));
+  }
+  public Map<String,Object> smoke(long lease){
+    requireOwner(lease);if(initialized||quarantined||account!=null||call!=null)throw new Failure("E_SMOKE_STATE");
+    String version;
+    try{initialize(lease);version=sdkVersion;}finally{if(initialized||quarantined)destroy(lease);}
+    return map("sdkVersion",version,"initialized",false,"accounts",new ArrayList<>(),"calls",new ArrayList<>(),"registrationAttempted",false,"callAttempted",false);
+  }
   public void beginConsultation(long lease,String id,String destination,String request){call(lease,id);consultationGate(lease);if(endPending)throw new Failure("E_CALL_STATE");consultation.begin(call,destination,request,holdPending);}
   public void continueConsultation(long lease,String id,String request){consultationGate(lease);consultation.continueCall(id,request);}
   public void cancelConsultation(long lease,String id,String request){consultationGate(lease);consultation.cancel(id,request);}
@@ -67,14 +93,14 @@ public final class Phone11CallRuntime {
   public Map<String,Object> initialize(long lease){
     requireOwner(lease);if(quarantined)throw new Failure("E_CLEANUP_REQUIRED");if(initialized)return snapshot(lease);
     final long captured=++generation;sequence=0;
-    try{sdkVersion=engine.initialize(listener(captured));initialized=true;}catch(RuntimeException failure){quarantined=true;throw failure;}
+    try{sdkVersion=engine.initialize(listener(captured));initialized=true;}catch(LinkageError failure){quarantined=true;throw new Failure("E_ANDROID_SDK_RUNTIME");}catch(RuntimeException failure){quarantined=true;throw failure;}
     return snapshot(lease);
   }
   public void destroy(long lease){
     requireOwner(lease);if(!initialized&&!quarantined)return;
-    try{engine.destroy();}catch(RuntimeException failure){quarantined=true;throw failure;}
+    try{engine.destroy();}catch(LinkageError failure){quarantined=true;throw new Failure("E_ANDROID_SDK_RUNTIME");}catch(RuntimeException failure){quarantined=true;throw failure;}
     initialized=false;quarantined=false;++generation;sequence=0;sdkVersion=null;account=null;call=null;
-    if(consultation!=null)consultation.reset();accountRetired=false;retiredCalls.clear();answerPending=endPending=holdPending=requestedLocalHold=false;trial=false;wantsRegistration=false;
+    if(consultation!=null)consultation.reset();accountRetired=false;retiredCalls.clear();answerPending=endPending=holdPending=requestedLocalHold=false;trial=false;wantsRegistration=false;blindTransferAttempted=blindTransferAccepted=false;blindTransferResult=null;
   }
   public Map<String,Object> snapshot(long lease){requireOwner(lease);return map("initialized",initialized,"cleanupRequired",quarantined,
     "generation",generation,"sequence",sequence,"sdkVersion",sdkVersion,"accounts",account==null?new ArrayList<>():Arrays.asList(copy(account)),
@@ -99,9 +125,9 @@ public final class Phone11CallRuntime {
     if(!"incoming".equals(call.get("direction"))||!"ringing".equals(call.get("state")))throw new Failure("E_CALL_STATE");engine.answer(n);answerPending=true;}
   public void end(long lease,String id){ready(lease);if(consultation!=null&&consultation.owns(id(id))){consultation.endConsultById();return;}int n=call(lease,id);if(consultation!=null)consultation.endOriginal();if(endPending)return;try{engine.end(n,!answerPending&&"incoming".equals(call.get("direction"))&&"ringing".equals(call.get("state")));endPending=true;}catch(RuntimeException failure){if(consultation!=null&&consultation.consult()!=null)quarantined=true;throw failure;}}
   public void mute(long lease,String id,boolean muted){int n=call(lease,id);connectedControl();if(consultation!=null&&consultation.muteOriginal(id,muted))return;engine.mute(n,muted);call.put("muted",muted);emit("callMuted","call",copy(call));}
-  public void hold(long lease,String id,boolean held){int n=call(lease,id);connectedControl();if(consultation!=null&&consultation.busy())throw new Failure("E_CONSULTATION_ACTIVE");if(holdPending)throw new Failure("E_HOLD_PENDING");
+  public void hold(long lease,String id,boolean held){int n=call(lease,id);connectedControl();if(consultation!=null&&consultation.busy())throw new Failure("E_CONSULTATION_ACTIVE");if(Boolean.TRUE.equals(call.get("transferPending")))throw new Failure("E_TRANSFER_PENDING");if(holdPending)throw new Failure("E_HOLD_PENDING");
     int state=engine.holdState(n);if(state<0||state>3)throw new Failure("E_INVALID_HOLD_STATE");if(((state&1)!=0)==held)return;engine.toggleHold(n);requestedLocalHold=held;holdPending=true;}
-  public void dtmf(long lease,String id,String digits){int n=call(lease,id);connectedControl();if(consultation!=null&&consultation.busy())throw new Failure("E_CONSULTATION_ACTIVE");if(digits==null||!digits.matches("[0-9*#A-D]{1,32}"))throw new Failure("E_INVALID_ARGUMENT");engine.dtmf(n,digits);}
+  public void dtmf(long lease,String id,String digits){int n=call(lease,id);connectedControl();if(consultation!=null&&consultation.busy())throw new Failure("E_CONSULTATION_ACTIVE");if(Boolean.TRUE.equals(call.get("transferPending")))throw new Failure("E_TRANSFER_PENDING");if(digits==null||!digits.matches("[0-9*#A-D]{1,32}"))throw new Failure("E_INVALID_ARGUMENT");engine.dtmf(n,digits);}
   public void speaker(long lease,boolean enabled){ready(lease);if(call==null&&(consultation==null||consultation.consult()==null))throw new Failure("E_CALL_STATE");engine.speaker(enabled);}
   private boolean current(long captured){return initialized&&!quarantined&&captured==generation;}
   private boolean ownsCall(int n){return call!=null&&Integer.toString(n).equals(call.get("id"));}
@@ -115,14 +141,14 @@ public final class Phone11CallRuntime {
       account.remove("sipStatusCode");Matcher m=Pattern.compile("^SIP/2\\.0 ([1-6][0-9]{2})(?:[ \\t]|$)").matcher(response==null?"":response);
       if(m.find())account.put("sipStatusCode",Integer.parseInt(m.group(1)));emit("registration","account",copy(account));}
     public void incoming(int n,int acc,boolean video,String from){if(!current(captured))return;if(ownsCall(n)||(consultation!=null&&consultation.owns(n)))return;
-      if(n<=0||retiredCalls.contains(n)||call!=null||(consultation!=null&&consultation.consult()!=null)||account==null||!Integer.toString(acc).equals(account.get("id"))||!wantsRegistration){
+      if(n<=0||!engine.allowIncoming(n)||retiredCalls.contains(n)||call!=null||(consultation!=null&&consultation.consult()!=null)||account==null||!Integer.toString(acc).equals(account.get("id"))||!wantsRegistration){
         try{engine.end(n,true);}catch(RuntimeException failure){quarantined=true;errorEvent("rejectIncoming",failure);}if(n>0)retiredCalls.add(n);return;}
       call=newCall(n,acc,"incoming",safeUri(from),"ringing");call.put("videoOffered",video);emit("callIncoming","call",copy(call));}
     public void proceeding(int n){if(current(captured)&&consultation!=null&&consultation.owns(n)){callback(()->consultation.proceeding(n));return;}if(current(captured)&&ownsCall(n)&&!endPending&&("dialing".equals(call.get("state"))||"proceeding".equals(call.get("state"))))changed("callProceeding","proceeding");}
     public void connected(int n,boolean video){if(current(captured)&&consultation!=null&&consultation.owns(n)){callback(()->consultation.connected(n,video));return;}if(!current(captured)||!ownsCall(n)||endPending)return;
       if(video){try{engine.end(n,false);endPending=true;}catch(RuntimeException failure){quarantined=true;}errorEvent("unexpectedVideo",new Failure("E_UNSUPPORTED"));return;}
       if(Boolean.TRUE.equals(call.get("answered")))return;answerPending=false;call.put("answered",true);call.put("answeredAt",System.currentTimeMillis());changed("callConnected","connected");}
-    public void terminated(int n,int status){if(current(captured)&&consultation!=null&&consultation.owns(n)){callback(()->consultation.terminated(n,status));return;}if(!current(captured)||!ownsCall(n))return;call.put("statusCode",status);changed("callTerminated","terminated");retiredCalls.add(n);if(consultation!=null)callback(()->consultation.originalTerminated());call=null;answerPending=endPending=holdPending=false;}
+    public void terminated(int n,int status){if(current(captured)&&consultation!=null&&consultation.owns(n)){callback(()->consultation.terminated(n,status));return;}if(!current(captured)||!ownsCall(n))return;call.put("statusCode",status);changed("callTerminated","terminated");retiredCalls.add(n);if(consultation!=null)callback(()->consultation.originalTerminated());call=null;answerPending=endPending=holdPending=false;blindTransferAttempted=blindTransferAccepted=false;blindTransferResult=null;}
     public void held(int n,int state){if(current(captured)&&consultation!=null&&consultation.owns(n)){callback(()->consultation.consultHeld(state));return;}if(!current(captured)||!ownsCall(n)||endPending||!Boolean.TRUE.equals(call.get("answered"))||state<0||state>3)return;
       if(holdPending&&((state&1)!=0)==requestedLocalHold)holdPending=false;call.put("holdState",state);call.put("held",state!=0);changed("callHeld",state==0?"connected":"held");if(consultation!=null)callback(()->consultation.held(n,state));}
     public void redirected(int original,int related){
@@ -133,7 +159,7 @@ public final class Phone11CallRuntime {
       });
     }
     public void switched(int n){if(current(captured)&&consultation!=null)callback(()->consultation.switched(n));}
-    public void transferred(int n,int status){if(current(captured)&&consultation!=null)callback(()->consultation.transferred(n,status));}
+    public void transferred(int n,int status){if(!current(captured))return;if(ownsCall(n)&&blindTransferAttempted){if(Boolean.TRUE.equals(call.get("transferPending"))&&blindTransferResult==null){blindTransferResult=status;blindTransferProgress();}return;}if(consultation!=null)callback(()->consultation.transferred(n,status));}
     public void videoUpgrade(int n){if(!current(captured)||(!ownsCall(n)&&(consultation==null||!consultation.owns(n)))||endPending)return;try{engine.rejectVideo(n);}catch(RuntimeException failure){errorEvent("rejectVideoUpgrade",failure);}}
     public void error(String operation,int code){if(current(captured))errorEvent(operation,new Failure("E_SIPRIX_"+code));}
     public void audio(){if(current(captured)){Map<String,Object> event=map("type","devicesAudioChanged","generation",generation,"sequence",++sequence,"speaker",engine.speaker(),"audioSessionActive",false);sink.event(event);}}
