@@ -95,7 +95,7 @@ describe("opt-in owned PBX pool", () => {
   it("rejects unknown fields, non-data properties and repeated/conflicting bindings", async () => {
     const db = await load();
     expect(() => db.configureOwnedPbxPool({ ...input(), ssl: false } as any)).toThrow("PBX_OWNED_POOL_BINDING_REFUSED");
-    const accessor = { ...input(), get password() { throw Error("PRIVATE_GETTER"); } };
+    const accessor = { ...input(), get password(): never { throw Error("PRIVATE_GETTER"); } };
     expect(() => db.configureOwnedPbxPool(accessor)).toThrow("PBX_OWNED_POOL_BINDING_REFUSED");
     db.configureOwnedPbxPool(input());
     expect(() => db.configureOwnedPbxPool(input())).toThrow("PBX_OWNED_POOL_BINDING_REFUSED");

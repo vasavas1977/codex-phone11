@@ -41,7 +41,7 @@ afterAll(async () => {
 function post(options: { secret?: string | null; tenant?: string; captureToken?: string; body?: Buffer } = {}) {
   return fetch(`${url}?${new URLSearchParams({ call_uuid: call, tenant_id: options.tenant ?? "1", capture_token: options.captureToken ?? token })}`, {
     method: "POST", headers: { "content-type": "audio/wav", ...(options.secret === null ? {} : { "x-fs-secret": options.secret ?? secret }) },
-    body: options.body ?? bytes, redirect: "error", signal: AbortSignal.timeout(5000),
+    body: new Uint8Array(options.body ?? bytes), redirect: "error", signal: AbortSignal.timeout(5000),
   });
 }
 

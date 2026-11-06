@@ -18,6 +18,25 @@ function input() {
     cloneAdmission: "{}", lane: "IVR_CREATE", actorUserId: 7, tenantId: 11, assigneeUserId: 8, extensionId: 3, extensionNumber: "91000001" };
 }
 const digest = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
+const atomicSourcePins = SELECTED_PRODUCT_PINS.map(pin => ({
+  path: pin.path,
+  sha256: ATOMIC_AUDIT_SOURCE_FIXTURE.updates.find(update => update.path === pin.path)?.sha256 ?? pin.sha256,
+}));
+// 08abf2c hardened the PBX pool. 24adb19 moved provisioning schema validation
+// into a new helper. These source-only pins grant no selected-build admission.
+const maintainedOverrides = new Map([
+  ["server/pbx/db.ts", "b7eaa8358d5c5743d50c7ee8b5861bee837da428d08285f2f0fa49d3f3ba7b11"],
+  ["server/phone-provisioning.ts", "0557ad636ce630b4a6f71b6b2bcda55eac52855ccfc482692598659a104faad5"],
+]);
+const schemaHelperPin = {
+  path: "server/pbx/phone-provisioning-schema.ts",
+  sha256: "dc44b0e8fcb412ff5c4b46d6322a25f4ddeb60cb495b305e3769cf7109ef0f53",
+};
+const maintainedSourcePins = [
+  ...atomicSourcePins.map(pin => ({ path: pin.path, sha256: maintainedOverrides.get(pin.path) ?? pin.sha256 })),
+  schemaHelperPin,
+];
+const maintainedSourceGraphSha256 = "6fba5ea244f515326dec6f0f3bd24ea650a6e60a3024dd735fa919e78c29d2dc";
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
 describe("selected entry pure refusal; no real product or pg imports", () => {
@@ -144,29 +163,34 @@ describe("injected transport bridge only; not actual handler or driver execution
 });
 
 describe("static build identities, never evaluate product modules or resulting bundle", () => {
-  it("binds the exact two-file atomic delta and all eight unchanged historical source pins", () => {
+  it("preserves the historical selected-build pins and exact two-file atomic source delta", () => {
     expect(ATOMIC_AUDIT_SOURCE_FIXTURE.sourceRevision).toBe("e9f5831de8d3ef27f628cfdeb4ad57369ba01dc9");
     expect(ATOMIC_AUDIT_SOURCE_FIXTURE.runtimeAuthority).toBe(false);
     expect(ATOMIC_AUDIT_SOURCE_FIXTURE.updates.map(pin => pin.path).sort()).toEqual(["server/pbx/audit.ts", "server/pbx/ivr-router.ts"]);
-    const currentPins = SELECTED_PRODUCT_PINS.map(pin => {
-      const update = ATOMIC_AUDIT_SOURCE_FIXTURE.updates.find(item => item.path === pin.path);
-      if (update) expect(pin.sha256).toBe(update.historicalSha256);
-      const expected = update?.sha256 ?? pin.sha256;
-      expect(digest(readFileSync(pin.path))).toBe(expected);
-      return { path: pin.path, sha256: expected };
-    });
-    expect(currentPins.filter((pin, index) => pin.sha256 !== SELECTED_PRODUCT_PINS[index].sha256)).toHaveLength(2);
-    expect(digest(JSON.stringify(currentPins))).toBe(ATOMIC_AUDIT_SOURCE_FIXTURE.graphSha256);
+    for (const update of ATOMIC_AUDIT_SOURCE_FIXTURE.updates) {
+      expect(SELECTED_PRODUCT_PINS.find(pin => pin.path === update.path)?.sha256).toBe(update.historicalSha256);
+    }
+    expect(atomicSourcePins.filter((pin, index) => pin.sha256 !== SELECTED_PRODUCT_PINS[index].sha256)).toHaveLength(2);
+    expect(digest(JSON.stringify(atomicSourcePins))).toBe(ATOMIC_AUDIT_SOURCE_FIXTURE.graphSha256);
     expect(ATOMIC_AUDIT_SOURCE_FIXTURE.graphSha256).not.toBe(SELECTED_BUILD_CONTRACT.graphSha256);
     expect(digest(JSON.stringify(SELECTED_PRODUCT_PINS))).toBe(SELECTED_BUILD_CONTRACT.graphSha256);
     expect(SELECTED_BUILD_CONTRACT.adapterSha256).toBe("3a82401460aa46622b1a155f9b073b0e8ddbb1719ddcc7de665b358a548d8a08");
     expect(digest(readFileSync("scripts/phone11-pbx-clone/real-pg-adapter.ts"))).toBe(RESTORED_WORKER_SOURCE_CONTRACT.adapterSha256);
     expect(RESTORED_WORKER_SOURCE_CONTRACT.adapterSha256).not.toBe(SELECTED_BUILD_CONTRACT.adapterSha256);
   });
-  it.each(SELECTED_LANES)("refuses the current atomic source graph as a historical %s build before imports", async lane => {
-    const current = { ...input(), lane, build: { ...input().build, graphSha256: ATOMIC_AUDIT_SOURCE_FIXTURE.graphSha256 } };
-    expect(() => parseSelectedHandlerInput(JSON.stringify(current))).toThrow("BUILD_BINDING_REFUSED");
-    expect((await runSelectedHandler(JSON.stringify(current), new AbortController().signal)).code).toBe("BUILD_BINDING_REFUSED");
+  it("pins the maintained source bytes as a separate graph", () => {
+    for (const pin of maintainedSourcePins) expect(digest(readFileSync(pin.path)), pin.path).toBe(pin.sha256);
+    expect(digest(JSON.stringify(maintainedSourcePins))).toBe(maintainedSourceGraphSha256);
+    expect(maintainedSourceGraphSha256).not.toBe(ATOMIC_AUDIT_SOURCE_FIXTURE.graphSha256);
+    expect(maintainedSourceGraphSha256).not.toBe(SELECTED_BUILD_CONTRACT.graphSha256);
+  });
+  it.each(SELECTED_LANES)("refuses source-only graph hashes as a historical %s build before imports", async lane => {
+    for (const graphSha256 of [ATOMIC_AUDIT_SOURCE_FIXTURE.graphSha256, maintainedSourceGraphSha256]) {
+      const sourceOnly = { ...input(), lane, build: { ...input().build, graphSha256 } };
+      const raw = JSON.stringify(sourceOnly);
+      expect(() => parseSelectedHandlerInput(raw)).toThrow("BUILD_BINDING_REFUSED");
+      expect((await runSelectedHandler(raw, new AbortController().signal)).code).toBe("BUILD_BINDING_REFUSED");
+    }
     // Supplying the unchanged historical identity does not admit the changed source either.
     expect(() => parseSelectedHandlerInput(JSON.stringify({ ...input(), lane }))).toThrow("ENTRY_BINDING_UNBOUND");
   });
@@ -198,7 +222,11 @@ describe("static build identities, never evaluate product modules or resulting b
       "scripts/phone11-pbx-clone/selected-resource-bridge.ts",
     ]);
     const product = inputs.filter(path => path.startsWith("server/") || path.startsWith("shared/"));
-    expect(product).toEqual(SELECTED_PRODUCT_PINS.map(pin => pin.path).filter(path => path !== "server/pbx/db.ts").sort());
+    expect(product).toEqual(maintainedSourcePins.map(pin => pin.path).filter(path => path !== "server/pbx/db.ts").sort());
+    expect(result.metafile!.inputs[schemaHelperPin.path].imports).toEqual([]);
+    expect(result.metafile!.inputs["server/phone-provisioning.ts"].imports.filter(item => item.path === schemaHelperPin.path)).toEqual([
+      expect.objectContaining({ path: schemaHelperPin.path, kind: "import-statement" }),
+    ]);
     expect(new Set(aliases.map(path => path.slice(process.cwd().length + 1)))).toEqual(new Set(["server/pbx/ivr-router.ts", "server/pbx/audit.ts", "server/pbx/tenant-middleware.ts", "server/pbx/schema-capabilities.ts", "server/phone-provisioning.ts", "server/pbx/redis.ts"]));
     expect(inputs).not.toContain("server/pbx/db.ts"); expect(inputs).not.toContain("server/_core/context.ts");
     expect(inputs.some(path => /routers\.ts|pbx-router|profile\/|sdk\.ts|auth\/|cloud-record|gemini/i.test(path))).toBe(false);
