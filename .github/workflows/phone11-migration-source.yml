@@ -1,0 +1,92 @@
+name: Phone11 migration source checks
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/phone11-migration-source.yml
+      - scripts/phone11-worker-runtime/**
+      - scripts/phone11-sip-migration/**
+      - docs/phone11-daily-use/MVP-MIGRATION-SOURCE-20261106.md
+  push:
+    branches: [codex/phone11-production-close-20261022]
+    paths:
+      - .github/workflows/phone11-migration-source.yml
+      - scripts/phone11-worker-runtime/**
+      - scripts/phone11-sip-migration/**
+      - docs/phone11-daily-use/MVP-MIGRATION-SOURCE-20261106.md
+
+permissions:
+  contents: read
+
+jobs:
+  migration-source:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      PHONE11_WORKER_PG_BIN: /usr/lib/postgresql/16/bin
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install locked build dependencies without application install hooks
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.12.0 --activate
+          pnpm install --frozen-lockfile --ignore-scripts
+      - name: Build the pinned worker factory without starting it
+        run: node scripts/phone11-worker-runtime/build.mjs
+      - name: Check worker lifecycle and launcher with no skipped cases
+        shell: bash
+        run: |
+          node --test \
+            scripts/phone11-worker-runtime/test_lifecycle.cjs \
+            scripts/phone11-worker-runtime/test_bound.cjs \
+            scripts/phone11-worker-runtime/test_runner.cjs \
+            | tee "$RUNNER_TEMP/phone11-migration-node.tap"
+          python3 - <<'PY'
+          import os, pathlib, re
+          tap = (pathlib.Path(os.environ['RUNNER_TEMP']) / 'phone11-migration-node.tap').read_text()
+          def count(label):
+              rows = re.findall(r'^# ' + label + r' (\d+)$', tap, re.MULTILINE)
+              if len(rows) != 1:
+                  raise SystemExit('Missing or ambiguous test summary: ' + label)
+              return int(rows[0])
+          total = count('tests')
+          if total == 0 or count('pass') != total or any(count(key) for key in ('fail', 'cancelled', 'skipped', 'todo')):
+              raise SystemExit('Every worker Node case must execute and pass')
+          print(f'{total} worker Node cases passed with zero skips')
+          PY
+      - name: Require existing isolated PostgreSQL 16 test tools
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, re, subprocess
+          root = pathlib.Path(os.environ['PHONE11_WORKER_PG_BIN'])
+          for name in ('postgres', 'initdb', 'pg_ctl', 'createdb', 'psql'):
+              if not (root / name).is_file():
+                  raise SystemExit('Required PG16 test tool missing: ' + name)
+          version = subprocess.run([str(root / 'postgres'), '--version'], check=True, capture_output=True, text=True).stdout
+          if os.geteuid() == 0 or not re.search(r'PostgreSQL\) 16\.', version):
+              raise SystemExit('Schema tests require a non-root PG16 fixture')
+          print(version.strip())
+          PY
+      - name: Check rollback evidence, passive SIP classification and private socket schema
+        run: |
+          python3 -B - <<'PY'
+          import unittest
+          suite = unittest.TestSuite()
+          for directory in ('scripts/phone11-worker-runtime', 'scripts/phone11-sip-migration'):
+              tests = unittest.TestLoader().discover(directory, pattern='test_*.py')
+              if tests.countTestCases() == 0:
+                  raise SystemExit('Required suite is empty: ' + directory)
+              suite.addTests(tests)
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          if not result.wasSuccessful() or result.skipped:
+              raise SystemExit('Every migration Python case must execute and pass without skips')
+          PY
