@@ -59,7 +59,8 @@ describe.skipIf(!socket)('native CDR isolated PostgreSQL',()=>{
    expect((await db.pool.query('SELECT ended_at FROM call_legs')).rows[0].ended_at).toEqual(new Date(1700000020000));
   } finally { await db.pool.query('ALTER TABLE call_events_unavailable RENAME TO call_events'); }
   await Promise.all([processCdr({variables:vars}),processCdr({variables:vars})]);
-  expect((await db.pool.query('SELECT event_type FROM call_events ORDER BY event_timestamp')).rows.map(r=>r.event_type)).toEqual(['call_start','answer','hangup']);
+  const events = (await db.pool.query('SELECT event_type FROM call_events ORDER BY event_timestamp')).rows;
+  expect(events.map((row: { event_type: string }) => row.event_type)).toEqual(['call_start','answer','hangup']);
   expect((await db.pool.query('SELECT * FROM call_legs')).rows).toHaveLength(1);
  });
  it('repairs only missing events from an earlier partial delivery',async()=>{

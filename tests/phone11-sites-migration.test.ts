@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { URL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { readManagementCapabilities } from "../server/pbx/schema-capabilities";
