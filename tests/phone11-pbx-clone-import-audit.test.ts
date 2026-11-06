@@ -112,14 +112,31 @@ describe("offline real-handler import preparation", () => {
   it("records the actual entire appRouter graph as blocked preparation, never executes it", () => {
     const root = path.resolve(import.meta.dirname, "..");
     const result = inventoryHandlerImports({ root });
+    const schemaHelper = "server/pbx/phone-provisioning-schema.ts";
     expect(result.pins.entry).toBe("server/routers.ts");
     expect(result.pins.sources["server/routers.ts"]).toBe("8eaa96aae06b384e4cdf06375ba8df50f7bf6281d549d3c5d0ac667b48b68e30");
-    expect(result.pins.sources["server/pbx/db.ts"]).toBe("73c37d847f23b5a6d33507c62dc666dbc8e601a09f306ba539d1de333b5b3709");
+    // Maintained source only. The historical selected-build contract retains its own pins.
+    expect(result.pins.sources["server/pbx/db.ts"]).toBe("b7eaa8358d5c5743d50c7ee8b5861bee837da428d08285f2f0fa49d3f3ba7b11");
+    expect(result.pins.sources["server/phone-provisioning.ts"]).toBe("0557ad636ce630b4a6f71b6b2bcda55eac52855ccfc482692598659a104faad5");
+    expect(result.pins.sources[schemaHelper]).toBe("dc44b0e8fcb412ff5c4b46d6322a25f4ddeb60cb495b305e3769cf7109ef0f53");
+    expect(result.edges).toContainEqual({ from: "server/pbx/db.ts", to: "server/pbx/js-postgres-driver.ts", mode: "static", kind: "source" });
+    expect(result.edges.filter(edge => edge.from === schemaHelper || edge.to === schemaHelper)).toEqual([
+      { from: "server/phone-provisioning.ts", to: schemaHelper, mode: "static", kind: "source" },
+    ]);
+    const schemaFindings = result.findings.filter(finding => finding.file === schemaHelper)
+      .map(({ kind, phase, symbol }) => ({ kind, phase, symbol }));
+    expect(schemaFindings).toHaveLength(3);
+    expect(schemaFindings).toEqual(expect.arrayContaining([
+      { kind: "MODULE_INITIALIZATION_REVIEW_REQUIRED", phase: "module", symbol: "[expression].flatMap" },
+      { kind: "MODULE_INITIALIZATION_REVIEW_REQUIRED", phase: "module", symbol: "Object.entries" },
+      { kind: "DB_OR_CONNECTION_BOUNDARY", phase: "deferred", symbol: "db.query" },
+    ]));
     expect(result.pins.externals).toContain("google-auth-library");
     expect(result.pins.externals).toContain("@jsquash/jpeg/decode.js");
     expect(result.findings).toContainEqual(expect.objectContaining({ file: "server/_core/env.ts", kind: "AMBIENT_ENV_BLOCKED", phase: "module" }));
     expect(result.findings).toContainEqual(expect.objectContaining({ file: "server/push/apns.ts", kind: "MODULE_INITIALIZATION_REVIEW_REQUIRED", symbol: "createApnsSender" }));
     expect(result.runtimeAdmission).toBe(false);
+    expect(result.externalCodeInspected).toBe(false);
     expect(auditHandlerImports({ root }, result.pins).inventoryMatched).toBe(true);
   });
 });

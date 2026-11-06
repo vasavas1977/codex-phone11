@@ -62,6 +62,24 @@ const operations = {
   did: () => provisioning.createDidNumber({ orgId: 7, number: "+6620000000", destinationType: "extension", actorUserId: 9 }),
 };
 
+const actorlessOperations = {
+  extension: () => provisioning.createExtension({ orgId: 7, extensionNumber: "4101" }),
+  assignment: () => provisioning.assignExtensionToUser(33, 41, true, 7),
+  did: () => provisioning.createDidNumber({ orgId: 7, number: "+6620000000", destinationType: "extension" }),
+};
+
+function expectReadOnlySchemaCheck() {
+  expect(state.poolQuery).toHaveBeenCalledTimes(1);
+  const [sql, [contract]] = state.poolQuery.mock.calls[0];
+  expect(sql).toMatch(/^\s*WITH expected AS\s*\(/);
+  expect(sql).toContain("pg_catalog.pg_attribute");
+  expect(sql).not.toMatch(/\b(?:CREATE|ALTER|DROP|TRUNCATE|INSERT|UPDATE|DELETE|GRANT|REVOKE)\b/i);
+  expect(JSON.parse(contract)).toEqual(expect.arrayContaining([
+    { table_name: "extensions", column_name: "tenant_id", type_oid: 23 },
+    { table_name: "tenants", column_name: "id", type_oid: 23 },
+  ]));
+}
+
 describe("legacy provisioning initialization authority", () => {
   it.each(Object.entries(operations))("denies a revoked %s writer before cold initialization effects", async (_name, invoke) => {
     await expect(invoke()).rejects.toThrow("Workspace administrator access is required.");
@@ -193,19 +211,30 @@ describe("legacy provisioning initialization authority", () => {
   it("does not publish schema readiness after an authenticated success", async () => {
     state.actor = [{ role: "admin" }];
     await operations.extension();
-    // The separate compatibility/operator path must still do its old cold
-    // initialization; the authenticated transaction never set schemaReady.
-    await provisioning.createExtension({ orgId: 7, extensionNumber: "4101" });
-    expect(state.poolQuery.mock.calls.length).toBeGreaterThan(0);
-    expect(state.poolQuery.mock.calls.some(([sql]) => String(sql).includes("tenant_id INTEGER DEFAULT 1"))).toBe(true);
+    expect(state.poolQuery).not.toHaveBeenCalled();
+    // Authenticated success must leave the actorless schema check cold.
+    await actorlessOperations.extension();
+    expectReadOnlySchemaCheck();
   });
 
-  it.each(["extension", "assignment", "did"] as const)("retains the actorless %s compatibility initializer", async operation => {
-    if (operation === "extension") await provisioning.createExtension({ orgId: 7, extensionNumber: "4101" });
-    else if (operation === "assignment") await provisioning.assignExtensionToUser(33, 41, true, 7);
-    else await provisioning.createDidNumber({ orgId: 7, number: "+6620000000", destinationType: "extension" });
-    expect(state.poolQuery.mock.calls.length).toBeGreaterThan(0);
-    expect(state.poolQuery.mock.calls.some(([sql]) => String(sql).includes("INSERT INTO tenants"))).toBe(true);
+  it.each(Object.entries(actorlessOperations))("checks schema read-only before the actorless %s transaction", async (_name, invoke) => {
+    await invoke();
+    expectReadOnlySchemaCheck();
+    expect(state.transaction).toHaveBeenCalledTimes(1);
+    expect(state.poolQuery.mock.invocationCallOrder[0]).toBeLessThan(state.transaction.mock.invocationCallOrder[0]);
     expect(state.clientQuery.mock.calls.some(([sql]) => String(sql).includes("SELECT tm.role"))).toBe(false);
+  });
+
+  it.each(Object.entries(actorlessOperations))("refuses an actorless %s write while schema is unavailable and rechecks next time", async (_name, invoke) => {
+    state.poolQuery.mockResolvedValueOnce({ rows: [{ table_name: "extensions", column_name: "tenant_id" }] });
+    await expect(invoke()).rejects.toMatchObject({ code: "PHONE_PROVISIONING_SCHEMA_UNAVAILABLE" });
+    expectReadOnlySchemaCheck();
+    expect(state.transaction).not.toHaveBeenCalled();
+    expect(state.credentials).not.toHaveBeenCalled();
+
+    state.poolQuery.mockClear();
+    await invoke();
+    expectReadOnlySchemaCheck();
+    expect(state.transaction).toHaveBeenCalledTimes(1);
   });
 });
